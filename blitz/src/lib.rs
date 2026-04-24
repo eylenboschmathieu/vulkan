@@ -153,8 +153,8 @@ impl Blitz {
 
     pub unsafe fn upload(&self) -> Result<()> {
         // Make sure the staging buffer is big enough to hold our data
-        let vertices_size = (size_of::<Vertex>() * VERTICES.len()) as u32;
-        let indices_size = (size_of::<u16>() * INDICES.len()) as u32;
+        let vertices_size = (size_of::<Vertex>() * VERTICES.len()) as u64;
+        let indices_size = (size_of::<u16>() * INDICES.len()) as u64;
 
         let mut staging_buffer = StagingBuffer::new(&self.instance, &self.device, vertices_size + indices_size).unwrap_or_else(|err| {
             panic!("Failed to create staging buffer");
@@ -303,7 +303,7 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
     let sync = Synchronization::new(&device, swapchain.framebuffer_count()).unwrap_or_else(|err| {
         panic!("Failed to create synchronization.");
     });
-    let size = (size_of::<Vertex>() * VERTICES.len()) as u32;
+    let size = (size_of::<Vertex>() * VERTICES.len()) as u64;
     let vertex_buffer = VertexBuffer::new(&instance, &device, size).unwrap_or_else(|err| {
         panic!("Failed to create vertex buffer");
     });

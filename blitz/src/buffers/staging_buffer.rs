@@ -21,7 +21,7 @@ pub struct StagingBuffer {
 }
 
 impl StagingBuffer {
-    pub unsafe fn new(instance: &Instance, device: &Device, size: u32) -> Result<Self> {
+    pub unsafe fn new(instance: &Instance, device: &Device, size: u64) -> Result<Self> {
         // Buffer
         
         let handle = Buffer::create_buffer(
@@ -68,7 +68,7 @@ impl StagingBuffer {
 
     pub unsafe fn copy_to_buffer_at<T>(&self, device: &Device, command_buffer: &CommandBuffer, dst_buffer: &T, offset: u64) -> Result<()>
     where T: TransferDst + Deref<Target = Buffer> {
-        let regions = vk::BufferCopy::builder().size(dst_buffer.size() as u64).src_offset(offset);
+        let regions = vk::BufferCopy::builder().size(dst_buffer.size()).src_offset(offset);
         device.logical().cmd_copy_buffer(
             command_buffer.handle(),
             self.handle(),

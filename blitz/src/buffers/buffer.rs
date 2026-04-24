@@ -69,19 +69,19 @@ impl Vertex {
 pub struct Buffer {
     handle: vk::Buffer,
     memory: vk::DeviceMemory,
-    size: u32,  // Vertex count - Used by cmd_draw
+    size: u64,  // Buffer size
 }
 
 impl Buffer {
-    pub unsafe fn new(handle: vk::Buffer, memory: vk::DeviceMemory, size: u32) -> Result<Self> {
+    pub unsafe fn new(handle: vk::Buffer, memory: vk::DeviceMemory, size: u64) -> Result<Self> {
         Ok(Self { handle, memory, size })
     }
 
-    pub unsafe fn create_buffer(device: &Device, size: u32, usage: vk::BufferUsageFlags) -> Result<vk::Buffer> {
+    pub unsafe fn create_buffer(device: &Device, size: u64, usage: vk::BufferUsageFlags) -> Result<vk::Buffer> {
         let queue_family_indices = &[device.queue_family_indices().graphics(), device.queue_family_indices().transfer()];
 
         let mut create_info = vk::BufferCreateInfo::builder()
-            .size(size as u64)
+            .size(size)
             .usage(usage)
             .sharing_mode(vk::SharingMode::CONCURRENT)
             .flags(vk::BufferCreateFlags::empty())
@@ -116,7 +116,7 @@ impl Buffer {
         self.memory
     }
 
-    pub fn size(&self) -> u32 {
+    pub fn size(&self) -> u64 {
         self.size
     }
 

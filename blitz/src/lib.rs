@@ -19,12 +19,14 @@ use vulkanalia::{
     Entry, loader::{LIBRARY, LibloadingLoader}, vk::{self, DeviceV1_0, Handle, HasBuilder, KhrSwapchainExtensionDeviceCommands}
 };
 
-type Mat4 = cgmath::Matrix4<f32>;
-
 use crate::{
     buffers::{
         buffer::{INDICES, VERTICES, Vertex}, index_buffer::IndexBuffer, staging_buffer::StagingBuffer, vertex_buffer::VertexBuffer
-    }, commands::CommandPool, device::Device, instance::Instance, pipeline::Pipeline, queues::QueuePool, swapchain::Swapchain
+    }, commands::CommandPool, device::Device, instance::Instance, queues::QueuePool, swapchain::Swapchain,
+    pipeline::{
+        Pipeline,
+        descriptor_set_layout::DescriptorSetLayout,
+    },
 };
 
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
@@ -121,6 +123,7 @@ pub struct Blitz {
     queue_pool: QueuePool,
     swapchain: Swapchain,
     pipeline: Pipeline,
+    descriptor_set_layout: DescriptorSetLayout,
     command_pool: CommandPool,
     vertex_buffer: VertexBuffer,
     index_buffer: IndexBuffer,
@@ -166,10 +169,10 @@ impl Blitz {
         let ptr = staging_buffer.map(&self.device, vertices_size + indices_size, 0)?;
 
         staging_buffer.copy_to_staging(&self.device, &VERTICES, ptr)?;  // Copy vertices into staging buffer
-        staging_buffer.copy_to_staging_at(&self.device, &INDICES, ptr, vertices_size as u64)?;  // Copy indices into staging buffer
+        staging_buffer.copy_to_staging_at(&self.device, &INDICES, ptr, vertices_size)?;  // Copy indices into staging buffer
 
         staging_buffer.copy_to_buffer(&self.device, command_buffer, &self.vertex_buffer)?;  // Copy data from staging buffer to vertex buffer
-        staging_buffer.copy_to_buffer_at(&self.device, command_buffer, &self.index_buffer, vertices_size as u64)?;  // Copy data from staging buffer to index buffer
+        staging_buffer.copy_to_buffer_at(&self.device, command_buffer, &self.index_buffer, vertices_size)?;  // Copy data from staging buffer to index buffer
         
         staging_buffer.unmap(&self.device);
 
@@ -245,6 +248,7 @@ impl Blitz {
         self.command_pool.destroy();
         self.swapchain.destroy();
         self.pipeline.destroy();  // Contains renderpass
+        self.descriptor_set_layout.destroy(&self.device);
         self.sync.destroy(&self.device);
         self.device.destroy();
         self.instance.destroy();
@@ -295,7 +299,11 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
     let mut swapchain = Swapchain::new(window, &instance, &device).unwrap_or_else(|err| {
         panic!("Failed to create swapchain.")
     });
-    let pipeline = Pipeline::new(&device, swapchain.extent(), swapchain.format()).unwrap_or_else(|err| {
+    let descriptor_set_layout = DescriptorSetLayout::new(&device, 0).unwrap_or_else(|err| {
+        panic!("Failed to create descriptor set layout")
+    });
+    let descriptor_set_layouts = &[descriptor_set_layout.handle()];
+    let pipeline = Pipeline::new(&device, swapchain.extent(), swapchain.format(), descriptor_set_layouts).unwrap_or_else(|err| {
         panic!("Failed to create pipeline.")
     });
     swapchain.create_framebuffers(pipeline.renderpass());
@@ -328,13 +336,6 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
         command_pool,
         vertex_buffer,
         index_buffer,
+        descriptor_set_layout,
     })
-}
-
-#[repr(C)]
-#[derive(Debug)]
-struct UniformBufferObject {
-    model: Mat4,
-    view: Mat4,
-    proj: Mat4,
 }

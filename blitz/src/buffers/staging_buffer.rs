@@ -57,10 +57,12 @@ impl StagingBuffer {
         device.logical().unmap_memory(self.memory());
     }
 
+    /// Fetch the dst pointer from StagingBuffer.map()
     pub unsafe fn copy_to_staging<T>(&self, device: &Device, src: &[T], dst: *mut c_void) -> Result<()> {
         self.copy_to_staging_at(device, src, dst, 0)
     }
 
+    /// Fetch the dst pointer from StagingBuffer.map()
     pub unsafe fn copy_to_staging_at<T>(&self, device: &Device, src: &[T], dst: *mut c_void, offset: u64) -> Result<()> {
         let size = (size_of::<T>() * src.len()) as usize;
         memcpy(src.as_ptr(), dst.cast(), size as usize);

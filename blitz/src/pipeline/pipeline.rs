@@ -7,10 +7,7 @@ use vulkanalia::{
 };
 
 use crate::{
-    device::Device,
-    commands::CommandBuffer,
-    renderpass::Renderpass,
-    buffers::buffer::Vertex,
+    buffers::buffer::Vertex, commands::CommandBuffer, device::Device, renderpass::Renderpass
 };
 
 
@@ -23,7 +20,7 @@ pub struct Pipeline {
 }
 
 impl Pipeline {
-    pub unsafe fn new(device: &Device, extent: Extent2D, format: vk::Format) -> Result<Self> {
+    pub unsafe fn new(device: &Device, extent: Extent2D, format: vk::Format, descriptor_set_layouts: &[vk::DescriptorSetLayout]) -> Result<Self> {
 
         // Renderpass
         
@@ -31,7 +28,7 @@ impl Pipeline {
         
         // Layout
 
-        let layout= Pipeline::build_layout(device)?;
+        let layout= Pipeline::build_layout(device, descriptor_set_layouts)?;
 
         // Create
         
@@ -44,8 +41,8 @@ impl Pipeline {
 
         // Shaders
 
-        let vert = include_bytes!("../shaders/rect.vert.spv");
-        let frag = include_bytes!("../shaders/rect.frag.spv");
+        let vert = include_bytes!("../../shaders/rect.vert.spv");
+        let frag = include_bytes!("../../shaders/rect.frag.spv");
 
         let shaders = vec![ // Used for cleanup later
             Pipeline::build_shader(device, vert)?, // Vertex shader
@@ -163,8 +160,10 @@ impl Pipeline {
         Ok(handle)
     }
 
-    unsafe fn build_layout(device: &Device) -> Result<vk::PipelineLayout> {
-        let layout_info = vk::PipelineLayoutCreateInfo::builder();
+    unsafe fn build_layout(device: &Device, descriptor_set_layouts: &[vk::DescriptorSetLayout]) -> Result<vk::PipelineLayout> {
+        let layout_info = vk::PipelineLayoutCreateInfo::builder()
+            .set_layouts(descriptor_set_layouts);
+
         let layout = device.logical().create_pipeline_layout(&layout_info, None)?;
         info!("+ Layout");
         Ok(layout)

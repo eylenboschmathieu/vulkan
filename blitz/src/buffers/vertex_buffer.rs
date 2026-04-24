@@ -20,7 +20,8 @@ pub struct VertexBuffer {
 }
 
 impl VertexBuffer {
-    pub unsafe fn new(instance: &Instance, device: &Device, size: u64) -> Result<Self> {// Size
+    pub unsafe fn new<T>(instance: &Instance, device: &Device, data: &[T]) -> Result<Self> {// Size
+        let size = (size_of::<T>() * data.len()) as u64;
 
         // Buffer
         

@@ -63,9 +63,9 @@ impl StagingBuffer {
     }
 
     /// Fetch the dst pointer from StagingBuffer.map()
-    pub unsafe fn copy_to_staging_at<T>(&self, device: &Device, src: &[T], dst: *mut c_void, offset: u64) -> Result<()> {
+    pub unsafe fn copy_to_staging_at<T>(&self, device: &Device, src: &[T], dst: *mut c_void, offset: usize) -> Result<()> {
         let size = (size_of::<T>() * src.len()) as usize;
-        memcpy(src.as_ptr(), dst.cast(), size as usize);
+        memcpy(src.as_ptr(), dst.add(offset).cast(), size as usize);
         Ok(())
     }
 

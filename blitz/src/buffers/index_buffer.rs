@@ -21,8 +21,8 @@ pub struct IndexBuffer {
 }
 
 impl IndexBuffer {
-    pub unsafe fn new(instance: &Instance, device: &Device, indices: &[u16]) -> Result<Self> {// Size
-        let size = (size_of::<u16>() *indices.len()) as u64;
+    pub unsafe fn new(instance: &Instance, device: &Device, indices: &[u16]) -> Result<Self> {
+        let size = (size_of::<u16>() * indices.len()) as u64;
 
         // Buffer
         

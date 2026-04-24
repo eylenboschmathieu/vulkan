@@ -24,7 +24,7 @@ use crate::{
         buffer::{INDICES, VERTICES, Vertex}, index_buffer::IndexBuffer, staging_buffer::StagingBuffer, uniform_buffer::UniformBuffer, vertex_buffer::VertexBuffer
     }, commands::CommandPool, device::Device, instance::Instance, pipeline::{
         Pipeline,
-        descriptor_set_layout::DescriptorSetLayout,
+        descriptors::{DescriptorPool, DescriptorSetLayout},
     }, queues::QueuePool, swapchain::Swapchain
 };
 
@@ -123,6 +123,7 @@ pub struct Blitz {
     swapchain: Swapchain,
     pipeline: Pipeline,
     descriptor_set_layout: DescriptorSetLayout,
+    descriptor_pool: DescriptorPool,
     command_pool: CommandPool,
     vertex_buffer: VertexBuffer,
     index_buffer: IndexBuffer,
@@ -135,17 +136,18 @@ pub trait Destroyable {
 
 impl Blitz {
     pub unsafe fn record(&self) -> Result<()> {
-        for (i, command_buffer) in self.command_pool.graphics.as_ref().unwrap().into_iter().enumerate() {
+        for (image_index, command_buffer) in self.command_pool.graphics.as_ref().unwrap().into_iter().enumerate() {
             command_buffer.begin_recording(
                 &self.device,
                 self.swapchain.extent(),
                 self.pipeline.renderpass(),
-                self.swapchain[i].framebuffer()
+                self.swapchain[image_index].framebuffer()
             )?;
 
             self.pipeline.bind(command_buffer);
             self.vertex_buffer.bind(&self.device, command_buffer);
             self.index_buffer.bind(&self.device, command_buffer);
+            self.descriptor_pool.bind(&command_buffer, &self.pipeline, image_index);
             self.device.logical().cmd_draw_indexed(command_buffer.handle(), self.index_buffer.count(), 1, 0, 0, 0);
             // self.device.logical().cmd_draw(command_buffer.handle(), 3, 1, 0, 0);
 
@@ -169,7 +171,7 @@ impl Blitz {
         let ptr = staging_buffer.map(&self.device, vertices_size + indices_size, 0)?;
 
         staging_buffer.copy_to_staging(&self.device, &VERTICES, ptr)?;  // Copy vertices into staging buffer
-        staging_buffer.copy_to_staging_at(&self.device, &INDICES, ptr, vertices_size)?;  // Copy indices into staging buffer
+        staging_buffer.copy_to_staging_at(&self.device, &INDICES, ptr, vertices_size as usize)?;  // Copy indices into staging buffer
 
         staging_buffer.copy_to_buffer(&self.device, command_buffer, &self.vertex_buffer)?;  // Copy data from staging buffer to vertex buffer
         staging_buffer.copy_to_buffer_at(&self.device, command_buffer, &self.index_buffer, vertices_size)?;  // Copy data from staging buffer to index buffer
@@ -204,6 +206,7 @@ impl Blitz {
             self.device.logical().wait_for_fences(&[self.sync.images_in_flight_fence(image_index)], true, u64::MAX)?;
         }
         self.sync.update_image_in_flight_fence(image_index);
+        self.uniform_buffers[image_index].update(&self.device, &delta, self.swapchain.extent())?;
 
         // Submit
 
@@ -249,9 +252,10 @@ impl Blitz {
         self.index_buffer.destroy(&self.device);
         self.vertex_buffer.destroy(&self.device);
         self.command_pool.destroy();
-        self.swapchain.destroy();
         self.pipeline.destroy();  // Contains renderpass
         self.descriptor_set_layout.destroy(&self.device);
+        self.descriptor_pool.destroy();
+        self.swapchain.destroy();
         self.sync.destroy(&self.device);
         self.device.destroy();
         self.instance.destroy();
@@ -263,6 +267,7 @@ impl Blitz {
 
         // Clean up resources before rebuilding
 
+        self.descriptor_pool.destroy();
         for uniform_buffer in &mut self.uniform_buffers {
             uniform_buffer.destroy(&self.device);
         }
@@ -280,6 +285,9 @@ impl Blitz {
             uniform_buffers.push(UniformBuffer::new(&self.instance, &self.device)?);
         }
         self.uniform_buffers = uniform_buffers;
+        self.descriptor_pool = DescriptorPool::new(&self.device, self.swapchain.framebuffer_count() as u32)?;
+        self.descriptor_pool.allocate_descriptor_sets(&self.descriptor_set_layout, self.swapchain.framebuffer_count())?;
+        self.descriptor_pool.update(&self.uniform_buffers);
 
         // Re-record command buffers
 
@@ -313,8 +321,12 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
     let descriptor_set_layout = DescriptorSetLayout::new(&device, 0).unwrap_or_else(|err| {
         panic!("Failed to create descriptor set layout")
     });
-    let descriptor_set_layouts = &[descriptor_set_layout.handle()];
-    let pipeline = Pipeline::new(&device, swapchain.extent(), swapchain.format(), descriptor_set_layouts).unwrap_or_else(|err| {
+    let pipeline = Pipeline::new(
+        &device,
+        swapchain.extent(),
+        swapchain.format(),
+        &[descriptor_set_layout.handle()]
+    ).unwrap_or_else(|err| {
         panic!("Failed to create pipeline.")
     });
     swapchain.create_framebuffers(pipeline.renderpass());
@@ -326,17 +338,19 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
     let sync = Synchronization::new(&device, swapchain.framebuffer_count()).unwrap_or_else(|err| {
         panic!("Failed to create synchronization.");
     });
-    let size = (size_of::<Vertex>() * VERTICES.len()) as u64;
-    let vertex_buffer = VertexBuffer::new(&instance, &device, size).unwrap_or_else(|err| {
+    let vertex_buffer = VertexBuffer::new(&instance, &device, &VERTICES).unwrap_or_else(|err| {
         panic!("Failed to create vertex buffer");
     });
-    let index_buffer = IndexBuffer::new(&instance, &device, INDICES).unwrap_or_else(|err| {
+    let index_buffer = IndexBuffer::new(&instance, &device, &INDICES).unwrap_or_else(|err| {
         panic!("Failed to create index buffer");
     });
     let mut uniform_buffers = vec![];
     for _ in 0..swapchain.framebuffer_count() {
         uniform_buffers.push(UniformBuffer::new(&instance, &device)?);
     }
+    let mut descriptor_pool = DescriptorPool::new(&device, swapchain.framebuffer_count() as u32)?;
+    descriptor_pool.allocate_descriptor_sets(&descriptor_set_layout, uniform_buffers.len())?;
+    descriptor_pool.update(&uniform_buffers);
 
     // Create
 
@@ -347,11 +361,12 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
         sync,
         queue_pool,
         swapchain,
+        descriptor_pool,
+        descriptor_set_layout,
         pipeline,
         command_pool,
         vertex_buffer,
         index_buffer,
-        descriptor_set_layout,
         uniform_buffers,
     })
 }

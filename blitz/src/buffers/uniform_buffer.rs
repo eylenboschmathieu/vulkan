@@ -4,7 +4,7 @@ use std::{
     ops::{Deref, DerefMut}, ptr::copy_nonoverlapping as memcpy, time::Instant
 };
 use log::*;
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use cgmath::{vec3, Deg, point3};
 use vulkanalia::vk::{self, *};
 
@@ -18,7 +18,7 @@ type Mat4 = cgmath::Matrix4<f32>;
 
 #[repr(C)]
 #[derive(Debug)]
-struct UniformBufferObject {
+pub struct UniformBufferObject {
     model: Mat4,
     view: Mat4,
     proj: Mat4,
@@ -60,11 +60,11 @@ impl UniformBuffer {
     }
 
     pub unsafe fn update(&self, device: &Device, delta: &Instant, extent: vk::Extent2D) -> Result<()> {
-        let time = delta.elapsed().as_secs_f32();
+        let dt = delta.elapsed().as_secs_f32();
 
         let model = Mat4::from_axis_angle(
             vec3(0.0, 0.0, 1.0),
-            Deg(90.0) * time
+            Deg(90.0) * dt
         );
 
         let view = Mat4::look_at_rh(

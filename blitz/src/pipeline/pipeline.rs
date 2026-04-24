@@ -32,12 +32,12 @@ impl Pipeline {
 
         // Create
         
-        let handle = Pipeline::build_pipeline(device, extent, format, &renderpass, &layout)?;
+        let handle = Pipeline::build_pipeline(device, extent, format, &renderpass, layout)?;
 
         Ok(Self { device: device.clone(), handle, layout, renderpass })
     }
 
-    unsafe fn build_pipeline(device: &Device, extent: vk::Extent2D, format: vk::Format, renderpass: &Renderpass, layout: &vk::PipelineLayout) -> Result<vk::Pipeline> {
+    unsafe fn build_pipeline(device: &Device, extent: vk::Extent2D, format: vk::Format, renderpass: &Renderpass, layout: vk::PipelineLayout) -> Result<vk::Pipeline> {
 
         // Shaders
 
@@ -103,7 +103,7 @@ impl Pipeline {
             .polygon_mode(vk::PolygonMode::FILL)
             .line_width(1.0)
             .cull_mode(vk::CullModeFlags::BACK)
-            .front_face(vk::FrontFace::CLOCKWISE)
+            .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
             .depth_bias_enable(false);
 
         // Multisampling
@@ -142,7 +142,7 @@ impl Pipeline {
             .rasterization_state(&rasterization_state)
             .multisample_state(&multisampling_state)
             .color_blend_state(&color_blend_state)
-            .layout(*layout)
+            .layout(layout)
             .render_pass(renderpass.handle())
             .subpass(0)
             .base_pipeline_handle(vk::Pipeline::null())
@@ -171,7 +171,7 @@ impl Pipeline {
 
     pub unsafe fn rebuild(&mut self, extent: vk::Extent2D, format: vk::Format) -> Result<()> {
         self.renderpass = Renderpass::new(&self.device, format)?;
-        self.handle = Pipeline::build_pipeline(&self.device, extent, format, &self.renderpass, &self.layout)?;
+        self.handle = Pipeline::build_pipeline(&self.device, extent, format, &self.renderpass, self.layout)?;
         Ok(())
     }
     
@@ -191,6 +191,10 @@ impl Pipeline {
         self.device.logical().destroy_pipeline_layout(self.layout, None);
         self.layout = vk::PipelineLayout::null();
         info!("~ Layout")
+    }
+
+    pub fn layout(&self) -> vk::PipelineLayout {
+        self.layout
     }
 
     pub fn renderpass(&self) -> &Renderpass {

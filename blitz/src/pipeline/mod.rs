@@ -1,4 +1,4 @@
-pub mod descriptor_set_layout;
+pub mod descriptors;
 mod pipeline;
 
 pub use self::pipeline::*;

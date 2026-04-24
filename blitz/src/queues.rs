@@ -121,7 +121,7 @@ impl PresentQueue {
     }
 
     /// Returns Ok(true) if presenting was successful, but swapchain needs rebuilding, Ok(false) if it doesn't need rebuilding
-    pub unsafe fn submit(&self, device: &mut Device, info: &PresentInfoKHR) -> Result<bool> {
+    pub unsafe fn submit(&self, device: &Device, info: &PresentInfoKHR) -> Result<bool> {
         let result = device.logical().queue_present_khr(self.handle, info);
         let changed = result == Ok(vk::SuccessCode::SUBOPTIMAL_KHR) || result == Err(vk::ErrorCode::OUT_OF_DATE_KHR);
         

@@ -223,7 +223,7 @@ impl Blitz {
             .swapchains(swapchains)
             .image_indices(image_indices);
 
-        if self.queue_pool.present().submit(&mut self.device, &present_info)? {
+        if self.queue_pool.present().submit(&self.device, &present_info)? {
             self.rebuild_swapchain(window)?;
         };
 

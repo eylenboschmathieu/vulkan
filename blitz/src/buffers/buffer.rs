@@ -24,7 +24,7 @@ pub static VERTICES: [Vertex; 4] = [
 ];
 pub static INDICES: &[u16] = &[0, 1, 2, 2, 3, 0];
 
-pub trait TransferDst {}
+pub trait TransferDst {}  // Implemented by VertexBuffer and IndexBuffer so they're treated as Transfer targets
 
 #[repr(C)]
 #[derive(Debug)]

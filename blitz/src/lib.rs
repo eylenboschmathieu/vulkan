@@ -163,12 +163,16 @@ impl Blitz {
         let command_buffer = &self.command_pool.transfer.as_ref().unwrap()[0];
         command_buffer.begin_one_time_submit(&self.device)?;
 
-        staging_buffer.copy_to_staging(&self.device, &VERTICES)?;  // Copy vertices into staging buffer
-        staging_buffer.copy_to_staging_at(&self.device, &INDICES, vertices_size as u64)?;  // Copy indices into staging buffer
+        let ptr = staging_buffer.map(&self.device, vertices_size + indices_size, 0)?;
+
+        staging_buffer.copy_to_staging(&self.device, &VERTICES, ptr)?;  // Copy vertices into staging buffer
+        staging_buffer.copy_to_staging_at(&self.device, &INDICES, ptr, vertices_size as u64)?;  // Copy indices into staging buffer
 
         staging_buffer.copy_to_buffer(&self.device, command_buffer, &self.vertex_buffer)?;  // Copy data from staging buffer to vertex buffer
         staging_buffer.copy_to_buffer_at(&self.device, command_buffer, &self.index_buffer, vertices_size as u64)?;  // Copy data from staging buffer to index buffer
         
+        staging_buffer.unmap(&self.device);
+
         command_buffer.end_one_time_submit(&self.device)?;
         self.queue_pool.transfer().submit(&self.device, command_buffer)?;
         staging_buffer.destroy(&self.device);

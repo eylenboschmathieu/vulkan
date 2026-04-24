@@ -1,8 +1,7 @@
 #![allow(dead_code, unsafe_op_in_unsafe_fn, unused_variables, clippy::too_many_arguments, clippy::unnecessary_wraps)]
 
 use std::{
-    ops::{Deref, DerefMut},
-    ptr::copy_nonoverlapping as memcpy,
+    ffi::c_void, ops::{Deref, DerefMut}, ptr::copy_nonoverlapping as memcpy
 };
 
 use log::*;
@@ -49,15 +48,22 @@ impl StagingBuffer {
 
         Ok(Self { buffer })
     }
-    pub unsafe fn copy_to_staging<T>(&self, device: &Device, data: &[T]) -> Result<()> {
-        self.copy_to_staging_at(device, data, 0)
+
+    pub unsafe fn map(&self, device: &Device, size: u64, offset: u64) -> Result<*mut c_void> {
+        Ok(device.logical().map_memory(self.memory(), offset, size, vk::MemoryMapFlags::empty())?)
     }
 
-    pub unsafe fn copy_to_staging_at<T>(&self, device: &Device, data: &[T], offset: u64) -> Result<()> {
-        let size = (size_of::<T>() * data.len()) as u64;
-        let memory = device.logical().map_memory(self.memory(), offset, size, vk::MemoryMapFlags::empty())?;
-        memcpy(data.as_ptr(), memory.cast(), size as usize);
+    pub unsafe fn unmap(&self, device: &Device) {
         device.logical().unmap_memory(self.memory());
+    }
+
+    pub unsafe fn copy_to_staging<T>(&self, device: &Device, src: &[T], dst: *mut c_void) -> Result<()> {
+        self.copy_to_staging_at(device, src, dst, 0)
+    }
+
+    pub unsafe fn copy_to_staging_at<T>(&self, device: &Device, src: &[T], dst: *mut c_void, offset: u64) -> Result<()> {
+        let size = (size_of::<T>() * src.len()) as usize;
+        memcpy(src.as_ptr(), dst.cast(), size as usize);
         Ok(())
     }
 

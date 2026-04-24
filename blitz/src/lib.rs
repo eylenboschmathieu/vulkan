@@ -9,7 +9,7 @@ mod renderpass;
 mod commands;
 mod buffers;
 
-use std::{ops::Index, sync::atomic::{AtomicBool, Ordering}};
+use std::{ops::Index, sync::atomic::{AtomicBool, Ordering}, time::Instant};
 
 use thiserror::Error;
 use log::*;
@@ -21,12 +21,11 @@ use vulkanalia::{
 
 use crate::{
     buffers::{
-        buffer::{INDICES, VERTICES, Vertex}, index_buffer::IndexBuffer, staging_buffer::StagingBuffer, vertex_buffer::VertexBuffer
-    }, commands::CommandPool, device::Device, instance::Instance, queues::QueuePool, swapchain::Swapchain,
-    pipeline::{
+        buffer::{INDICES, VERTICES, Vertex}, index_buffer::IndexBuffer, staging_buffer::StagingBuffer, uniform_buffer::UniformBuffer, vertex_buffer::VertexBuffer
+    }, commands::CommandPool, device::Device, instance::Instance, pipeline::{
         Pipeline,
         descriptor_set_layout::DescriptorSetLayout,
-    },
+    }, queues::QueuePool, swapchain::Swapchain
 };
 
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
@@ -127,6 +126,7 @@ pub struct Blitz {
     command_pool: CommandPool,
     vertex_buffer: VertexBuffer,
     index_buffer: IndexBuffer,
+    uniform_buffers: Vec<UniformBuffer>,
 }
 
 pub trait Destroyable {
@@ -183,7 +183,7 @@ impl Blitz {
     }
 
     /// Renders a frame for our Vulkan app.
-    pub unsafe fn render(&mut self, window: &Window) -> Result<()> {
+    pub unsafe fn render(&mut self, window: &Window, delta: Instant) -> Result<()> {
         self.device.logical().wait_for_fences(&[self.sync.in_flight_fence()], true, u64::MAX)?;
 
         let result = self.device.logical()
@@ -243,6 +243,9 @@ impl Blitz {
     pub unsafe fn destroy(&mut self) {
         self.device.logical().device_wait_idle().unwrap();
 
+        for uniform_buffer in &mut self.uniform_buffers {
+            uniform_buffer.destroy(&self.device);
+        }
         self.index_buffer.destroy(&self.device);
         self.vertex_buffer.destroy(&self.device);
         self.command_pool.destroy();
@@ -260,6 +263,9 @@ impl Blitz {
 
         // Clean up resources before rebuilding
 
+        for uniform_buffer in &mut self.uniform_buffers {
+            uniform_buffer.destroy(&self.device);
+        }
         self.command_pool.graphics.as_mut().unwrap().free_buffers(&self.device);
         self.pipeline.clean();
 
@@ -269,6 +275,11 @@ impl Blitz {
         self.pipeline.rebuild(self.swapchain.extent(), self.swapchain.format())?;
         self.swapchain.create_framebuffers(self.pipeline.renderpass());
         self.command_pool.graphics.as_mut().unwrap().allocate_buffers(&self.device, self.swapchain.framebuffer_count());
+        let mut uniform_buffers = vec![];
+        for _ in 0..self.swapchain.framebuffer_count() {
+            uniform_buffers.push(UniformBuffer::new(&self.instance, &self.device)?);
+        }
+        self.uniform_buffers = uniform_buffers;
 
         // Re-record command buffers
 
@@ -322,6 +333,10 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
     let index_buffer = IndexBuffer::new(&instance, &device, INDICES).unwrap_or_else(|err| {
         panic!("Failed to create index buffer");
     });
+    let mut uniform_buffers = vec![];
+    for _ in 0..swapchain.framebuffer_count() {
+        uniform_buffers.push(UniformBuffer::new(&instance, &device)?);
+    }
 
     // Create
 
@@ -337,5 +352,6 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
         vertex_buffer,
         index_buffer,
         descriptor_set_layout,
+        uniform_buffers,
     })
 }

@@ -1,21 +1,12 @@
 #![allow(dead_code, unsafe_op_in_unsafe_fn, unused_variables, clippy::too_many_arguments, clippy::unnecessary_wraps)]
 
 use vulkanalia::vk::{self, *};
-use anyhow::anyhow;
 use log::*;
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 
 use crate::device::Device;
 
 type Mat4 = cgmath::Matrix4<f32>;
-
-#[repr(C)]
-#[derive(Debug)]
-struct UniformBufferObject {
-    model: Mat4,
-    view: Mat4,
-    proj: Mat4,
-}
 
 #[derive(Debug)]
 pub struct DescriptorSetLayout {

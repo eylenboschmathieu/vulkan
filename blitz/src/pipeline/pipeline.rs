@@ -41,8 +41,8 @@ impl Pipeline {
 
         // Shaders
 
-        let vert = include_bytes!("../../shaders/rect.vert.spv");
-        let frag = include_bytes!("../../shaders/rect.frag.spv");
+        let vert = include_bytes!("../../shaders/ubo.vert.spv");
+        let frag = include_bytes!("../../shaders/ubo.frag.spv");
 
         let shaders = vec![ // Used for cleanup later
             Pipeline::build_shader(device, vert)?, // Vertex shader

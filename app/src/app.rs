@@ -1,5 +1,6 @@
 #![allow(dead_code, unsafe_op_in_unsafe_fn, unused_variables, clippy::too_many_arguments, clippy::unnecessary_wraps)]
 
+use std::time::Instant;
 use log::*;
 use anyhow::Result;
 use winit::window::Window;
@@ -9,6 +10,7 @@ use blitz::Blitz;
 #[derive(Debug)]
 pub struct App{
     blitz: Blitz,
+    delta: Instant,
 }
 
 impl App {
@@ -20,12 +22,12 @@ impl App {
         blitz.record()?;
 
         info!("+ App");
-        Ok(Self { blitz })
+        Ok(Self { blitz, delta: Instant::now() })
     }
 
     /// Renders a frame for our Vulkan app.
     pub unsafe fn render(&mut self, window: &Window) -> Result<()> {
-        self.blitz.render(window).expect("Rendering failed");
+        self.blitz.render(window, self.delta).expect("Rendering failed");
         Ok(())
     }
 

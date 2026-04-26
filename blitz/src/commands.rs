@@ -1,22 +1,22 @@
 #![allow(dead_code, unsafe_op_in_unsafe_fn, unused_variables, clippy::too_many_arguments, clippy::unnecessary_wraps)]
 
-use std::ops::Index;
+use std::ops::{Deref, Index};
 
 use log::*;
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use vulkanalia::vk::{self, *};
 
 use crate::{
-    device::Device, instance::{Instance, QueueFamilyIndices}, renderpass::Renderpass
+    device::Device, instance::Instance, pipeline::Renderpass, queues::{Queue, QueueType}
 };
 
 #[derive(Debug)]
-pub struct InnerCommandPool {
+pub struct CommandPool {
     handle: vk::CommandPool,
     buffers: Vec<CommandBuffer>,
 }
 
-impl InnerCommandPool {
+impl CommandPool {
     pub unsafe fn new(instance: &Instance, device: &Device, queue_family_index: u32) -> Result<Self> {
         // let indices = QueueFamilyIndices::get(instance, device.physical())?;
         let pool_info = vk::CommandPoolCreateInfo::builder()
@@ -38,6 +38,7 @@ impl InnerCommandPool {
         info!("~ Handle")
     }
 
+    /// Allocate and store command buffers in pool
     pub unsafe fn allocate_buffers(&mut self, device: &Device, size: usize) {
         let buffer_info = vk::CommandBufferAllocateInfo::builder()
             .command_pool(self.handle)
@@ -47,10 +48,26 @@ impl InnerCommandPool {
         let buffers_ = device.logical().allocate_command_buffers(&buffer_info).expect("Failed to allocate command buffers");
         let mut buffers: Vec<CommandBuffer> = vec![];
         buffers_.iter().for_each(|handle| {
-            buffers.push(CommandBuffer::new(handle.clone()))
+            buffers.push(CommandBuffer::new(handle.clone(), self.handle))
         });
 
         self.buffers = buffers;
+    }
+
+    /// Allocate and return command buffers
+    pub unsafe fn fetch_buffers(&self, device: &Device, size: usize) -> Result<Vec<CommandBuffer>>{
+        let buffer_info = vk::CommandBufferAllocateInfo::builder()
+            .command_pool(self.handle)
+            .level(vk::CommandBufferLevel::PRIMARY)
+            .command_buffer_count(size as u32);
+
+        let buffers_ = device.logical().allocate_command_buffers(&buffer_info).expect("Failed to allocate command buffers");
+        let mut buffers: Vec<CommandBuffer> = vec![];
+        buffers_.iter().for_each(|handle| {
+            buffers.push(CommandBuffer::new(handle.clone(), self.handle))
+        });
+
+        Ok(buffers)
     }
 
     pub unsafe fn free_buffers(&mut self, device: &Device) {
@@ -63,7 +80,7 @@ impl InnerCommandPool {
     }
 }
 
-impl Index<usize> for InnerCommandPool {
+impl Index<usize> for CommandPool {
     type Output = CommandBuffer;
 
     // Index must be in range of [0, PoolSize-1]
@@ -72,7 +89,7 @@ impl Index<usize> for InnerCommandPool {
     }
 }
 
-impl<'a> IntoIterator for &'a InnerCommandPool {
+impl<'a> IntoIterator for &'a CommandPool {
     type Item = &'a CommandBuffer;
     type IntoIter = std::slice::Iter<'a, CommandBuffer>;
     
@@ -83,75 +100,105 @@ impl<'a> IntoIterator for &'a InnerCommandPool {
 
 // Essentially a wrapper to collect command pools
 #[derive(Debug)]
-pub struct CommandPool {
-    device: Device,
-    queue_family_indices: QueueFamilyIndices,
-    pub graphics: Option<InnerCommandPool>,
-    pub transfer: Option<InnerCommandPool>,
+pub struct CommandManager {
+    /*
+    === Graphics Pool ===
+        Creating 1 command buffer for each swapchain image for render operations
+        Creating 1 command buffer for ownership transfers
+    
+    === Transfer Pool ===
+        Creating 1 command buffer for transfer operations
+    */
+    graphics_pool: CommandPool,  // Used for rendering operations
+    transfer_pool: CommandPool,  // Used for transfer operations
+    acquisition: CommandBuffer, // Used for ownership transfer acquisition
 }
 
-impl CommandPool {
-    /// Size should be the same as the amount of framebuffers
+impl CommandManager {
     pub unsafe fn new(instance: &Instance, device: &Device) -> Result<Self> {
-        let queue_family_indices = QueueFamilyIndices::get(instance, device.physical())?;
+        let queue_family_indices = device.queue_family_indices();
+        let graphics_pool = CommandPool::new(instance, &device, queue_family_indices.graphics())?;
+        let mut transfer_pool = CommandPool::new(instance, &device, queue_family_indices.transfer())?;
+        transfer_pool.allocate_buffers(&device, 1);
+
+        let acquisition = graphics_pool.fetch_buffers(device, 1)?[0];
+
+        info!("+ CommandManager");
+
         Ok(Self {
-            device: device.clone(),
-            queue_family_indices,
-            graphics: None,
-            transfer: None,
+            graphics_pool,
+            transfer_pool,
+            acquisition,
         })
     }
 
-    pub unsafe fn create_render_pool(&mut self, instance: &Instance, size: usize) -> Result<()> {
-        let mut pool = InnerCommandPool::new(instance, &self.device, self.queue_family_indices.graphics())?;
-        pool.allocate_buffers(&self.device, size);
-        self.graphics = Some(pool);
+    /// Size should be the number of swapchain images
+    pub unsafe fn allocate_graphics_buffers(&mut self, device: &Device, size: usize) -> Result<()> {
+        self.graphics_pool.allocate_buffers(device, size);
         Ok(())
     }
 
-    pub unsafe fn create_transfer_pool(&mut self, instance: &Instance) -> Result<()> {
-        let mut pool = InnerCommandPool::new(instance, &self.device, self.queue_family_indices.transfer())?;
-        pool.allocate_buffers(&self.device, 1);
-        self.transfer = Some(pool);
-        Ok(())
+    pub fn graphics(&self) -> &CommandPool {
+        &self.graphics_pool
     }
 
-    pub unsafe fn destroy(&mut self) {
-        if let Some(pool) = &mut self.graphics {
-            pool.destroy(&self.device);
-        }
-        if let Some(pool) = &mut self.transfer {
-            pool.destroy(&self.device);
-        }
+    pub fn graphics_mut(&mut self) -> &mut CommandPool {
+        &mut self.graphics_pool
+    }
+
+    pub fn transfer(&self) -> &CommandBuffer {
+        &self.transfer_pool[0]
+    }
+
+    pub fn acquisition(&self) -> &CommandBuffer {
+        &self.acquisition
+    }
+    
+    pub unsafe fn begin_one_time_submit(&self, device: &Device, buffer_type: vk::QueueFlags) -> Result<CommandBuffer> {
+        let command_buffer = match buffer_type {
+            vk::QueueFlags::GRAPHICS => self.graphics_pool.fetch_buffers(device, 1)?[0],
+            vk::QueueFlags::TRANSFER => self.transfer_pool.fetch_buffers(device, 1)?[0],
+            _ => return Err(anyhow!("Invalid buffer type for one time submit")),
+        };
+
+        let info = vk::CommandBufferBeginInfo::builder()
+            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        device.logical().begin_command_buffer(command_buffer.handle(), &info)?;
+        Ok(command_buffer)
+    }
+
+    pub unsafe fn destroy(&mut self, device: &Device) {
+        self.graphics_pool.buffers.push(self.acquisition);
+        self.graphics_pool.destroy(device);
+        self.transfer_pool.destroy(device);
+
+        info!("~ CommandManager")
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct CommandBuffer {
-    handle: vk::CommandBuffer
+    handle: vk::CommandBuffer,
+    pool: vk::CommandPool,
 }
 
 impl CommandBuffer {
-    pub unsafe fn new(handle: vk::CommandBuffer) -> Self {
-        Self { handle }
+    pub unsafe fn new(handle: vk::CommandBuffer, pool: vk::CommandPool) -> Self {
+        Self { handle, pool }
     }
 
     pub fn handle(&self) -> vk::CommandBuffer {
         self.handle
     }
 
-    pub unsafe fn begin_one_time_submit(&self, device: &Device) -> Result<()> {
-        let info = vk::CommandBufferBeginInfo::builder()
-            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-        device.logical().begin_command_buffer(self.handle, &info)?;
+    pub unsafe fn end_one_time_submit<T>(&self, device: &Device, queue: &T, wait_semaphore: Option<vk::Semaphore>) -> Result<()>
+    where T: QueueType + Deref<Target = Queue> {
+        device.logical().end_command_buffer(self.handle())?;
+        queue.submit_transfer(device, &self, wait_semaphore)?;
+        device.logical().queue_wait_idle(queue.handle())?;
+
         Ok(())
     }
-
-    pub unsafe fn end_one_time_submit(&self, device: &Device) -> Result<()> {
-        device.logical().end_command_buffer(self.handle)?;
-        Ok(())
-    }
-
     pub unsafe fn begin_recording(&self, device: &Device, extent: Extent2D, renderpass: &Renderpass, framebuffer: Framebuffer) -> Result<()> {
         let inheritance_info = vk::CommandBufferInheritanceInfo::builder();
         let info = vk::CommandBufferBeginInfo::builder()

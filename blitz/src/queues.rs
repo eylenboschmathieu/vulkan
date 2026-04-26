@@ -9,28 +9,26 @@ use anyhow::Result;
 use vulkanalia::vk::{self, *};
 
 use crate::{
-    device::Device,
-    commands::CommandBuffer,
-    vk::{KhrSwapchainExtensionDeviceCommands, PresentInfoKHR, SubmitInfo}
+    commands::CommandBuffer, device::Device, vk::{KhrSwapchainExtensionDeviceCommands, PresentInfoKHR, SubmitInfo}
 };
 
 #[derive(Debug)]
-pub struct QueuePool {
-    graphics: RenderQueue,
+pub struct QueueManager {
+    graphics: GraphicsQueue,
     transfer: TransferQueue,
     present: PresentQueue,
 }
 
-impl QueuePool {
+impl QueueManager {
     pub unsafe fn new(device: &Device) -> Result<Self> {
         Ok(Self {
-            graphics: RenderQueue::new(device)?,
+            graphics: GraphicsQueue::new(device)?,
             transfer: TransferQueue::new(device)?,
             present: PresentQueue::new(device)?,
         })
     }
 
-    pub fn graphics(&self) -> &RenderQueue {
+    pub fn graphics(&self) -> &GraphicsQueue {
         &self.graphics
     }
 
@@ -41,6 +39,10 @@ impl QueuePool {
     pub fn present(&self) -> &PresentQueue {
         &self.present
     }
+}
+
+pub trait QueueType {
+    unsafe fn submit_transfer(&self, device: &Device, command_buffer: &CommandBuffer, semaphore: Option<vk::Semaphore>) -> Result<()>;
 }
 
 #[derive(Debug)]
@@ -55,11 +57,30 @@ impl Queue {
 }
 
 #[derive(Debug)]
-pub struct RenderQueue {
+pub struct GraphicsQueue {
     queue: Queue,
 }
 
-impl RenderQueue {
+impl QueueType for GraphicsQueue {
+    unsafe fn submit_transfer(&self, device: &Device, command_buffer: &CommandBuffer, wait_semaphore: Option<vk::Semaphore>) -> Result<()> {
+        let wait_semaphores = &[wait_semaphore];
+        let command_buffers = &[command_buffer.handle()];
+
+        let submit_info = vk::SubmitInfo::builder()
+            //.wait_semaphores(wait_semaphores)
+            //.wait_dst_stage_mask(&[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT])
+            .command_buffers(command_buffers);
+
+        if let Some(signal) = wait_semaphore {
+            let wait_semaphores = &[signal];
+            submit_info.signal_semaphores(wait_semaphores);
+        }
+        device.logical().queue_submit(self.handle, &[submit_info], vk::Fence::null())?;
+        Ok(())
+    }
+}
+
+impl GraphicsQueue {
     pub unsafe fn new(device: &Device) -> Result<Self> {
         let queue = Queue { handle: device.logical().get_device_queue(device.queue_family_indices().graphics(), 0) };
         Ok(Self { queue })
@@ -71,7 +92,7 @@ impl RenderQueue {
     }
 }
 
-impl Deref for RenderQueue {
+impl Deref for GraphicsQueue {
     type Target = Queue;
 
     fn deref(&self) -> &Self::Target {
@@ -89,11 +110,19 @@ impl TransferQueue {
         let queue = Queue { handle: device.logical().get_device_queue(device.queue_family_indices().transfer(), 0) };
         Ok(Self { queue })
     }
+}
 
-    pub unsafe fn submit(&self, device: &Device, command_buffer: &CommandBuffer) -> Result<()> {
+impl QueueType for TransferQueue {
+    unsafe fn submit_transfer(&self, device: &Device, command_buffer: &CommandBuffer, signal_semaphore: Option<vk::Semaphore>) -> Result<()> {
         let command_buffers = &[command_buffer.handle()];
+
         let info = vk::SubmitInfo::builder()
             .command_buffers(command_buffers);
+
+        if let Some(signal) = signal_semaphore {
+            let signal_semaphores = &[signal];
+            info.signal_semaphores(signal_semaphores);
+        }
 
         device.logical().queue_submit(self.handle, &[info], vk::Fence::null())?;
         device.logical().queue_wait_idle(self.handle)?;

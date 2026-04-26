@@ -8,13 +8,15 @@ use vulkanalia::{
     Device as LogicalDevice,
     Entry,
     prelude::v1_0::*,
-    vk::{PhysicalDevice}
+    vk::{PhysicalDevice, PhysicalDeviceMemoryProperties}
 };
 
 use crate::{
-    VALIDATION_ENABLED,
     instance::{
-        DEVICE_EXTENSIONS, Instance, PORTABILITY_MACOS_VERSION, QueueFamilyIndices, VALIDATION_LAYER
+        VALIDATION_ENABLED,
+        DEVICE_EXTENSIONS,
+        Instance,
+        PORTABILITY_MACOS_VERSION, QueueFamilyIndices, SwapchainSupport, VALIDATION_LAYERS
     },
 };
 
@@ -23,17 +25,23 @@ pub struct Device {
     physical_device: PhysicalDevice,
     logical_device: LogicalDevice,
     queue_family_indices: QueueFamilyIndices,
+    memory_properties: PhysicalDeviceMemoryProperties,
+    swapchain_support: SwapchainSupport,
 }
 
 impl Device {
     pub unsafe fn new(entry: &Entry, window: &Window, instance: &Instance) -> Result<Self> {
         let (physical_device, queue_family_indices) = instance.pick_physical_device()?;
         let logical_device = Device::create_logical_device(&entry, instance, physical_device, &queue_family_indices)?;
+        let memory_properties = instance.handle().get_physical_device_memory_properties(physical_device);
+        let swapchain_support = SwapchainSupport::get(instance, physical_device)?;
 
         Ok(Self {
             physical_device,
             logical_device,
             queue_family_indices,
+            memory_properties,
+            swapchain_support,
         })
     }
 
@@ -54,6 +62,14 @@ impl Device {
         self.queue_family_indices.clone()
     }
 
+    pub fn memory_properties(&self) -> PhysicalDeviceMemoryProperties {
+        self.memory_properties
+    }
+
+    pub fn swapchain_support(&self) -> SwapchainSupport {
+        self.swapchain_support.clone()
+    }
+
     unsafe fn create_logical_device(entry: &Entry, instance: &Instance, physical_device: PhysicalDevice, indices: &QueueFamilyIndices) -> Result<LogicalDevice> {
         
         // Queues
@@ -72,10 +88,13 @@ impl Device {
 
         // Layers
         
-        let layers = if VALIDATION_ENABLED {
-            vec![VALIDATION_LAYER.as_ptr()]
+        let layers: Vec<*const i8> = if VALIDATION_ENABLED {
+            VALIDATION_LAYERS
+                .iter()
+                .map(|layer| layer.as_ptr())
+                .collect()
         } else {
-            vec![]
+            Vec::new()
         };
 
         // Extensions
@@ -92,15 +111,18 @@ impl Device {
 
         // Features
 
-        let features = vk::PhysicalDeviceFeatures::builder();
+        let mut vulkan13_features = vk::PhysicalDeviceVulkan13Features::builder()
+            .synchronization2(true);
+        let mut features = vk::PhysicalDeviceFeatures2::builder()
+            .push_next(&mut vulkan13_features);
 
         // Create
 
-        let info: vk::DeviceCreateInfoBuilder<'_> = vk::DeviceCreateInfo::builder()
+        let info= vk::DeviceCreateInfo::builder()
             .queue_create_infos(&queue_infos)
             .enabled_layer_names(&layers)
             .enabled_extension_names(&extensions)
-            .enabled_features(&features);
+            .push_next(&mut features);
 
         let logical_device = instance.handle().create_device(physical_device, &info, None)?;
         info!("+ Handle");

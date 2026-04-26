@@ -5,29 +5,31 @@ use std::{
     ffi::CStr,
     os::raw::c_void
 };
+use thiserror::Error;
 use anyhow::{anyhow, Result};
 use log::*;
 use winit::window::Window;
 use vulkanalia::{
-    Version,
-    Instance as vk_instance,
     Entry,
-    prelude::v1_0::*,
-    vk::{
-        SurfaceKHR as vk_surface,
-        PhysicalDevice,
-        KhrSurfaceExtensionInstanceCommands,
-        DebugUtilsMessengerEXT,
-        ExtDebugUtilsExtensionInstanceCommands
+    Instance as vk_instance, 
+    Version, 
+    prelude::v1_0::*, vk::{
+        DebugUtilsMessengerEXT, ExtDebugUtilsExtensionInstanceCommands, InstanceV1_1, KhrSurfaceExtensionInstanceCommands, PhysicalDevice, SurfaceKHR as vk_surface
     },
     window as vk_window
 };
 
-use crate::*;
-
 pub const PORTABILITY_MACOS_VERSION: Version = Version::new(1, 3, 216);
-pub const VALIDATION_LAYER: vk::ExtensionName = vk::ExtensionName::from_bytes(b"VK_LAYER_KHRONOS_validation");
-pub const DEVICE_EXTENSIONS: &[vk::ExtensionName] = &[vk::KHR_SWAPCHAIN_EXTENSION.name];
+pub const VALIDATION_ENABLED: bool = cfg!(debug_assertions);
+pub const VALIDATION_LAYERS: &[vk::ExtensionName] = &[
+    vk::ExtensionName::from_bytes(b"VK_LAYER_KHRONOS_validation"),
+    // vk::ExtensionName::from_bytes(b"VK_LAYER_KHRONOS_best_practices"),
+    // vk::ExtensionName::from_bytes(b"VK_LAYER_LUNARG_standard_validation"),
+];
+pub const DEVICE_EXTENSIONS: &[vk::ExtensionName] = &[
+    vk::KHR_SWAPCHAIN_EXTENSION.name,
+    // vk::KHR_SYNCHRONIZATION2_EXTENSION.name, // Promoted to core in 1.3 (which we're using)
+];
 
 extern "system" fn debug_callback(
     severity: vk::DebugUtilsMessageSeverityFlagsEXT,
@@ -38,6 +40,7 @@ extern "system" fn debug_callback(
         let message = unsafe { CStr::from_ptr(data.message) }.to_string_lossy();
 
         if severity >= vk::DebugUtilsMessageSeverityFlagsEXT::ERROR {
+            //panic!("{message}");
             error!("({:?}) {}", type_, message);
         } else if severity >= vk::DebugUtilsMessageSeverityFlagsEXT::WARNING {
             warn!("({:?}) {}", type_, message)
@@ -49,6 +52,10 @@ extern "system" fn debug_callback(
 
         vk::FALSE
     }
+
+#[derive(Debug, Error)]
+#[error("Missing {0}.")]
+pub struct SuitabilityError(pub &'static str);
 
 /// Contains a vulkan instance, and optionally a DebugUtilsMessengerEXT
 #[derive(Debug)]
@@ -68,7 +75,7 @@ impl Instance {
             .application_version(vk::make_version(1, 0, 0))
             .engine_name(b"No Engine\0")
             .engine_version(vk::make_version(1, 0, 0))
-            .api_version(vk::make_version(1, 0, 0));
+            .api_version(vk::make_version(1, 3, 0));
 
         // Validation Layers
 
@@ -77,11 +84,22 @@ impl Instance {
             .map(|l| l.layer_name)
             .collect::<HashSet<_>>();
 
-        if VALIDATION_ENABLED && !available_layers.contains(&VALIDATION_LAYER) {
-            return Err(anyhow!("Validation layer requested but not supported."));
+        if VALIDATION_ENABLED {
+            for layer in VALIDATION_LAYERS {
+                if !available_layers.contains(layer) {
+                    return Err(anyhow!("Validation layer requested but not supported."))
+                }
+            }
         }
 
-        let layers = if VALIDATION_ENABLED { vec![VALIDATION_LAYER.as_ptr()] } else { Vec::new() };
+        let layers: Vec<*const i8> = if VALIDATION_ENABLED {
+            VALIDATION_LAYERS
+                .iter()
+                .map(|layer| layer.as_ptr())
+                .collect()
+        } else {
+            Vec::new()
+        };
 
         // Extensions
 
@@ -126,7 +144,7 @@ impl Instance {
             info = info.push_next(&mut debug_info);
         }
 
-        let instance = entry.create_instance(&info, None)?;
+        let handle = entry.create_instance(&info, None)?;
         info!("+ Handle");
 
         // Debug
@@ -139,17 +157,17 @@ impl Instance {
                     vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE)
                 .user_callback(Some(debug_callback));
             info!("+ DebugMessenger");
-            Some(instance.create_debug_utils_messenger_ext(&debug_info, None)?)
+            Some(handle.create_debug_utils_messenger_ext(&debug_info, None)?)
         } else {
             None
         };
 
         // Surface
 
-        let surface = vk_window::create_surface(&instance, &window, &window)?;
+        let surface = vk_window::create_surface(&handle, &window, &window)?;
         info!("+ Surface");
-
-        Ok(Instance { handle: instance, messenger, surface })
+        
+        Ok(Self { handle, messenger, surface })
     }
 
     pub unsafe fn destroy(&self) {
@@ -195,9 +213,16 @@ impl Instance {
             return Err(anyhow!(SuitabilityError("Only discrete GPUs are supported.")));
         }
 
-        let features = self.handle.get_physical_device_features(physical_device);
-        if features.geometry_shader != vk::TRUE {
+        let mut vulkan13_features = vk::PhysicalDeviceVulkan13Features::builder();
+        let mut features = vk::PhysicalDeviceFeatures2::builder()
+            .push_next(&mut vulkan13_features);
+        self.handle.get_physical_device_features2(physical_device, &mut features);
+
+        if features.features.geometry_shader != vk::TRUE {
             return Err(anyhow!(SuitabilityError("Missing geometry shader support.")));
+        }
+        if vulkan13_features.synchronization2 != vk::TRUE {
+            return Err(anyhow!(SuitabilityError("Missing synchronization2 support.")));
         }
 
         self.check_physical_device_extensions(physical_device)?;

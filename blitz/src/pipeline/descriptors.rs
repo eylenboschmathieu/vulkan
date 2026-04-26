@@ -44,7 +44,6 @@ impl DescriptorSetLayout {
 
 #[derive(Debug)]
 pub struct DescriptorPool {
-    device: Device,
     handle: vk::DescriptorPool,
     descriptor_sets: Vec<vk::DescriptorSet>,
 }
@@ -63,28 +62,28 @@ impl DescriptorPool {
 
         let handle = device.logical().create_descriptor_pool(&create_info, None)?;
 
-        Ok(Self { device: device.clone(), handle, descriptor_sets: vec![] })
+        Ok(Self { handle, descriptor_sets: vec![] })
     }
 
-    pub unsafe fn destroy(&mut self) {
-        self.device.logical().destroy_descriptor_pool(self.handle, None);
+    pub unsafe fn destroy(&mut self, device: &Device) {
+        device.logical().destroy_descriptor_pool(self.handle, None);
         self.handle = vk::DescriptorPool::null();
         info!("~ Handle");
     }
 
-    pub unsafe fn allocate_descriptor_sets(&mut self, descriptor_set_layout: &DescriptorSetLayout, descriptor_set_count: usize) -> Result<()> {
+    pub unsafe fn allocate_descriptor_sets(&mut self, device: &Device, descriptor_set_layout: &DescriptorSetLayout, descriptor_set_count: usize) -> Result<()> {
         let layouts = vec![descriptor_set_layout.handle(); descriptor_set_count];
 
         let allocate_info = vk::DescriptorSetAllocateInfo::builder()
             .descriptor_pool(self.handle)
             .set_layouts(&layouts);
 
-        self.descriptor_sets = self.device.logical().allocate_descriptor_sets(&allocate_info)?;
+        self.descriptor_sets = device.logical().allocate_descriptor_sets(&allocate_info)?;
 
         Ok(())
     }
 
-    pub unsafe fn update(&self, buffers: &[UniformBuffer]) {
+    pub unsafe fn update(&self, device: &Device, buffers: &[UniformBuffer]) {
         let buffer_infos: Vec<vk::DescriptorBufferInfo> = buffers
             .iter()
             .map(|uniform_buffer| {
@@ -110,12 +109,12 @@ impl DescriptorPool {
             })
             .collect();
 
-        self.device.logical().update_descriptor_sets(&descriptor_writes, &[] as &[vk::CopyDescriptorSet]);
+        device.logical().update_descriptor_sets(&descriptor_writes, &[] as &[vk::CopyDescriptorSet]);
         info!("Updated descriptor sets");
     }
 
-    pub unsafe fn bind(&self, command_buffer: &CommandBuffer, pipeline: &Pipeline, image_index: usize) {
-        self.device.logical().cmd_bind_descriptor_sets(
+    pub unsafe fn bind(&self, device: &Device, command_buffer: &CommandBuffer, pipeline: &Pipeline, image_index: usize) {
+        device.logical().cmd_bind_descriptor_sets(
             command_buffer.handle(),
             vk::PipelineBindPoint::GRAPHICS,
             pipeline.layout(),

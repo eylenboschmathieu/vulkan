@@ -10,7 +10,7 @@ use log::*;
 use anyhow::Result;
 use vulkanalia::vk::{self, *};
 use crate::{
-    Destroyable, device::Device, instance::Instance
+    Destroyable, context::Context, device::Device,
 };
 
 type Vec2 = cgmath::Vector2<f32>;
@@ -93,17 +93,16 @@ impl Buffer {
         Ok(handle)
     }
 
-    pub unsafe fn create_memory(instance: &Instance, device: &Device, buffer: vk::Buffer, properties: vk::MemoryPropertyFlags) -> Result<vk::DeviceMemory> {
-        let requirements = device.logical().get_buffer_memory_requirements(buffer);
+    pub unsafe fn create_memory(context: &Context, buffer: vk::Buffer, properties: vk::MemoryPropertyFlags) -> Result<vk::DeviceMemory> {
+        let requirements = context.device.logical().get_buffer_memory_requirements(buffer);
         let memory_info = vk::MemoryAllocateInfo::builder()
             .allocation_size(requirements.size)
             .memory_type_index(Buffer::get_memory_type_index(
-                instance,
-                device,
+                context,
                 properties,
                 requirements)?);
 
-        let memory = device.logical().allocate_memory(&memory_info, None)?;
+        let memory = context.device.logical().allocate_memory(&memory_info, None)?;
 
         Ok(memory)
     }
@@ -120,12 +119,12 @@ impl Buffer {
         self.size
     }
 
-    unsafe fn get_memory_type_index(instance: &Instance, device: &Device, properties: vk::MemoryPropertyFlags, requirements: vk::MemoryRequirements) -> Result<u32> {
-        let memory = instance.handle().get_physical_device_memory_properties(device.physical());
-        (0..memory.memory_type_count)
+    pub unsafe fn get_memory_type_index(context: &Context, properties: vk::MemoryPropertyFlags, requirements: vk::MemoryRequirements) -> Result<u32> {
+        let memory_properties = context.device.memory_properties();
+        (0..memory_properties.memory_type_count)
             .find(|i| {
                 let suitable = (requirements.memory_type_bits & (1 << i)) != 0;
-                let memory_type = memory.memory_types[*i as usize];
+                let memory_type = memory_properties.memory_types[*i as usize];
                 suitable && memory_type.property_flags.contains(properties)
             })
             .ok_or_else(|| anyhow!("Failed to find suitable memory type."))

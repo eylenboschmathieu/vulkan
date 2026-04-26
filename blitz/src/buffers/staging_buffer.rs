@@ -7,11 +7,10 @@ use std::{
 use log::*;
 use anyhow::Result;
 use vulkanalia::vk::{self, *};
-use crate::{buffers::{
-        buffer::{
-            Buffer, TransferDst
-        },
-    }, commands::CommandBuffer, device::Device, instance::Instance
+use crate::{
+    buffers::buffer::{
+        Buffer, TransferDst
+    }, commands::CommandBuffer, context::Context, device::Device, image::Image
 };
 
 #[derive(Debug)]
@@ -20,11 +19,11 @@ pub struct StagingBuffer {
 }
 
 impl StagingBuffer {
-    pub unsafe fn new(instance: &Instance, device: &Device, size: u64) -> Result<Self> {
+    pub unsafe fn new(context: &Context, size: u64) -> Result<Self> {
         // Buffer
         
         let handle = Buffer::create_buffer(
-            device,
+            &context.device,
             size,
             vk::BufferUsageFlags::TRANSFER_SRC
         )?;
@@ -33,8 +32,7 @@ impl StagingBuffer {
         // Memory
 
         let memory = Buffer::create_memory(
-            instance,
-            device,
+            &context,
             handle,
             vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
         )?;
@@ -42,7 +40,7 @@ impl StagingBuffer {
 
         // Binding
 
-        device.logical().bind_buffer_memory(handle, memory, 0)?;
+        context.device.logical().bind_buffer_memory(handle, memory, 0)?;
 
         let buffer = Buffer::new(handle, memory, size)?;
 
@@ -81,6 +79,36 @@ impl StagingBuffer {
             command_buffer.handle(),
             self.handle(),
             dst_buffer.handle(),
+            &[regions]
+        );
+        
+        Ok(())
+    }
+
+    pub unsafe fn copy_to_image(&self, device: &Device, command_buffer: &CommandBuffer, dst_image: &Image) -> Result<()> {
+        self.copy_to_image_at(device, command_buffer, dst_image, 0)
+    }
+
+    pub unsafe fn copy_to_image_at(&self, device: &Device, command_buffer: &CommandBuffer, dst_image: &Image, offset: u64) -> Result<()> {
+        let subresource = vk::ImageSubresourceLayers::builder()
+            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .mip_level(0)
+            .base_array_layer(0)
+            .layer_count(1);
+
+        let regions = vk::BufferImageCopy::builder()
+            .buffer_offset(0)
+            .buffer_row_length(0)
+            .buffer_image_height(0)
+            .image_subresource(subresource)
+            .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+            .image_extent(vk::Extent3D { width: dst_image.width(), height: dst_image.height(), depth: 1});
+
+        device.logical().cmd_copy_buffer_to_image(
+            command_buffer.handle(),
+            self.handle(),
+            dst_image.handle(),
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
             &[regions]
         );
         

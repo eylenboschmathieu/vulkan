@@ -8,10 +8,9 @@ use log::*;
 use anyhow::Result;
 use vulkanalia::vk::{self, *};
 use crate::{
-    commands::CommandBuffer,
     buffers::buffer::{
         Buffer, TransferDst,
-    }, device::Device, instance::Instance
+    }, commands::CommandBuffer, context::Context, device::Device,
 };
 
 #[derive(Debug)]
@@ -21,13 +20,13 @@ pub struct IndexBuffer {
 }
 
 impl IndexBuffer {
-    pub unsafe fn new(instance: &Instance, device: &Device, indices: &[u16]) -> Result<Self> {
+    pub unsafe fn new(context: &Context, indices: &[u16]) -> Result<Self> {
         let size = (size_of::<u16>() * indices.len()) as u64;
 
         // Buffer
         
         let handle = Buffer::create_buffer(
-            device,
+            &context.device,
             size,
             vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST
         )?;
@@ -35,8 +34,8 @@ impl IndexBuffer {
 
         // Memory
 
-        let memory = Buffer::create_memory(instance,
-            device,
+        let memory = Buffer::create_memory(
+            context,
             handle,
             vk::MemoryPropertyFlags::DEVICE_LOCAL
         )?;
@@ -44,7 +43,7 @@ impl IndexBuffer {
 
         // Binding
 
-        device.logical().bind_buffer_memory(handle, memory, 0)?;
+        context.device.logical().bind_buffer_memory(handle, memory, 0)?;
 
         let buffer = Buffer::new(handle, memory, size)?;
 

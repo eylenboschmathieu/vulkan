@@ -7,13 +7,15 @@ use vulkanalia::{
 };
 
 use crate::{
-    buffers::buffer::Vertex, commands::CommandBuffer, device::Device, renderpass::Renderpass
+    device::Device,
+    buffers::buffer::Vertex,
+    commands::CommandBuffer,
+    pipeline::renderpass::Renderpass
 };
 
 
 #[derive(Debug)]
 pub struct Pipeline {
-    device: Device,
     handle: vk::Pipeline,
     layout: vk::PipelineLayout,
     renderpass: Renderpass,
@@ -34,7 +36,7 @@ impl Pipeline {
         
         let handle = Pipeline::build_pipeline(device, extent, format, &renderpass, layout)?;
 
-        Ok(Self { device: device.clone(), handle, layout, renderpass })
+        Ok(Self { handle, layout, renderpass })
     }
 
     unsafe fn build_pipeline(device: &Device, extent: vk::Extent2D, format: vk::Format, renderpass: &Renderpass, layout: vk::PipelineLayout) -> Result<vk::Pipeline> {
@@ -169,26 +171,26 @@ impl Pipeline {
         Ok(layout)
     }
 
-    pub unsafe fn rebuild(&mut self, extent: vk::Extent2D, format: vk::Format) -> Result<()> {
-        self.renderpass = Renderpass::new(&self.device, format)?;
-        self.handle = Pipeline::build_pipeline(&self.device, extent, format, &self.renderpass, self.layout)?;
+    pub unsafe fn rebuild(&mut self, device: &Device, extent: vk::Extent2D, format: vk::Format) -> Result<()> {
+        self.renderpass = Renderpass::new(device, format)?;
+        self.handle = Pipeline::build_pipeline(device, extent, format, &self.renderpass, self.layout)?;
         Ok(())
     }
     
     /// Cleaning means destroying the pipeline, and the renderpass. Not the layout. Useful for rebuilding a pipeline.
-    pub unsafe fn clean(&mut self) {
-        self.device.logical().destroy_pipeline(self.handle, None);
+    pub unsafe fn clean(&mut self, device: &Device) {
+        device.logical().destroy_pipeline(self.handle, None);
         self.handle = vk::Pipeline::null();
         info!("~ Handle");
-        self.renderpass.destroy(&self.device);
+        self.renderpass.destroy(device);
     }
 
-    pub unsafe fn destroy(&mut self) {
-        self.device.logical().destroy_pipeline(self.handle, None);
+    pub unsafe fn destroy(&mut self, device: &Device) {
+        device.logical().destroy_pipeline(self.handle, None);
         self.handle = vk::Pipeline::null();
         info!("~ Handle");
-        self.renderpass.destroy(&self.device);
-        self.device.logical().destroy_pipeline_layout(self.layout, None);
+        self.renderpass.destroy(device);
+        device.logical().destroy_pipeline_layout(self.layout, None);
         self.layout = vk::PipelineLayout::null();
         info!("~ Layout")
     }
@@ -211,7 +213,7 @@ impl Pipeline {
         Ok(device.logical().create_shader_module(&info, None)?)
     }
 
-    pub unsafe fn bind(&self, command_buffer: &CommandBuffer) {
-        self.device.logical().cmd_bind_pipeline(command_buffer.handle(), vk::PipelineBindPoint::GRAPHICS, self.handle);
+    pub unsafe fn bind(&self, device: &Device, command_buffer: &CommandBuffer) {
+        device.logical().cmd_bind_pipeline(command_buffer.handle(), vk::PipelineBindPoint::GRAPHICS, self.handle);
     }
 }

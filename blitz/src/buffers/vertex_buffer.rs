@@ -8,10 +8,9 @@ use log::*;
 use anyhow::Result;
 use vulkanalia::vk::{self, *};
 use crate::{
-    commands::CommandBuffer,
     buffers::buffer::{
         Buffer, TransferDst,
-    }, device::Device, instance::Instance
+    }, commands::CommandBuffer, context::Context, device::Device,
 };
 
 #[derive(Debug)]
@@ -20,13 +19,13 @@ pub struct VertexBuffer {
 }
 
 impl VertexBuffer {
-    pub unsafe fn new<T>(instance: &Instance, device: &Device, data: &[T]) -> Result<Self> {// Size
+    pub unsafe fn new<T>(context: &Context, data: &[T]) -> Result<Self> {// Size
         let size = (size_of::<T>() * data.len()) as u64;
 
         // Buffer
         
         let handle = Buffer::create_buffer(
-            device,
+            &context.device,
             size,
             vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST
         )?;
@@ -34,8 +33,8 @@ impl VertexBuffer {
 
         // Memory
 
-        let memory = Buffer::create_memory(instance,
-            device,
+        let memory = Buffer::create_memory(
+            context,
             handle,
             vk::MemoryPropertyFlags::DEVICE_LOCAL
         )?;
@@ -43,7 +42,7 @@ impl VertexBuffer {
 
         // Binding
 
-        device.logical().bind_buffer_memory(handle, memory, 0)?;
+        context.device.logical().bind_buffer_memory(handle, memory, 0)?;
 
         let buffer = Buffer::new(handle, memory, size)?;
 

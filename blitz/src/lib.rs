@@ -1,40 +1,36 @@
 #![allow(dead_code, unsafe_op_in_unsafe_fn, unused_variables, clippy::too_many_arguments, clippy::unnecessary_wraps)]
 
+mod context;
 mod instance;
 mod device;
 mod queues;
+mod transfer_manager;
 mod swapchain;
 mod pipeline;
-mod renderpass;
 mod commands;
 mod buffers;
+mod image;
 
 use std::{ops::Index, sync::atomic::{AtomicBool, Ordering}, time::Instant};
 
-use thiserror::Error;
 use log::*;
 use anyhow::{anyhow, Result};
 use winit::window::Window;
 use vulkanalia::{
-    Entry, loader::{LIBRARY, LibloadingLoader}, vk::{self, DeviceV1_0, Handle, HasBuilder, KhrSwapchainExtensionDeviceCommands}
+    vk::{self, DeviceV1_0, Handle, HasBuilder, KhrSwapchainExtensionDeviceCommands}
 };
 
 use crate::{
     buffers::{
         buffer::{INDICES, VERTICES, Vertex}, index_buffer::IndexBuffer, staging_buffer::StagingBuffer, uniform_buffer::UniformBuffer, vertex_buffer::VertexBuffer
-    }, commands::CommandPool, device::Device, instance::Instance, pipeline::{
+    }, context::Context, device::Device, image::Texture, pipeline::{
         Pipeline,
         descriptors::{DescriptorPool, DescriptorSetLayout},
-    }, queues::QueuePool, swapchain::Swapchain
+    }, swapchain::Swapchain
 };
 
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
-const VALIDATION_ENABLED: bool = cfg!(debug_assertions);
 const FRAMES_IN_FLIGHT: usize = 2;
-
-#[derive(Debug, Error)]
-#[error("Missing {0}.")]
-pub struct SuitabilityError(pub &'static str);
 
 #[derive(Clone, Debug)]
 struct FrameSync {
@@ -115,19 +111,16 @@ impl Index<usize> for Synchronization {
 
 #[derive(Debug)]
 pub struct Blitz {
-    entry: Entry,
-    instance: Instance,
-    device: Device,
-    sync: Synchronization,
-    queue_pool: QueuePool,
+    context: Context,
     swapchain: Swapchain,
+    sync: Synchronization,
     pipeline: Pipeline,
     descriptor_set_layout: DescriptorSetLayout,
     descriptor_pool: DescriptorPool,
-    command_pool: CommandPool,
     vertex_buffer: VertexBuffer,
     index_buffer: IndexBuffer,
     uniform_buffers: Vec<UniformBuffer>,
+    texture: Texture,
 }
 
 pub trait Destroyable {
@@ -136,22 +129,22 @@ pub trait Destroyable {
 
 impl Blitz {
     pub unsafe fn record(&self) -> Result<()> {
-        for (image_index, command_buffer) in self.command_pool.graphics.as_ref().unwrap().into_iter().enumerate() {
+        for (image_index, command_buffer) in self.context.command_manager.graphics().into_iter().enumerate() {
             command_buffer.begin_recording(
-                &self.device,
+                &self.context.device,
                 self.swapchain.extent(),
                 self.pipeline.renderpass(),
                 self.swapchain[image_index].framebuffer()
             )?;
 
-            self.pipeline.bind(command_buffer);
-            self.vertex_buffer.bind(&self.device, command_buffer);
-            self.index_buffer.bind(&self.device, command_buffer);
-            self.descriptor_pool.bind(&command_buffer, &self.pipeline, image_index);
-            self.device.logical().cmd_draw_indexed(command_buffer.handle(), self.index_buffer.count(), 1, 0, 0, 0);
+            self.pipeline.bind(&self.context.device, command_buffer);
+            self.vertex_buffer.bind(&self.context.device, command_buffer);
+            self.index_buffer.bind(&self.context.device, command_buffer);
+            self.descriptor_pool.bind(&self.context.device, &command_buffer, &self.pipeline, image_index);
+            self.context.device.logical().cmd_draw_indexed(command_buffer.handle(), self.index_buffer.count(), 1, 0, 0, 0);
             // self.device.logical().cmd_draw(command_buffer.handle(), 3, 1, 0, 0);
 
-            command_buffer.end_recording(&self.device)?;
+            command_buffer.end_recording(&self.context.device)?;
         }
         Ok(())
     }
@@ -161,34 +154,32 @@ impl Blitz {
         let vertices_size = (size_of::<Vertex>() * VERTICES.len()) as u64;
         let indices_size = (size_of::<u16>() * INDICES.len()) as u64;
 
-        let mut staging_buffer = StagingBuffer::new(&self.instance, &self.device, vertices_size + indices_size).unwrap_or_else(|err| {
+        let mut staging_buffer = StagingBuffer::new(&self.context, vertices_size + indices_size).unwrap_or_else(|err| {
             panic!("Failed to create staging buffer");
         });
 
-        let command_buffer = &self.command_pool.transfer.as_ref().unwrap()[0];
-        command_buffer.begin_one_time_submit(&self.device)?;
+        let command_buffer = &self.context.command_manager.begin_one_time_submit(&self.context.device, vk::QueueFlags::TRANSFER)?;
 
-        let ptr = staging_buffer.map(&self.device, vertices_size + indices_size, 0)?;
+        let ptr = staging_buffer.map(&self.context.device, vertices_size + indices_size, 0)?;
 
-        staging_buffer.copy_to_staging(&self.device, &VERTICES, ptr)?;  // Copy vertices into staging buffer
-        staging_buffer.copy_to_staging_at(&self.device, &INDICES, ptr, vertices_size as usize)?;  // Copy indices into staging buffer
+        staging_buffer.copy_to_staging(&self.context.device, &VERTICES, ptr)?;  // Copy vertices into staging buffer
+        staging_buffer.copy_to_staging_at(&self.context.device, &INDICES, ptr, vertices_size as usize)?;  // Copy indices into staging buffer
 
-        staging_buffer.copy_to_buffer(&self.device, command_buffer, &self.vertex_buffer)?;  // Copy data from staging buffer to vertex buffer
-        staging_buffer.copy_to_buffer_at(&self.device, command_buffer, &self.index_buffer, vertices_size)?;  // Copy data from staging buffer to index buffer
+        staging_buffer.copy_to_buffer(&self.context.device, command_buffer, &self.vertex_buffer)?;  // Copy data from staging buffer to vertex buffer
+        staging_buffer.copy_to_buffer_at(&self.context.device, command_buffer, &self.index_buffer, vertices_size)?;  // Copy data from staging buffer to index buffer
         
-        staging_buffer.unmap(&self.device);
+        staging_buffer.unmap(&self.context.device);
 
-        command_buffer.end_one_time_submit(&self.device)?;
-        self.queue_pool.transfer().submit(&self.device, command_buffer)?;
-        staging_buffer.destroy(&self.device);
+        command_buffer.end_one_time_submit(&self.context.device, self.context.queue_manager.transfer(), None)?;
+        staging_buffer.destroy(&self.context.device);
         Ok(())
     }
 
     /// Renders a frame for our Vulkan app.
     pub unsafe fn render(&mut self, window: &Window, delta: Instant) -> Result<()> {
-        self.device.logical().wait_for_fences(&[self.sync.in_flight_fence()], true, u64::MAX)?;
+        self.context.device.logical().wait_for_fences(&[self.sync.in_flight_fence()], true, u64::MAX)?;
 
-        let result = self.device.logical()
+        let result = self.context.device.logical()
             .acquire_next_image_khr(self.swapchain.handle(), 
             u64::MAX, 
             self.sync.image_available_semaphore(), 
@@ -203,16 +194,16 @@ impl Blitz {
         };
 
         if !self.sync.images_in_flight_fence(image_index).is_null() {
-            self.device.logical().wait_for_fences(&[self.sync.images_in_flight_fence(image_index)], true, u64::MAX)?;
+            self.context.device.logical().wait_for_fences(&[self.sync.images_in_flight_fence(image_index)], true, u64::MAX)?;
         }
         self.sync.update_image_in_flight_fence(image_index);
-        self.uniform_buffers[image_index].update(&self.device, &delta, self.swapchain.extent())?;
+        self.uniform_buffers[image_index].update(&self.context.device, &delta, self.swapchain.extent())?;
 
         // Submit
 
         let wait_semaphores = &[self.sync.image_available_semaphore()];
         let wait_stages = &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-        let command_buffers = &[self.command_pool.graphics.as_ref().unwrap()[image_index as usize].handle()];
+        let command_buffers = &[self.context.command_manager.graphics()[image_index as usize].handle()];
         let signal_semaphores = &[self.sync.render_finished_semaphore()];
         let submit_info = vk::SubmitInfo::builder()
             .wait_semaphores(wait_semaphores)
@@ -220,9 +211,9 @@ impl Blitz {
             .command_buffers(command_buffers)
             .signal_semaphores(signal_semaphores);
 
-        self.device.logical().reset_fences(&[self.sync.in_flight_fence()])?;
+        self.context.device.logical().reset_fences(&[self.sync.in_flight_fence()])?;
 
-        self.queue_pool.graphics().submit(&self.device, &[submit_info.build()], self.sync.in_flight_fence()).expect("Failed to submit command buffer.");
+        self.context.queue_manager.graphics().submit(&self.context.device, &[submit_info.build()], self.sync.in_flight_fence()).expect("Failed to submit command buffer.");
 
         // Present
 
@@ -233,7 +224,7 @@ impl Blitz {
             .swapchains(swapchains)
             .image_indices(image_indices);
 
-        if self.queue_pool.present().submit(&self.device, &present_info)? {
+        if self.context.queue_manager.present().submit(&self.context.device, &present_info)? {
             self.rebuild_swapchain(window)?;
         };
 
@@ -244,50 +235,49 @@ impl Blitz {
 
     /// Destroys our Vulkan app.
     pub unsafe fn destroy(&mut self) {
-        self.device.logical().device_wait_idle().unwrap();
+        self.context.device.logical().device_wait_idle().unwrap();
 
+        self.texture.destroy(&self.context.device);
         for uniform_buffer in &mut self.uniform_buffers {
-            uniform_buffer.destroy(&self.device);
+            uniform_buffer.destroy(&self.context.device);
         }
-        self.index_buffer.destroy(&self.device);
-        self.vertex_buffer.destroy(&self.device);
-        self.command_pool.destroy();
-        self.pipeline.destroy();  // Contains renderpass
-        self.descriptor_set_layout.destroy(&self.device);
-        self.descriptor_pool.destroy();
-        self.swapchain.destroy();
-        self.sync.destroy(&self.device);
-        self.device.destroy();
-        self.instance.destroy();
+        self.index_buffer.destroy(&self.context.device);
+        self.vertex_buffer.destroy(&self.context.device);
+        self.pipeline.destroy(&self.context.device);  // Contains renderpass
+        self.descriptor_set_layout.destroy(&self.context.device);
+        self.descriptor_pool.destroy(&self.context.device);
+        self.sync.destroy(&self.context.device);
+        self.swapchain.destroy(&self.context.device);
+        self.context.destroy();
     }
 
     unsafe fn rebuild_swapchain(&mut self, window: &Window) -> Result<()> {
         info!("Rebuilding swapchain");
-        self.device.logical().device_wait_idle()?;
+        self.context.device.logical().device_wait_idle()?;
 
         // Clean up resources before rebuilding
 
-        self.descriptor_pool.destroy();
+        self.descriptor_pool.destroy(&self.context.device);
         for uniform_buffer in &mut self.uniform_buffers {
-            uniform_buffer.destroy(&self.device);
+            uniform_buffer.destroy(&self.context.device);
         }
-        self.command_pool.graphics.as_mut().unwrap().free_buffers(&self.device);
-        self.pipeline.clean();
+        self.context.command_manager.graphics_mut().free_buffers(&self.context.device);
+        self.pipeline.clean(&self.context.device);
 
         // Recreate resources
 
-        self.swapchain.rebuild(window, &self.instance)?;
-        self.pipeline.rebuild(self.swapchain.extent(), self.swapchain.format())?;
-        self.swapchain.create_framebuffers(self.pipeline.renderpass());
-        self.command_pool.graphics.as_mut().unwrap().allocate_buffers(&self.device, self.swapchain.framebuffer_count());
+        self.swapchain.rebuild(window, &self.context)?;
+        self.pipeline.rebuild(&self.context.device, self.swapchain.extent(), self.swapchain.format())?;
+        self.swapchain.create_framebuffers(&self.context.device, self.pipeline.renderpass());
+        self.context.command_manager.graphics_mut().allocate_buffers(&self.context.device, self.swapchain.framebuffer_count());
         let mut uniform_buffers = vec![];
         for _ in 0..self.swapchain.framebuffer_count() {
-            uniform_buffers.push(UniformBuffer::new(&self.instance, &self.device)?);
+            uniform_buffers.push(UniformBuffer::new(&self.context)?);
         }
         self.uniform_buffers = uniform_buffers;
-        self.descriptor_pool = DescriptorPool::new(&self.device, self.swapchain.framebuffer_count() as u32)?;
-        self.descriptor_pool.allocate_descriptor_sets(&self.descriptor_set_layout, self.swapchain.framebuffer_count())?;
-        self.descriptor_pool.update(&self.uniform_buffers);
+        self.descriptor_pool = DescriptorPool::new(&self.context.device, self.swapchain.framebuffer_count() as u32)?;
+        self.descriptor_pool.allocate_descriptor_sets(&self.context.device, &self.descriptor_set_layout, self.swapchain.framebuffer_count())?;
+        self.descriptor_pool.update(&self.context.device, &self.uniform_buffers);
 
         // Re-record command buffers
 
@@ -303,70 +293,59 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
         return Err(anyhow!("Vulkan already initialized"));
     }
 
-    info!("+ Blitz");
-    let loader = LibloadingLoader::new(LIBRARY)?;
-    let entry = Entry::new(loader).map_err(|b| anyhow!("{b}"))?;
-    let instance = Instance::new(window, &entry).unwrap_or_else(|err| {
-        panic!("Failed to create vulkan instance")
-    });
-    let device = Device::new(&entry, window, &instance).unwrap_or_else(|err| {
-        panic!("Failed to create vulkan device.")
-    });
-    let queue_pool = QueuePool::new(&device).unwrap_or_else(|err| {
-        panic!("Failed to create queues.")
-    });
-    let mut swapchain = Swapchain::new(window, &instance, &device).unwrap_or_else(|err| {
+    info!("Blitz::init");
+    let mut context = Context::new(window)?;
+
+    let mut swapchain = Swapchain::new(window, &context.instance, &context.device).unwrap_or_else(|err| {
         panic!("Failed to create swapchain.")
     });
-    let descriptor_set_layout = DescriptorSetLayout::new(&device, 0).unwrap_or_else(|err| {
+    context.command_manager.allocate_graphics_buffers(&context.device, swapchain.framebuffer_count())?;
+
+    let descriptor_set_layout = DescriptorSetLayout::new(&context.device, 0).unwrap_or_else(|err| {
         panic!("Failed to create descriptor set layout")
     });
+
     let pipeline = Pipeline::new(
-        &device,
+        &context.device,
         swapchain.extent(),
         swapchain.format(),
         &[descriptor_set_layout.handle()]
     ).unwrap_or_else(|err| {
         panic!("Failed to create pipeline.")
     });
-    swapchain.create_framebuffers(pipeline.renderpass());
-    let mut command_pool = CommandPool::new(&instance, &device).unwrap_or_else(|err| {
-        panic!("Failed to create commands.");
-    });
-    command_pool.create_render_pool(&instance, swapchain.framebuffer_count())?;
-    command_pool.create_transfer_pool(&instance)?;
-    let sync = Synchronization::new(&device, swapchain.framebuffer_count()).unwrap_or_else(|err| {
+    swapchain.create_framebuffers(&context.device, pipeline.renderpass());
+
+    let sync = Synchronization::new(&context.device, swapchain.framebuffer_count()).unwrap_or_else(|err| {
         panic!("Failed to create synchronization.");
     });
-    let vertex_buffer = VertexBuffer::new(&instance, &device, &VERTICES).unwrap_or_else(|err| {
+    let vertex_buffer = VertexBuffer::new(&context, &VERTICES).unwrap_or_else(|err| {
         panic!("Failed to create vertex buffer");
     });
-    let index_buffer = IndexBuffer::new(&instance, &device, &INDICES).unwrap_or_else(|err| {
+    let index_buffer = IndexBuffer::new(&context, &INDICES).unwrap_or_else(|err| {
         panic!("Failed to create index buffer");
     });
     let mut uniform_buffers = vec![];
     for _ in 0..swapchain.framebuffer_count() {
-        uniform_buffers.push(UniformBuffer::new(&instance, &device)?);
+        uniform_buffers.push(UniformBuffer::new(&context)?);
     }
-    let mut descriptor_pool = DescriptorPool::new(&device, swapchain.framebuffer_count() as u32)?;
-    descriptor_pool.allocate_descriptor_sets(&descriptor_set_layout, uniform_buffers.len())?;
-    descriptor_pool.update(&uniform_buffers);
+    let mut descriptor_pool = DescriptorPool::new(&context.device, swapchain.framebuffer_count() as u32)?;
+    descriptor_pool.allocate_descriptor_sets(&context.device, &descriptor_set_layout, uniform_buffers.len())?;
+    descriptor_pool.update(&context.device, &uniform_buffers);
+
+    let texture = Texture::new(&context,"/home/krozu/Documents/Code/Rust/vulkan/app/img/image.png")?;
 
     // Create
 
     Ok(Blitz {
-        entry,
-        instance,
-        device,
-        sync,
-        queue_pool,
+        context,
         swapchain,
+        sync,
         descriptor_pool,
         descriptor_set_layout,
         pipeline,
-        command_pool,
         vertex_buffer,
         index_buffer,
         uniform_buffers,
+        texture,
     })
 }

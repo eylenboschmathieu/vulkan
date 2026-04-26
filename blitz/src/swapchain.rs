@@ -12,15 +12,11 @@ use vulkanalia::{
 };
 
 use crate::{
-    Device,
-    Instance,
-    instance::{SwapchainSupport, QueueFamilyIndices},
-    renderpass::Renderpass,
+    Device, context::Context, instance::{Instance, QueueFamilyIndices, SwapchainSupport}, pipeline::Renderpass
 };
 
 #[derive(Debug)]
 pub struct Swapchain {
-    device: Device,
     handle: SwapchainKHR,
     images: Vec<Image>,
     format: vk::Format,
@@ -29,22 +25,22 @@ pub struct Swapchain {
 
 impl Swapchain {
     pub unsafe fn new(window: &Window, instance: &Instance, device: &Device) -> Result<Self> {
-        let swapchain_support = SwapchainSupport::get(instance, device.physical())?;
+        let swapchain_support = device.swapchain_support();
 
         let format = swapchain_support.get_surface_format().format;
         let extent = swapchain_support.get_extent(window);
 
         let handle = Swapchain::build(window, instance, device, &swapchain_support, None)?;
 
-        let mut this = Self { device: device.clone(), handle, images: vec![], format, extent };
-        this.get_images();
+        let mut this = Self { handle, images: vec![], format, extent };
+        this.get_images(&device);
 
         Ok(this)
     }
 
-    pub unsafe fn destroy(&mut self) {
-        self.free_images();
-        self.device.logical().destroy_swapchain_khr(self.handle, None);
+    pub unsafe fn destroy(&mut self, device: &Device) {
+        self.free_images(device);
+        device.logical().destroy_swapchain_khr(self.handle, None);
         self.handle = vk::SwapchainKHR::null();
         info!("~ Handle");
     }
@@ -96,14 +92,14 @@ impl Swapchain {
         }
     }
 
-    pub unsafe fn rebuild(&mut self, window: &Window, instance: &Instance) -> Result<()> {
+    pub unsafe fn rebuild(&mut self, window: &Window, context: &Context) -> Result<()> {
         // Destroy old swapchain
-        self.free_images();
+        self.free_images(&context.device);
 
-        let swapchain_support = SwapchainSupport::get(instance, self.device.physical())?;
-        self.handle = Swapchain::build(window, instance, &self.device, &swapchain_support, Some(self.handle))?;
+        let swapchain_support = SwapchainSupport::get(&context.instance, context.device.physical())?;
+        self.handle = Swapchain::build(window, &context.instance, &context.device, &swapchain_support, Some(self.handle))?;
 
-        self.get_images();
+        self.get_images(&context.device);
 
         Ok(())
     }
@@ -125,7 +121,7 @@ impl Swapchain {
     }
 
     /// Get the image handles and views from the swapchain
-    pub unsafe fn get_images(&mut self) {
+    pub unsafe fn get_images(&mut self, device: &Device) {
         let components = vk::ComponentMapping::builder()
             .r(vk::ComponentSwizzle::IDENTITY)
             .g(vk::ComponentSwizzle::IDENTITY)
@@ -139,7 +135,7 @@ impl Swapchain {
             .base_array_layer(0)
             .layer_count(1);
 
-        let images = self.device.logical()
+        let images = device.logical()
             .get_swapchain_images_khr(self.handle)
             .unwrap_or_else(|err| panic!("{err}"));
 
@@ -154,14 +150,14 @@ impl Swapchain {
                 .subresource_range(subresource_range);
 
             image.handle = img;
-            image.view = self.device.logical().create_image_view(&info, None).unwrap_or_else(|err| panic!("{err}"));
+            image.view = device.logical().create_image_view(&info, None).unwrap_or_else(|err| panic!("{err}"));
         }
 
         info!("+ Image::Handles");
         info!("+ Image::Views");
     }
 
-    pub unsafe fn create_framebuffers(&mut self, renderpass: &Renderpass) {
+    pub unsafe fn create_framebuffers(&mut self, device: &Device, renderpass: &Renderpass) {
         let handle = renderpass.handle();
         self.images.iter_mut().for_each(|image| {
             let attachments = &[image.view];
@@ -172,18 +168,18 @@ impl Swapchain {
                 .height(self.extent.height)
                 .layers(1);
 
-            image.framebuffer = self.device.logical().create_framebuffer(&info, None).unwrap();
+            image.framebuffer = device.logical().create_framebuffer(&info, None).unwrap();
         });
         info!("+ Image::Framebuffers")
     }
 
     /// Destroys views and framebuffers
-    unsafe fn free_images(&mut self) {
+    unsafe fn free_images(&mut self, device: &Device) {
         self.images
             .iter_mut()
             .for_each(|img| {
-                self.device.logical().destroy_framebuffer(img.framebuffer, None);
-                self.device.logical().destroy_image_view(img.view, None);
+                device.logical().destroy_framebuffer(img.framebuffer, None);
+                device.logical().destroy_image_view(img.view, None);
                 // VkImage handles don't need cleaning up. Owned by VkSwapchain
             });
         self.images.clear();

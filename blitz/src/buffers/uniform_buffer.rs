@@ -9,9 +9,7 @@ use cgmath::{vec3, Deg, point3};
 use vulkanalia::vk::{self, *};
 
 use crate::{
-    instance::Instance,
-    device::Device,
-    buffers::buffer::Buffer,
+    buffers::buffer::Buffer, context::Context, device::Device,
 };
 
 type Mat4 = cgmath::Matrix4<f32>;
@@ -30,12 +28,12 @@ pub struct UniformBuffer {
 }
 
 impl UniformBuffer {
-    pub unsafe fn new(instance: &Instance, device: &Device) -> Result<Self> {// Size
+    pub unsafe fn new(context: &Context) -> Result<Self> {// Size
         let size = size_of::<UniformBufferObject>() as u64;
         // Buffer
         
         let handle = Buffer::create_buffer(
-            device,
+            &context.device,
             size,
             vk::BufferUsageFlags::UNIFORM_BUFFER
         )?;
@@ -43,8 +41,8 @@ impl UniformBuffer {
 
         // Memory
 
-        let memory = Buffer::create_memory(instance,
-            device,
+        let memory = Buffer::create_memory(
+            context,
             handle,
             vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE
         )?;
@@ -52,7 +50,7 @@ impl UniformBuffer {
 
         // Binding
 
-        device.logical().bind_buffer_memory(handle, memory, 0)?;
+        context.device.logical().bind_buffer_memory(handle, memory, 0)?;
 
         let buffer = Buffer::new(handle, memory, size)?;
 

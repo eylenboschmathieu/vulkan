@@ -7,7 +7,7 @@ use anyhow::Result;
 use vulkanalia::vk::{self, *};
 
 use crate::{
-    Destroyable, buffers::staging_buffer::StagingBuffer, context::Context, device::Device, image::{Image, ImageMemoryBarrierQueueFamilyIndices}
+    buffers::staging_buffer::StagingBuffer, context::Context, device::Device, image::{Image, ImageMemoryBarrierQueueFamilyIndices}
 };
 
 #[derive(Debug)]

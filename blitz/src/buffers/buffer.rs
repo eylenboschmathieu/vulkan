@@ -6,7 +6,7 @@ use log::*;
 use anyhow::Result;
 use vulkanalia::vk::{self, *};
 use crate::{
-    Destroyable, buffers::vertex_buffer::Vertex, context::Context, device::Device
+    buffers::vertex_buffer::Vertex, context::Context, device::Device
 };
 
 pub const VERTICES: [Vertex; 8] = [
@@ -69,6 +69,15 @@ impl Buffer {
         Ok(memory)
     }
 
+    pub unsafe fn destroy(&mut self, device: &Device) {
+        device.logical().free_memory(self.memory, None);
+        self.memory = vk::DeviceMemory::null();
+        info!("~ Memory");
+        device.logical().destroy_buffer(self.handle, None);
+        self.handle = vk::Buffer::null();
+        info!("~ Handle");
+    }
+
     pub fn handle(&self) -> vk::Buffer {
         self.handle
     }
@@ -90,16 +99,5 @@ impl Buffer {
                 suitable && memory_type.property_flags.contains(properties)
             })
             .ok_or_else(|| anyhow!("Failed to find suitable memory type."))
-    }
-}
-
-impl Destroyable for Buffer {
-    unsafe fn destroy(&mut self, device: &Device) {
-        device.logical().free_memory(self.memory, None);
-        self.memory = vk::DeviceMemory::null();
-        info!("~ Memory");
-        device.logical().destroy_buffer(self.handle, None);
-        self.handle = vk::Buffer::null();
-        info!("~ Handle");
     }
 }

@@ -9,7 +9,7 @@ use cgmath::{vec3, Deg, point3};
 use vulkanalia::vk::{self, *};
 
 use crate::{
-    Destroyable, buffers::buffer::Buffer, context::Context, device::Device
+    buffers::buffer::Buffer, context::Context, device::Device
 };
 
 type Mat4 = cgmath::Matrix4<f32>;

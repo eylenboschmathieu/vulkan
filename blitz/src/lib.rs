@@ -138,10 +138,6 @@ pub struct Blitz {
     texture: Texture,
 }
 
-pub trait Destroyable {
-    unsafe fn destroy(&mut self, device: &Device);
-}
-
 impl Blitz {
     pub unsafe fn record(&self) -> Result<()> {
         for (image_index, command_buffer) in self.context.command_manager.graphics().into_iter().enumerate() {

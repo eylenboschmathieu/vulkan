@@ -1,6 +1,9 @@
 mod image;
 mod texture;
 
-pub use image::Image;
-pub use image::ImageMemoryBarrierQueueFamilyIndices;
+pub use image::{
+    Image,
+    ImageMemoryBarrierQueueFamilyIndices,
+    DepthBuffer,
+};
 pub use texture::Texture;

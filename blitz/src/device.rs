@@ -16,7 +16,10 @@ use crate::{
         VALIDATION_ENABLED,
         DEVICE_EXTENSIONS,
         Instance,
-        PORTABILITY_MACOS_VERSION, QueueFamilyIndices, SwapchainSupport, VALIDATION_LAYERS
+        PORTABILITY_MACOS_VERSION,
+        QueueFamilyIndices,
+        SwapchainSupport,
+        VALIDATION_LAYERS,
     },
 };
 
@@ -113,7 +116,10 @@ impl Device {
 
         let mut vulkan13_features = vk::PhysicalDeviceVulkan13Features::builder()
             .synchronization2(true);
+        let core_features = vk::PhysicalDeviceFeatures::builder()
+            .sampler_anisotropy(true);
         let mut features = vk::PhysicalDeviceFeatures2::builder()
+            .features(core_features)
             .push_next(&mut vulkan13_features);
 
         // Create

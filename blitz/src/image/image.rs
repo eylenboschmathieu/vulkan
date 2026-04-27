@@ -1,5 +1,7 @@
 #![allow(dead_code, unsafe_op_in_unsafe_fn, unused_variables, clippy::too_many_arguments, clippy::unnecessary_wraps)]
 
+use std::ops::Deref;
+
 use vulkanalia::vk::{self, *};
 use log::*;
 use anyhow::{anyhow, Result};
@@ -15,7 +17,7 @@ pub struct ImageMemoryBarrierQueueFamilyIndices {
     pub dst_queue_family_index: u32,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Image {
     handle: vk::Image,
     memory: vk::DeviceMemory,
@@ -92,6 +94,26 @@ impl Image {
         Ok(memory)
     }
 
+    pub unsafe fn build_view(device: &Device, image: vk::Image, format: vk::Format, aspects: vk::ImageAspectFlags) -> Result<vk::ImageView> {
+        let subresource_range = vk::ImageSubresourceRange::builder()
+            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .base_mip_level(0)
+            .level_count(1)
+            .base_array_layer(0)
+            .layer_count(1)
+            .aspect_mask(aspects);
+
+        let create_info = vk::ImageViewCreateInfo::builder()
+            .image(image)
+            .view_type(vk::ImageViewType::_2D)
+            .format(format)
+            .subresource_range(subresource_range);
+
+        let view = device.logical().create_image_view(&create_info, None)?;
+
+        Ok(view)
+    }
+
     pub fn handle(&self) -> vk::Image {
         self.handle
     }
@@ -112,7 +134,7 @@ impl Image {
         self.size
     }
 
-    pub unsafe fn transition_layout(
+    pub unsafe fn transition_image_layout(
         &self,
         device: &Device,
         command_buffer: &CommandBuffer,
@@ -170,9 +192,78 @@ impl Image {
                 .src_stage_mask(src_stage_mask)
                 .dst_stage_mask(dst_stage_mask)
         ];
-        debug!("Transitioning layout: {:?} → {:?}", old_layout, new_layout);
-        debug!("Access masks: {:?} → {:?}", src_access_mask, dst_access_mask);
-        debug!("Stage masks: {:?} → {:?}", src_stage_mask, dst_stage_mask);
+        // debug!("Transitioning layout: {:?} → {:?}", old_layout, new_layout);
+        // debug!("Access masks: {:?} → {:?}", src_access_mask, dst_access_mask);
+        // debug!("Stage masks: {:?} → {:?}", src_stage_mask, dst_stage_mask);
+
+        let info = vk::DependencyInfo::builder()
+            .image_memory_barriers(barriers);
+
+        device.logical().cmd_pipeline_barrier2(command_buffer.handle(), &info);
+        Ok(())
+    }
+
+    pub unsafe fn transition_depth_layout(
+        &self,
+        device: &Device,
+        command_buffer: &CommandBuffer,
+        format: vk::Format,
+        old_layout: vk::ImageLayout,
+        new_layout: vk::ImageLayout,
+        queue_family_indices: Option<ImageMemoryBarrierQueueFamilyIndices>,
+    ) -> Result<()> {
+        // debug!("Transitioning layout: {:?} → {:?}", old_layout, new_layout);
+        let (src_access_mask, dst_access_mask, src_stage_mask, dst_stage_mask) = match (old_layout, new_layout) {
+            (vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL) => (
+                vk::AccessFlags2::empty(),
+                vk::AccessFlags2::TRANSFER_WRITE,
+                vk::PipelineStageFlags2::TOP_OF_PIPE,
+                vk::PipelineStageFlags2::COPY,
+            ),
+            (vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::TRANSFER_DST_OPTIMAL) => (
+                vk::AccessFlags2::empty(),
+                vk::AccessFlags2::TRANSFER_WRITE,
+                vk::PipelineStageFlags2::TOP_OF_PIPE,
+                vk::PipelineStageFlags2::COPY,
+            ),
+            (vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL) => (
+                vk::AccessFlags2::TRANSFER_WRITE,
+                vk::AccessFlags2::SHADER_READ,
+                vk::PipelineStageFlags2::COPY,
+                vk::PipelineStageFlags2::FRAGMENT_SHADER,
+            ),
+            _ => return Err(anyhow!("Unsupported image layout transition!")),
+        };
+
+        let (src_queue_family_index, dst_queue_family_index) = if let Some(indices) = queue_family_indices {
+            (indices.src_queue_family_index, indices.dst_queue_family_index)
+        } else {
+            (vk::QUEUE_FAMILY_IGNORED, vk::QUEUE_FAMILY_IGNORED)
+        };
+
+        let subresource = vk::ImageSubresourceRange::builder()
+            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .base_mip_level(0)
+            .level_count(1)
+            .base_array_layer(0)
+            .layer_count(1);
+
+        let barriers = &[
+            vk::ImageMemoryBarrier2::builder()
+                .old_layout(old_layout)
+                .new_layout(new_layout)
+                .src_queue_family_index(src_queue_family_index)
+                .dst_queue_family_index(dst_queue_family_index)
+                .image(self.handle)
+                .subresource_range(subresource)
+                .src_access_mask(src_access_mask)
+                .dst_access_mask(dst_access_mask)
+                .src_stage_mask(src_stage_mask)
+                .dst_stage_mask(dst_stage_mask)
+        ];
+        // debug!("Transitioning layout: {:?} → {:?}", old_layout, new_layout);
+        // debug!("Access masks: {:?} → {:?}", src_access_mask, dst_access_mask);
+        // debug!("Stage masks: {:?} → {:?}", src_stage_mask, dst_stage_mask);
 
         let info = vk::DependencyInfo::builder()
             .image_memory_barriers(barriers);
@@ -188,3 +279,61 @@ impl Image {
 }
 
 impl TransferDst for Image {}
+
+#[derive(Debug, Clone)]
+pub struct DepthBuffer {
+    image: Image,
+    view: vk::ImageView,
+}
+
+impl DepthBuffer {
+    pub unsafe fn new(context: &Context, width: u32, height: u32) -> Result<Self> {
+        let format = DepthBuffer::get_depth_format(context)?;
+
+        let image = Image::new(
+            context,
+            width, height,
+            format,
+            vk::ImageTiling::OPTIMAL,
+            vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+            vk::MemoryPropertyFlags::DEVICE_LOCAL)?;
+
+        let view = Image::build_view(&context.device, image.handle(), format, vk::ImageAspectFlags::DEPTH)?;
+
+        info!("+ DepthBuffer");
+        Ok(Self { image, view })
+    }
+
+    pub unsafe fn get_depth_format(context: &Context) -> Result<vk::Format> {
+        let candidates = &[
+            vk::Format::D32_SFLOAT,
+            vk::Format::D32_SFLOAT_S8_UINT,
+            vk::Format::D24_UNORM_S8_UINT,  
+        ];
+
+        context.instance.get_supported_format(
+            &context.device,
+            candidates,
+            vk::ImageTiling::OPTIMAL,
+            vk::FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT
+        )
+    }
+
+    pub unsafe fn destroy(&self, device: &Device) {
+        device.logical().destroy_image_view(self.view, None);
+        self.image.destroy(device);
+        info!("~ DepthBuffer")
+    }
+
+    pub fn view(&self) -> vk::ImageView {
+        self.view
+    }
+}
+
+impl Deref for DepthBuffer {
+    type Target = Image;
+
+    fn deref(&self) -> &Self::Target {
+        &self.image
+    }
+}

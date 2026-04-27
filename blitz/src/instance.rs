@@ -19,6 +19,10 @@ use vulkanalia::{
     window as vk_window
 };
 
+use crate::{
+    device::Device,
+};
+
 pub const PORTABILITY_MACOS_VERSION: Version = Version::new(1, 3, 216);
 pub const VALIDATION_ENABLED: bool = cfg!(debug_assertions);
 pub const VALIDATION_LAYERS: &[vk::ExtensionName] = &[
@@ -221,6 +225,9 @@ impl Instance {
         if features.features.geometry_shader != vk::TRUE {
             return Err(anyhow!(SuitabilityError("Missing geometry shader support.")));
         }
+        if features.features.sampler_anisotropy != vk::TRUE {
+            return Err(anyhow!(SuitabilityError("Missing sampler_anisotropy support.")));
+        }
         if vulkan13_features.synchronization2 != vk::TRUE {
             return Err(anyhow!(SuitabilityError("Missing synchronization2 support.")));
         }
@@ -250,6 +257,20 @@ impl Instance {
         }
     }
 
+    pub unsafe fn get_supported_format(&self, device: &Device, candidates: &[vk::Format], tiling: vk::ImageTiling, features: vk::FormatFeatureFlags) -> Result<vk::Format> {
+        candidates
+            .iter()
+            .cloned()
+            .find(|f| {
+                let properties = self.handle.get_physical_device_format_properties(device.physical(), *f);
+                match tiling {
+                    vk::ImageTiling::LINEAR => properties.linear_tiling_features.contains(features),
+                    vk::ImageTiling::OPTIMAL => properties.optimal_tiling_features.contains(features),
+                    _ => false,
+                }
+            })
+            .ok_or_else(|| anyhow!("Failed to find supported format"))
+    }
 }
 
 #[derive(Clone, Debug)]

@@ -43,7 +43,7 @@ impl TransferManager {
 
         let command_buffer= &context.command_manager.begin_one_time_submit(&context.device, vk::QueueFlags::TRANSFER)?;
 
-        image.transition_layout(
+        image.transition_image_layout(
             &context.device,
             command_buffer,
             vk::Format::R8G8B8A8_SRGB,
@@ -52,7 +52,7 @@ impl TransferManager {
             None,
         )?;
         staging_buffer.copy_to_image(&context.device, command_buffer, &image)?;
-        image.transition_layout(
+        image.transition_image_layout(
             &context.device,
             command_buffer,
             vk::Format::R8G8B8A8_SRGB,
@@ -66,13 +66,11 @@ impl TransferManager {
         command_buffer.end_one_time_submit(&context.device, context.queue_manager.transfer(), Some(self.semaphore))?;
         staging_buffer.destroy(&context.device);
 
-        //let queue = context.queue_manager.transfer().submit(&context.device, command_buffer, Some(self.semaphore))?;
-
         // Ownership transfer
 
         let command_buffer = &context.command_manager.begin_one_time_submit(&context.device, vk::QueueFlags::GRAPHICS)?;
         
-        image.transition_layout(
+        image.transition_image_layout(
             &context.device,
             command_buffer,
             vk::Format::R8G8B8A8_SRGB,

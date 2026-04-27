@@ -111,24 +111,18 @@ pub struct CommandManager {
     */
     graphics_pool: CommandPool,  // Used for rendering operations
     transfer_pool: CommandPool,  // Used for transfer operations
-    acquisition: CommandBuffer, // Used for ownership transfer acquisition
 }
 
 impl CommandManager {
     pub unsafe fn new(instance: &Instance, device: &Device) -> Result<Self> {
         let queue_family_indices = device.queue_family_indices();
         let graphics_pool = CommandPool::new(instance, &device, queue_family_indices.graphics())?;
-        let mut transfer_pool = CommandPool::new(instance, &device, queue_family_indices.transfer())?;
-        transfer_pool.allocate_buffers(&device, 1);
-
-        let acquisition = graphics_pool.fetch_buffers(device, 1)?[0];
+        let transfer_pool = CommandPool::new(instance, &device, queue_family_indices.transfer())?;
 
         info!("+ CommandManager");
 
         Ok(Self {
-            graphics_pool,
-            transfer_pool,
-            acquisition,
+            graphics_pool, transfer_pool
         })
     }
 
@@ -149,10 +143,6 @@ impl CommandManager {
     pub fn transfer(&self) -> &CommandBuffer {
         &self.transfer_pool[0]
     }
-
-    pub fn acquisition(&self) -> &CommandBuffer {
-        &self.acquisition
-    }
     
     pub unsafe fn begin_one_time_submit(&self, device: &Device, buffer_type: vk::QueueFlags) -> Result<CommandBuffer> {
         let command_buffer = match buffer_type {
@@ -168,7 +158,6 @@ impl CommandManager {
     }
 
     pub unsafe fn destroy(&mut self, device: &Device) {
-        self.graphics_pool.buffers.push(self.acquisition);
         self.graphics_pool.destroy(device);
         self.transfer_pool.destroy(device);
 
@@ -206,41 +195,15 @@ impl CommandBuffer {
             .inheritance_info(&inheritance_info);
 
         device.logical().begin_command_buffer(self.handle, &info)?;
-        self.begin_renderpass(device, extent, renderpass, framebuffer);
+        renderpass.begin(device, &self, framebuffer, extent);
 
         Ok(())
     }
 
-    pub unsafe fn end_recording(&self, device: &Device) -> Result<()> {
-        self.end_renderpass(device);
+    pub unsafe fn end_recording(&self, device: &Device, renderpass: &Renderpass) -> Result<()> {
+        renderpass.end(device, &self);
         device.logical().end_command_buffer(self.handle)?;
 
         Ok(())
-    }
-
-    unsafe fn begin_renderpass(&self, device: &Device, extent: Extent2D, renderpass: &Renderpass, framebuffer: Framebuffer) {
-        let render_area = vk::Rect2D::builder()
-            .offset(vk::Offset2D::default())
-            .extent(extent);
-
-        let clear_values = vec![
-            vk::ClearValue {
-                color: vk::ClearColorValue {
-                    float32: [0.0, 0.0, 0.0, 1.0]
-                }
-            }
-        ];
-
-        let info = vk::RenderPassBeginInfo::builder()
-            .render_pass(renderpass.handle())
-            .framebuffer(framebuffer)
-            .render_area(render_area)
-            .clear_values(&clear_values);
-
-        device.logical().cmd_begin_render_pass(self.handle, &info, vk::SubpassContents::INLINE);
-    }
-
-    unsafe fn end_renderpass(&self, device: &Device) {
-        device.logical().cmd_end_render_pass(self.handle);
     }
 }

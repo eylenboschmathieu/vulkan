@@ -7,18 +7,19 @@ use anyhow::{anyhow, Result};
 use winit::window::Window;
 use vulkanalia::{
     vk::{
-        self, DeviceV1_0, Handle, HasBuilder, KhrSwapchainExtensionDeviceCommands, SwapchainKHR
+        self,
+        *
     }
 };
 
 use crate::{
-    Device, context::Context, instance::{Instance, QueueFamilyIndices, SwapchainSupport}, pipeline::Renderpass
+    Device, context::Context, image::{DepthBuffer, Image}, instance::{Instance, QueueFamilyIndices, SwapchainSupport}, pipeline::Renderpass
 };
 
 #[derive(Debug)]
 pub struct Swapchain {
     handle: SwapchainKHR,
-    images: Vec<Image>,
+    images: Vec<SwapchainImage>,
     format: vk::Format,
     extent: vk::Extent2D,
 }
@@ -122,47 +123,33 @@ impl Swapchain {
 
     /// Get the image handles and views from the swapchain
     pub unsafe fn get_images(&mut self, device: &Device) {
-        let components = vk::ComponentMapping::builder()
-            .r(vk::ComponentSwizzle::IDENTITY)
-            .g(vk::ComponentSwizzle::IDENTITY)
-            .b(vk::ComponentSwizzle::IDENTITY)
-            .a(vk::ComponentSwizzle::IDENTITY);
-
-        let subresource_range = vk::ImageSubresourceRange::builder()
-            .aspect_mask(vk::ImageAspectFlags::COLOR)
-            .base_mip_level(0)
-            .level_count(1)
-            .base_array_layer(0)
-            .layer_count(1);
+        // let components = vk::ComponentMapping::builder()
+        //     .r(vk::ComponentSwizzle::IDENTITY)
+        //     .g(vk::ComponentSwizzle::IDENTITY)
+        //     .b(vk::ComponentSwizzle::IDENTITY)
+        //     .a(vk::ComponentSwizzle::IDENTITY);
 
         let images = device.logical()
             .get_swapchain_images_khr(self.handle)
             .unwrap_or_else(|err| panic!("{err}"));
 
-        self.images.resize(images.len(), Image::default());
+        self.images.resize(images.len(), SwapchainImage::default());
 
-        for (image, img) in std::iter::zip(&mut self.images, images) {
-            let info = vk::ImageViewCreateInfo::builder()
-                .image(img)
-                .view_type(vk::ImageViewType::_2D)
-                .format(self.format)
-                .components(components)
-                .subresource_range(subresource_range);
-
-            image.handle = img;
-            image.view = device.logical().create_image_view(&info, None).unwrap_or_else(|err| panic!("{err}"));
+        for (image, handle) in std::iter::zip(&mut self.images, images) {
+            image.handle = handle;
+            image.view = Image::build_view(device, handle, self.format, vk::ImageAspectFlags::COLOR).unwrap_or_else(|err| panic!("{err}"));
         }
 
         info!("+ Image::Handles");
         info!("+ Image::Views");
     }
 
-    pub unsafe fn create_framebuffers(&mut self, device: &Device, renderpass: &Renderpass) {
+    pub unsafe fn create_framebuffers(&mut self, device: &Device, renderpass: &Renderpass, depth_buffer: &DepthBuffer) {
         let handle = renderpass.handle();
         self.images.iter_mut().for_each(|image| {
-            let attachments = &[image.view];
+            let attachments = &[image.view, depth_buffer.view()];
             let info = vk::FramebufferCreateInfo::builder()
-                .render_pass(handle)
+                .render_pass(renderpass.handle())
                 .attachments(attachments)
                 .width(self.extent.width)
                 .height(self.extent.height)
@@ -190,7 +177,7 @@ impl Swapchain {
 }
 
 impl Index<usize> for Swapchain {
-    type Output = Image;
+    type Output = SwapchainImage;
 
     // Index must be in range of [0, PoolSize-1]
     fn index(&self, index: usize) -> &Self::Output  {
@@ -199,13 +186,13 @@ impl Index<usize> for Swapchain {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct Image {
+pub struct SwapchainImage {
     handle: vk::Image,
     view: vk::ImageView,
     framebuffer: vk::Framebuffer,
 }
 
-impl Image {
+impl SwapchainImage {
     pub fn framebuffer(&self) -> vk::Framebuffer {
         self.framebuffer
     }

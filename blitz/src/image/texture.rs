@@ -5,19 +5,20 @@ use std::{
 };
 
 use log::*;
-use vulkanalia::vk;
+use vulkanalia::vk::{self, DeviceV1_0, HasBuilder};
 use anyhow::Result;
 
 use crate::{
     buffers::{
         buffer::TransferDst,
-        staging_buffer::StagingBuffer,
     }, context::Context, device::Device, image::Image
 };
 
 #[derive(Debug)]
 pub struct Texture {
     image: Image,
+    view: vk::ImageView,
+    sampler: vk::Sampler,
 }
 
 impl Texture {
@@ -46,14 +47,57 @@ impl Texture {
         )?;
 
         context.transfer_manager.buffer_to_image(context, &pixels, size, &image)?;
+
+        let view = Image::build_view(
+            &context.device,
+            image.handle(),
+            vk::Format::R8G8B8A8_SRGB,
+            vk::ImageAspectFlags::COLOR
+        )?;
+
+        let sampler = Texture::build_sampler(&context.device)?;
+
         info!("+ Texture");
 
-        Ok(Self { image })
+        Ok(Self { image, view, sampler })
     }
 
     pub unsafe fn destroy(&self, device: &Device) {
+        device.logical().destroy_sampler(self.sampler, None);
+        device.logical().destroy_image_view(self.view, None);
         self.image.destroy(device);
         info!("~ Texture")
+    }
+
+    unsafe fn build_sampler(device: &Device) -> Result<vk::Sampler> {
+        let create_info = vk::SamplerCreateInfo::builder()
+            .mag_filter(vk::Filter::LINEAR)
+            .min_filter(vk::Filter::LINEAR)
+            .address_mode_u(vk::SamplerAddressMode::REPEAT)
+            .address_mode_v(vk::SamplerAddressMode::REPEAT)
+            .address_mode_w(vk::SamplerAddressMode::REPEAT)
+            .anisotropy_enable(true)  // Requires enabling device feature 'sampler_anisotropy'
+            .max_anisotropy(16.0)
+            .border_color(vk::BorderColor::INT_OPAQUE_BLACK)
+            .unnormalized_coordinates(false)
+            .compare_enable(false)
+            .compare_op(vk::CompareOp::ALWAYS)
+            .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
+            .mip_lod_bias(0.0)
+            .min_lod(0.0)
+            .max_lod(0.0);
+
+        let sampler = device.logical().create_sampler(&create_info, None)?;
+
+        Ok(sampler)
+    }
+
+    pub fn view(&self) -> vk::ImageView {
+        self.view
+    }
+
+    pub fn sampler(&self) -> vk::Sampler {
+        self.sampler
     }
 }
 

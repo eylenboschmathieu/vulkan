@@ -7,10 +7,7 @@ use vulkanalia::{
 };
 
 use crate::{
-    device::Device,
-    buffers::buffer::Vertex,
-    commands::CommandBuffer,
-    pipeline::renderpass::Renderpass
+    buffers::vertex_buffer::Vertex, commands::CommandBuffer, context::Context, device::Device, pipeline::renderpass::Renderpass
 };
 
 
@@ -18,33 +15,28 @@ use crate::{
 pub struct Pipeline {
     handle: vk::Pipeline,
     layout: vk::PipelineLayout,
-    renderpass: Renderpass,
 }
 
 impl Pipeline {
-    pub unsafe fn new(device: &Device, extent: Extent2D, format: vk::Format, descriptor_set_layouts: &[vk::DescriptorSetLayout]) -> Result<Self> {
-
-        // Renderpass
-        
-        let renderpass = Renderpass::new(device, format)?;
+    pub unsafe fn new(context: &Context, renderpass: &Renderpass, extent: Extent2D, format: vk::Format, descriptor_set_layouts: &[vk::DescriptorSetLayout]) -> Result<Self> {
         
         // Layout
 
-        let layout= Pipeline::build_layout(device, descriptor_set_layouts)?;
+        let layout= Pipeline::build_layout(&context.device, descriptor_set_layouts)?;
 
         // Create
         
-        let handle = Pipeline::build_pipeline(device, extent, format, &renderpass, layout)?;
+        let handle = Pipeline::build_pipeline(&context.device, extent, format, &renderpass, layout)?;
 
-        Ok(Self { handle, layout, renderpass })
+        Ok(Self { handle, layout })
     }
 
     unsafe fn build_pipeline(device: &Device, extent: vk::Extent2D, format: vk::Format, renderpass: &Renderpass, layout: vk::PipelineLayout) -> Result<vk::Pipeline> {
 
         // Shaders
 
-        let vert = include_bytes!("../../shaders/ubo.vert.spv");
-        let frag = include_bytes!("../../shaders/ubo.frag.spv");
+        let vert = include_bytes!("../../shaders/texture.vert.spv");
+        let frag = include_bytes!("../../shaders/texture.frag.spv");
 
         let shaders = vec![ // Used for cleanup later
             Pipeline::build_shader(device, vert)?, // Vertex shader
@@ -64,7 +56,7 @@ impl Pipeline {
 
         // Vertex input
 
-        let binding_descriptions = &[Vertex::binding_description()];
+        let binding_descriptions = &[Vertex::binding_description(0)];
         let attribute_descriptions = Vertex::attribute_description();
         let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::builder()
             .vertex_binding_descriptions(binding_descriptions)
@@ -115,6 +107,16 @@ impl Pipeline {
             .rasterization_samples(vk::SampleCountFlags::_1);
 
         // Depth and stencil
+        let depth_stencil_state = vk::PipelineDepthStencilStateCreateInfo::builder()
+            .depth_test_enable(true)
+            .depth_write_enable(true)
+            .depth_compare_op(vk::CompareOp::LESS)
+            .depth_bounds_test_enable(false)
+            .min_depth_bounds(0.0)
+            .max_depth_bounds(1.0)
+            .stencil_test_enable(true);
+            //.front(vk::StencilOpState::default()) // Optional
+            //.back(vk::StencilOpState::default()); // Optional
 
         // Color blending
 
@@ -143,6 +145,7 @@ impl Pipeline {
             .viewport_state(&viewport_state)
             .rasterization_state(&rasterization_state)
             .multisample_state(&multisampling_state)
+            .depth_stencil_state(&depth_stencil_state)
             .color_blend_state(&color_blend_state)
             .layout(layout)
             .render_pass(renderpass.handle())
@@ -171,25 +174,22 @@ impl Pipeline {
         Ok(layout)
     }
 
-    pub unsafe fn rebuild(&mut self, device: &Device, extent: vk::Extent2D, format: vk::Format) -> Result<()> {
-        self.renderpass = Renderpass::new(device, format)?;
-        self.handle = Pipeline::build_pipeline(device, extent, format, &self.renderpass, self.layout)?;
+    pub unsafe fn rebuild(&mut self, context: &Context, renderpass: &Renderpass, extent: vk::Extent2D, format: vk::Format) -> Result<()> {
+        self.handle = Pipeline::build_pipeline(&context.device, extent, format, renderpass, self.layout)?;
         Ok(())
     }
     
-    /// Cleaning means destroying the pipeline, and the renderpass. Not the layout. Useful for rebuilding a pipeline.
+    /// Cleaning means destroying the pipeline. Not the layout. Useful for rebuilding a pipeline.
     pub unsafe fn clean(&mut self, device: &Device) {
         device.logical().destroy_pipeline(self.handle, None);
         self.handle = vk::Pipeline::null();
         info!("~ Handle");
-        self.renderpass.destroy(device);
     }
 
     pub unsafe fn destroy(&mut self, device: &Device) {
         device.logical().destroy_pipeline(self.handle, None);
         self.handle = vk::Pipeline::null();
         info!("~ Handle");
-        self.renderpass.destroy(device);
         device.logical().destroy_pipeline_layout(self.layout, None);
         self.layout = vk::PipelineLayout::null();
         info!("~ Layout")
@@ -197,10 +197,6 @@ impl Pipeline {
 
     pub fn layout(&self) -> vk::PipelineLayout {
         self.layout
-    }
-
-    pub fn renderpass(&self) -> &Renderpass {
-        &self.renderpass
     }
 
     unsafe fn build_shader(device: &Device, bytecode: &[u8]) -> Result<vk::ShaderModule> {

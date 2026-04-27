@@ -1,7 +1,7 @@
 #![allow(dead_code, unsafe_op_in_unsafe_fn, unused_variables, clippy::too_many_arguments, clippy::unnecessary_wraps)]
 
 use std::{
-    ops::{Deref, DerefMut}, ptr::copy_nonoverlapping as memcpy, time::Instant
+    ffi::c_void, ops::{Deref, DerefMut}, ptr::copy_nonoverlapping as memcpy, time::Instant
 };
 use log::*;
 use anyhow::Result;
@@ -9,7 +9,7 @@ use cgmath::{vec3, Deg, point3};
 use vulkanalia::vk::{self, *};
 
 use crate::{
-    buffers::buffer::Buffer, context::Context, device::Device,
+    Destroyable, buffers::buffer::Buffer, context::Context, device::Device
 };
 
 type Mat4 = cgmath::Matrix4<f32>;
@@ -25,6 +25,7 @@ pub struct UniformBufferObject {
 #[derive(Debug)]
 pub struct UniformBuffer {
     buffer: Buffer,
+    mapped_ptr: *mut c_void,
 }
 
 impl UniformBuffer {
@@ -54,7 +55,15 @@ impl UniformBuffer {
 
         let buffer = Buffer::new(handle, memory, size)?;
 
-        Ok(Self { buffer })
+        // Persistent mapping
+        let mapped_ptr = context.device.logical().map_memory(
+            buffer.memory(),
+            0,
+            size_of::<UniformBufferObject>() as u64,
+            vk::MemoryMapFlags::empty()
+        )?;
+
+        Ok(Self { buffer, mapped_ptr })
     }
 
     pub unsafe fn update(&self, device: &Device, delta: &Instant, extent: vk::Extent2D) -> Result<()> {
@@ -71,28 +80,30 @@ impl UniformBuffer {
             vec3(0.0, 0.0, 1.0),
         );
 
-        let mut proj = cgmath::perspective(
+        let fix = Mat4::new(
+            1.0, 0.0, 0.0, 0.0,
+            0.0, -1.0, 0.0, 0.0,
+            0.0, 0.0, 1.0 / 2.0, 0.0,
+            0.0, 0.0, 1.0 / 2.0, 1.0,
+        );
+
+        let proj = fix * cgmath::perspective(
             Deg(45.0),
             extent.width as f32 / extent.height as f32,
             0.1,
             10.0,
         );
 
-        proj[1][1] *= -1.0;
-
         let ubo = UniformBufferObject { model, view, proj };
-        let dst = device.logical().map_memory(
-            self.memory(),
-            0,
-            size_of::<UniformBufferObject>() as u64,
-            vk::MemoryMapFlags::empty()
-        )?;
 
-        memcpy(&ubo, dst.cast(), 1);
-
-        device.logical().unmap_memory(self.memory());
+        memcpy(&ubo, self.mapped_ptr.cast(), 1);
 
         Ok(())
+    }
+
+    pub unsafe fn destroy(&mut self, device: &Device) {
+        device.logical().unmap_memory(self.memory());
+        self.buffer.destroy(device);
     }
 }
 

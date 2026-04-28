@@ -141,7 +141,7 @@ pub struct Blitz {
     vertex_buffers: VertexBuffer,
     vertex_buffer: VertexBufferId,
     index_buffers: IndexBuffer,
-    index_buffer: IndexBufferId,  // Nothing more than an id to an index buffer
+    index_buffer: IndexBufferId,
     uniform_buffers: UniformBuffer,
     uniform_buffer_: Vec<UniformBufferId>,
     texture: Texture,
@@ -162,7 +162,6 @@ impl Blitz {
             self.index_buffers.bind(&self.context.device, command_buffer, self.index_buffer);
             self.descriptor_pool.bind(&self.context.device, &command_buffer, &self.pipeline, image_index);
             self.index_buffers.draw(&self.context.device, command_buffer, self.index_buffer, Some(0));
-            // self.device.logical().cmd_draw(command_buffer.handle(), 3, 1, 0, 0);
 
             command_buffer.end_recording(&self.context.device, &self.renderpass)?;
         }
@@ -355,7 +354,7 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
 
     let sync = Synchronization::new(&context, &swapchain)?; // Need to reorder this since I need this to make changes to the renderpass
 
-    let mut staging_buffers = StagingBuffer::new(&context, 1024 * 1024 * 1024 * 4)?; // 4mb
+    let mut staging_buffers = StagingBuffer::new(&context, 1024 * 1024 * 4)?; // 4mb
     let vbuffer_size = size_of::<Vertex>() * VERTICES.len() * 2;
     let vertex_buffers = VertexBuffer::new(&context, vbuffer_size as vk::DeviceSize)?;
     let index_buffers = IndexBuffer::new(&context, INDICES.len())?;

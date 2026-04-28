@@ -23,7 +23,7 @@ use vulkanalia::{
 use crate::{
     buffers::{
         buffer::{INDICES, VERTICES},
-        index_buffer::IndexBuffer,
+        index_buffer::{IndexBuffer, IndexBufferId},
         staging_buffer::StagingBuffer,
         uniform_buffer::UniformBuffer,
         vertex_buffer::{Vertex, VertexBuffer}
@@ -133,7 +133,8 @@ pub struct Blitz {
     descriptor_set_layout: DescriptorSetLayout,
     descriptor_pool: DescriptorPool,
     vertex_buffer: VertexBuffer,
-    index_buffer: IndexBuffer,
+    index_buffers: IndexBuffer,
+    index_buffer: IndexBufferId,  // Nothing more than an id to an index buffer
     uniform_buffers: Vec<UniformBuffer>,
     texture: Texture,
 }
@@ -150,9 +151,9 @@ impl Blitz {
 
             self.pipeline.bind(&self.context.device, command_buffer);
             self.vertex_buffer.bind(&self.context.device, command_buffer);
-            self.index_buffer.bind(&self.context.device, command_buffer);
+            self.index_buffers.bind(&self.context.device, command_buffer, self.index_buffer);
             self.descriptor_pool.bind(&self.context.device, &command_buffer, &self.pipeline, image_index);
-            self.context.device.logical().cmd_draw_indexed(command_buffer.handle(), self.index_buffer.count(), 1, 0, 0, 0);
+            self.index_buffers.draw(&self.context.device, command_buffer, self.index_buffer, Some(0));
             // self.device.logical().cmd_draw(command_buffer.handle(), 3, 1, 0, 0);
 
             command_buffer.end_recording(&self.context.device, &self.renderpass)?;
@@ -176,8 +177,16 @@ impl Blitz {
 
         staging_buffer.unmap(&self.context.device);
 
+        let index_buffer_alloc_info = self.index_buffers.alloc_info(self.index_buffer as usize);
+
         staging_buffer.copy_to_buffer(&self.context.device, command_buffer, &self.vertex_buffer)?;  // Copy data from staging buffer to vertex buffer
-        staging_buffer.copy_to_buffer_at(&self.context.device, command_buffer, &self.index_buffer, vertices_size)?;  // Copy data from staging buffer to index buffer
+        staging_buffer.copy_to_buffer_at(
+            &self.context.device,
+            command_buffer,
+            &self.index_buffers,
+            index_buffer_alloc_info,
+            vertices_size
+        )?;  // Copy data from staging buffer to index buffer
         
         command_buffer.end_one_time_submit(&self.context.device, self.context.queue_manager.transfer(), None)?;
         staging_buffer.destroy(&self.context.device);
@@ -250,7 +259,7 @@ impl Blitz {
         for uniform_buffer in &mut self.uniform_buffers {
             uniform_buffer.destroy(&self.context.device);
         }
-        self.index_buffer.destroy(&self.context.device);
+        self.index_buffers.destroy(&self.context.device);
         self.vertex_buffer.destroy(&self.context.device);
         self.pipeline.destroy(&self.context.device);  // Contains renderpass
         self.renderpass.destroy(&self.context.device);
@@ -331,7 +340,7 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
 
     let sync = Synchronization::new(&context, &swapchain)?; // Need to reorder this since I need this to make changes to the renderpass
     let vertex_buffer = VertexBuffer::new(&context, &VERTICES)?;
-    let index_buffer = IndexBuffer::new(&context, &INDICES)?;
+    let index_buffers = IndexBuffer::new(&context, INDICES.len())?;
     let mut uniform_buffers = vec![];
     for _ in 0..swapchain.framebuffer_count() {
         uniform_buffers.push(UniformBuffer::new(&context)?);
@@ -354,7 +363,8 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
         renderpass,
         pipeline,
         vertex_buffer,
-        index_buffer,
+        index_buffers,
+        index_buffer: usize::MAX,
         uniform_buffers,
         texture,
     })

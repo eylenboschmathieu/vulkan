@@ -55,14 +55,14 @@ impl Buffer {
         Ok(handle)
     }
 
-    pub unsafe fn create_memory(context: &Context, buffer: vk::Buffer, properties: vk::MemoryPropertyFlags) -> Result<vk::DeviceMemory> {
-        let requirements = context.device.logical().get_buffer_memory_requirements(buffer);
+    pub unsafe fn create_memory(context: &Context, requirements: vk::MemoryRequirements, properties: vk::MemoryPropertyFlags) -> Result<vk::DeviceMemory> {
         let memory_info = vk::MemoryAllocateInfo::builder()
             .allocation_size(requirements.size)
             .memory_type_index(Buffer::get_memory_type_index(
                 context,
                 properties,
-                requirements)?);
+                requirements)?
+            );
 
         let memory = context.device.logical().allocate_memory(&memory_info, None)?;
 

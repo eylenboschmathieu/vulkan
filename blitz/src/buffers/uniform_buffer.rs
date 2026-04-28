@@ -109,7 +109,9 @@ impl UniformBuffer {
 
         let ubo = UniformBufferObject { model, view, proj };
 
-        memcpy(&ubo, self.mapped_ptr.cast(), 1);
+        let offset = self.alloc_list[id].offset;
+
+        memcpy(&ubo, self.mapped_ptr.add(offset).cast() , 1);
 
         Ok(())
     }

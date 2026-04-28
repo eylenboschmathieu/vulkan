@@ -1,6 +1,6 @@
 #![allow(dead_code, unsafe_op_in_unsafe_fn, unused_variables, clippy::too_many_arguments, clippy::unnecessary_wraps)]
 
-use std::ops::{Deref, DerefMut, Index};
+use std::ops::{Deref, DerefMut};
 
 use log::*;
 use anyhow::{anyhow, Result};
@@ -27,7 +27,7 @@ pub struct IndexBufferData { pub allocation: Allocation, pub count: usize }
 pub struct IndexBuffer {
     buffer: Buffer,
     allocator: Allocator,
-    alloc_list: Vec<IndexBufferData>,
+    buffer_list: Vec<IndexBufferData>,
     free_list: Vec<IndexBufferId>,
 }
 
@@ -64,17 +64,17 @@ impl IndexBuffer {
 
         let allocator = Allocator::new(size, requirements.alignment as usize);
 
-        Ok(Self { buffer, allocator, alloc_list: vec![], free_list: vec![] })
+        Ok(Self { buffer, allocator, buffer_list: vec![], free_list: vec![] })
     }
 
     pub fn alloc(&mut self, count: usize) -> Result<IndexBufferId> {
         if let Some(allocation) = self.allocator.alloc(count * size_of::<IndexType>()) {
             if self.free_list.is_empty() {
-                self.alloc_list.push(IndexBufferData { allocation, count });
-                return Ok(self.alloc_list.len() - 1);
+                self.buffer_list.push(IndexBufferData { allocation, count });
+                return Ok(self.buffer_list.len() - 1);
             } else {
                 let id = self.free_list.pop().unwrap();
-                self.alloc_list[id] = IndexBufferData { allocation, count };
+                self.buffer_list[id] = IndexBufferData { allocation, count };
                 return Ok(id);
             }
         };
@@ -83,17 +83,17 @@ impl IndexBuffer {
     }
 
     pub fn free(&mut self, id: IndexBufferId) {
-        let data = &self.alloc_list[id];
+        let data = &self.buffer_list[id];
         self.allocator.free(data.allocation);
         self.free_list.push(id);
-        self.alloc_list[id] = IndexBufferData { allocation: Allocation { offset: 0, size: 0 }, count: 0 }
+        self.buffer_list[id] = IndexBufferData { allocation: Allocation { offset: 0, size: 0 }, count: 0 }
     }
 
     pub unsafe fn bind(&self, device: &Device, command_buffer: &CommandBuffer, id: usize) {
         device.logical().cmd_bind_index_buffer(
             command_buffer.handle(),
             self.handle(),
-            self.alloc_list[id].allocation.offset as u64,
+            self.buffer_list[id].allocation.offset as u64,
             vk::IndexType::UINT16);
     }
 
@@ -105,19 +105,19 @@ impl IndexBuffer {
 
         device.logical().cmd_draw_indexed(
             command_buffer.handle(),
-            self.alloc_list[id].count as u32,
+            self.buffer_list[id].count as u32,
             1,
-            self.alloc_list[id].allocation.offset as u32,
+            self.buffer_list[id].allocation.offset as u32,
             vertex_offset,
             0);
     }
 
     pub fn count(&self, id: IndexBufferId) -> usize {
-        self.alloc_list[id].count
+        self.buffer_list[id].count
     }
 
     pub fn alloc_info(&self, id: IndexBufferId) -> Allocation {
-        self.alloc_list[id].allocation
+        self.buffer_list[id].allocation
     }
 }
 

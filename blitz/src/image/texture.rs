@@ -10,7 +10,7 @@ use anyhow::Result;
 
 use crate::{
     buffers::{
-        buffer::TransferDst,
+        buffer::TransferDst, staging_buffer::StagingBuffer,
     }, context::Context, device::Device, image::Image
 };
 
@@ -22,7 +22,7 @@ pub struct Texture {
 }
 
 impl Texture {
-    pub unsafe fn new(context: &Context, path: &str) -> Result<Self> {
+    pub unsafe fn new(context: &Context, sbuffer: &mut StagingBuffer, path: &str) -> Result<Self> {
         let file = File::open(path)?;
 
         let decoder = png::Decoder::new(file);
@@ -46,7 +46,7 @@ impl Texture {
             vk::MemoryPropertyFlags::DEVICE_LOCAL,
         )?;
 
-        context.transfer_manager.buffer_to_image(context, &pixels, size, &image)?;
+        context.transfer_manager.buffer_to_image(context, sbuffer, &pixels, size, &image)?; // TODO sbuffer will be part of context.resource_manager
 
         let view = Image::build_view(
             &context.device,

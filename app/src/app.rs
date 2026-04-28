@@ -16,7 +16,7 @@ pub struct App{
 impl App {
     /// Create our Vulkan app.
     pub unsafe fn new(window: &Window) -> Result<Self> {
-        let blitz = blitz::init(window)?;
+        let mut blitz = blitz::init(window)?;
 
         blitz.upload()?;
         blitz.record()?;

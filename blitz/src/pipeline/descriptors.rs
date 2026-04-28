@@ -4,7 +4,9 @@ use vulkanalia::vk::{self, *};
 use log::*;
 use anyhow::Result;
 
-use crate::{buffers::uniform_buffer::UniformBuffer, commands::CommandBuffer, device::Device, image::Texture, pipeline::Pipeline};
+use crate::{
+    buffers::Allocation, commands::CommandBuffer, device::Device, image::Texture, pipeline::Pipeline
+};
 
 type Mat4 = cgmath::Matrix4<f32>;
 
@@ -55,6 +57,8 @@ type Mat4 = cgmath::Matrix4<f32>;
                 pool.uniform_pool_count: 6 -> 5
                 pool.combined_image_sampler: 4 -> 2
 */
+
+pub struct DescriptorSetUpdateInfo { pub buffer: vk::Buffer, pub uniforms: Vec<Allocation> }
 
 #[derive(Debug)]
 pub struct DescriptorSetLayout {
@@ -142,20 +146,20 @@ impl DescriptorPool {
         Ok(())
     }
 
-    pub unsafe fn update(&self, device: &Device, buffers: &[UniformBuffer], texture: &Texture) {
+    pub unsafe fn update(&self, device: &Device, update_info: DescriptorSetUpdateInfo, texture: &Texture) {
         // This method looks to be a better fit for descriptor set layouts
 
         let mut descriptor_writes: Vec<vk::WriteDescriptorSet> = vec![];
 
         // Uniform buffer
 
-        let buffer_infos: Vec<vk::DescriptorBufferInfo> = buffers
+        let buffer_infos: Vec<vk::DescriptorBufferInfo> = update_info.uniforms
             .iter()
-            .map(|uniform_buffer| {
+            .map(|uniform_info| {
                 vk::DescriptorBufferInfo::builder()
-                    .buffer(uniform_buffer.handle())
-                    .offset(0)
-                    .range(vk::WHOLE_SIZE)
+                    .buffer(update_info.buffer)
+                    .offset(uniform_info.offset as u64)
+                    .range(uniform_info.size as u64)
                     .build()
             })
             .collect();
@@ -176,7 +180,7 @@ impl DescriptorPool {
 
         // Image
 
-        let image_infos: Vec<vk::DescriptorImageInfo> = (0..buffers.len())
+        let image_infos: Vec<vk::DescriptorImageInfo> = (0..update_info.uniforms.len())
             .map(|_| {
                 vk::DescriptorImageInfo::builder()
                     .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)

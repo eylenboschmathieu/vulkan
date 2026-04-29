@@ -6,14 +6,13 @@ use log::*;
 use anyhow::{anyhow, Result};
 use vulkanalia::vk::{self, *};
 use crate::{
-    buffers::{
+    resources::buffers::{
         buffer::{
             Buffer, TransferDst,
         },
         freelist::{Allocator, Allocation},
     },
     commands::CommandBuffer,
-    context::Context,
     device::Device,
 };
 
@@ -33,13 +32,13 @@ pub struct IndexBuffer {
 
 // Need to incorporate this into a resource manager at some point
 impl IndexBuffer {
-    pub unsafe fn new(context: &Context, max_indice_count: usize) -> Result<Self> {
-        let size = size_of::<IndexType>() * max_indice_count;  // We're going with the assumption indices ur u16
+    pub unsafe fn new(device: &Device, count: usize) -> Result<Self> {
+        let size = size_of::<IndexType>() * count;  // We're going with the assumption indices ur u16
 
         // Buffer
         
         let handle = Buffer::create_buffer(
-            &context.device,
+            device,
             size as u64,
             vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST
         )?;
@@ -47,10 +46,10 @@ impl IndexBuffer {
 
         // Memory
 
-        let requirements = context.device.logical().get_buffer_memory_requirements(handle);
+        let requirements = device.logical().get_buffer_memory_requirements(handle);
 
         let memory = Buffer::create_memory(
-            context,
+            device,
             requirements,
             vk::MemoryPropertyFlags::DEVICE_LOCAL
         )?;
@@ -58,7 +57,7 @@ impl IndexBuffer {
 
         // Binding
 
-        context.device.logical().bind_buffer_memory(handle, memory, 0)?;
+        device.logical().bind_buffer_memory(handle, memory, 0)?;
 
         let buffer = Buffer::new(handle, memory, size as u64)?;
 

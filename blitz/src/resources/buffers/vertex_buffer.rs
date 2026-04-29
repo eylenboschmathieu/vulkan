@@ -9,9 +9,9 @@ use anyhow::{anyhow, Result};
 use vulkanalia::vk::{self, *};
 
 use crate::{
-    buffers::{buffer::{
+    resources::buffers::{buffer::{
         Buffer, TransferDst,
-    }, freelist::{Allocation, Allocator},}, commands::CommandBuffer, context::Context, device::Device,
+    }, freelist::{Allocation, Allocator},}, commands::CommandBuffer, device::Device,
 };
 
 type Vec2 = cgmath::Vector2<f32>;
@@ -74,12 +74,12 @@ pub struct VertexBuffer {
 }
 
 impl VertexBuffer {
-    pub unsafe fn new(context: &Context, size: vk::DeviceSize) -> Result<Self> {
+    pub unsafe fn new(device: &Device, size: vk::DeviceSize) -> Result<Self> {
 
         // Buffer
         
         let handle = Buffer::create_buffer(
-            &context.device,
+            device,
             size,
             vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST
         )?;
@@ -87,10 +87,10 @@ impl VertexBuffer {
 
         // Memory
 
-        let requirements = context.device.logical().get_buffer_memory_requirements(handle);
+        let requirements = device.logical().get_buffer_memory_requirements(handle);
 
         let memory = Buffer::create_memory(
-            context,
+            device,
             requirements,
             vk::MemoryPropertyFlags::DEVICE_LOCAL
         )?;
@@ -98,7 +98,7 @@ impl VertexBuffer {
 
         // Binding
 
-        context.device.logical().bind_buffer_memory(handle, memory, 0)?;
+        device.logical().bind_buffer_memory(handle, memory, 0)?;
 
         let buffer = Buffer::new(handle, memory, size)?;
 

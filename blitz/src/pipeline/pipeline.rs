@@ -7,7 +7,11 @@ use vulkanalia::{
 };
 
 use crate::{
-    buffers::vertex_buffer::Vertex, commands::CommandBuffer, context::Context, device::Device, pipeline::renderpass::Renderpass
+    resources::buffers::vertex_buffer::Vertex,
+    commands::CommandBuffer,
+    context::Context,
+    device::Device,
+    pipeline::renderpass::Renderpass
 };
 
 

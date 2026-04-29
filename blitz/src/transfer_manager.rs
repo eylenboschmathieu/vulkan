@@ -7,7 +7,14 @@ use anyhow::Result;
 use vulkanalia::vk::{self, *};
 
 use crate::{
-    buffers::staging_buffer::{StagingBuffer, StagingBufferId}, context::Context, device::Device, image::{Image, ImageMemoryBarrierQueueFamilyIndices}
+    context::Context,
+    device::Device,
+    image::{
+        Image,
+        ImageMemoryBarrierQueueFamilyIndices
+    }, resources::{
+        buffers::staging_buffer::StagingBufferId
+    },
 };
 
 #[derive(Debug)]
@@ -28,12 +35,12 @@ impl TransferManager {
         info!("~ TransferManager")
     }
 
-    pub unsafe fn buffer_to_image(&self, context: &Context, sbuffer: &mut StagingBuffer, src: &[u8], size: u64, image: &Image) -> Result<()> {
-        
+    pub unsafe fn buffer_to_image(&self, context: &mut Context, src: &[u8], size: u64, image: &Image) -> Result<()> {
+        let rm = &mut context.resource_manager;
         // Data to StagingBuffer
 
-        let id: StagingBufferId = sbuffer.alloc(size as usize)?;
-        sbuffer.copy_to_staging(&context.device, id, &src)?;
+        let id: StagingBufferId = rm.staging_buffers_mut().alloc(size as usize)?;
+        rm.staging_buffers().copy_to_staging(&context.device, id, &src)?;
         
         // Data from StagingBuffer to Image
 
@@ -49,7 +56,7 @@ impl TransferManager {
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
             None,
         )?;
-        sbuffer.copy_to_image(&context.device, command_buffer, id, &image)?;
+        rm.staging_buffers().copy_to_image(&context.device, command_buffer, id, &image)?;
         image.transition_image_layout(
             &context.device,
             command_buffer,
@@ -62,7 +69,7 @@ impl TransferManager {
             }),
         )?;
         command_buffer.end_one_time_submit(&context.device, context.queue_manager.transfer(), Some(self.semaphore))?;
-        sbuffer.free(id);
+        rm.staging_buffers_mut().free(id);
 
         // Ownership transfer
 

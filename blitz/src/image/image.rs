@@ -7,7 +7,7 @@ use log::*;
 use anyhow::{anyhow, Result};
 
 use crate::{
-    buffers::buffer::{
+    resources::buffers::buffer::{
             Buffer, TransferDst
         }, commands::CommandBuffer, context::Context, device::Device,
 };
@@ -28,7 +28,7 @@ pub struct Image {
 
 impl Image {
     pub unsafe fn new(
-        context: &Context,
+        device: &Device,
         width: u32,
         height: u32,
         format: vk::Format,
@@ -36,17 +36,17 @@ impl Image {
         usage: vk::ImageUsageFlags,
         properties: vk::MemoryPropertyFlags,
     ) -> Result<Self> {
-        let handle = Image::build_image(context, width, height, format, tiling, usage)?;
-        let memory = Image::build_memory(context, handle, properties)?;
+        let handle = Image::build_image(device, width, height, format, tiling, usage)?;
+        let memory = Image::build_memory(device, handle, properties)?;
         let size = (width * height * 4) as u64;
 
-        context.device.logical().bind_image_memory(handle, memory, 0)?;
+        device.logical().bind_image_memory(handle, memory, 0)?;
 
         Ok(Self { handle, memory, width, height, size })
     }
 
-    unsafe fn build_image(context: &Context, width: u32, height: u32, format: vk::Format, tiling: vk::ImageTiling, usage: vk::ImageUsageFlags) -> Result<vk::Image> {
-        let device_queue_family_indices = context.device.queue_family_indices();
+    unsafe fn build_image(device: &Device, width: u32, height: u32, format: vk::Format, tiling: vk::ImageTiling, usage: vk::ImageUsageFlags) -> Result<vk::Image> {
+        let device_queue_family_indices = device.queue_family_indices();
         // let queue_family_indices = &[device_queue_family_indices.transfer(), device_queue_family_indices.graphics()];
 
         let create_info = vk::ImageCreateInfo::builder()
@@ -72,23 +72,23 @@ impl Image {
             vk::ImageLayout::PREINITIALIZED – Not usable by the GPU, but the first transition will preserve the texels.
         */
 
-        let handle = context.device.logical().create_image(&create_info, None)?;
+        let handle = device.logical().create_image(&create_info, None)?;
         info!("+ Handle");
 
         Ok(handle)
     }
 
-    unsafe fn build_memory(context: &Context, image: vk::Image, properties: vk::MemoryPropertyFlags) -> Result<vk::DeviceMemory> {
-        let requirements = context.device.logical().get_image_memory_requirements(image);
+    unsafe fn build_memory(device: &Device, image: vk::Image, properties: vk::MemoryPropertyFlags) -> Result<vk::DeviceMemory> {
+        let requirements = device.logical().get_image_memory_requirements(image);
         let allocate_info = vk::MemoryAllocateInfo::builder()
             .allocation_size(requirements.size)
             .memory_type_index(Buffer::get_memory_type_index(
-                context,
+                device,
                 properties,
                 requirements)?
             );
 
-        let memory = context.device.logical().allocate_memory(&allocate_info, None)?;
+        let memory = device.logical().allocate_memory(&allocate_info, None)?;
         info!("+ Memory");
 
         Ok(memory)
@@ -291,7 +291,7 @@ impl DepthBuffer {
         let format = DepthBuffer::get_depth_format(context)?;
 
         let image = Image::new(
-            context,
+            &context.device,
             width, height,
             format,
             vk::ImageTiling::OPTIMAL,

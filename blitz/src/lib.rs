@@ -8,7 +8,7 @@ mod transfer_manager;
 mod swapchain;
 mod pipeline;
 mod commands;
-mod buffers;
+mod resources;
 mod image;
 
 use std::{ops::Index, sync::atomic::{AtomicBool, Ordering}, time::Instant};
@@ -21,24 +21,20 @@ use vulkanalia::{
 };
 
 use crate::{
-    buffers::{
-        buffer::{INDICES, VERTICES},
-        index_buffer::{IndexBuffer, IndexBufferId},
-        staging_buffer::{StagingBuffer, StagingBufferId},
-        uniform_buffer::{UniformBuffer, UniformBufferId},
-        vertex_buffer::{Vertex, VertexBuffer, VertexBufferId}
-    },
-    context::Context,
-    device::Device,
-    image::{DepthBuffer, Texture},
-    pipeline::{
+    context::Context, device::Device, image::{DepthBuffer, Texture}, pipeline::{
         Pipeline,
         Renderpass,
         descriptors::{
             DescriptorPool,
             DescriptorSetLayout, DescriptorSetUpdateInfo
         },
-    }, swapchain::Swapchain
+    }, resources::buffers::{
+            buffer::{INDICES, VERTICES},
+            index_buffer::IndexBufferId,
+            staging_buffer::StagingBufferId,
+            uniform_buffer::UniformBufferId,
+            vertex_buffer::{Vertex, VertexBufferId}
+        }, swapchain::Swapchain, transfer_manager::TransferManager
 };
 
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
@@ -130,6 +126,7 @@ impl Index<usize> for Synchronization {
 #[derive(Debug)]
 pub struct Blitz {
     context: Context,
+    transfer_manager: TransferManager,
     swapchain: Swapchain,
     sync: Synchronization,
     depth_buffer: DepthBuffer,
@@ -137,13 +134,9 @@ pub struct Blitz {
     pipeline: Pipeline,
     descriptor_set_layout: DescriptorSetLayout,
     descriptor_pool: DescriptorPool,
-    staging_buffers: StagingBuffer,
-    vertex_buffers: VertexBuffer,
     vertex_buffer: VertexBufferId,
-    index_buffers: IndexBuffer,
     index_buffer: IndexBufferId,
-    uniform_buffers: UniformBuffer,
-    uniform_buffer_: Vec<UniformBufferId>,
+    uniform_buffers: Vec<UniformBufferId>,
     texture: Texture,
 }
 
@@ -158,10 +151,10 @@ impl Blitz {
             )?;
 
             self.pipeline.bind(&self.context.device, command_buffer);
-            self.vertex_buffers.bind(&self.context.device, command_buffer, self.vertex_buffer);
-            self.index_buffers.bind(&self.context.device, command_buffer, self.index_buffer);
+            self.context.resource_manager.vertex_buffers().bind(&self.context.device, command_buffer, self.vertex_buffer);
+            self.context.resource_manager.index_buffers().bind(&self.context.device, command_buffer, self.index_buffer);
             self.descriptor_pool.bind(&self.context.device, &command_buffer, &self.pipeline, image_index);
-            self.index_buffers.draw(&self.context.device, command_buffer, self.index_buffer, Some(0));
+            self.context.resource_manager.index_buffers().draw(&self.context.device, command_buffer, self.index_buffer, Some(0));
 
             command_buffer.end_recording(&self.context.device, &self.renderpass)?;
         }
@@ -173,34 +166,36 @@ impl Blitz {
         let vertices_size = (size_of::<Vertex>() * VERTICES.len()) as u64;
         let indices_size = (size_of::<u16>() * INDICES.len()) as u64;
 
-        let id: StagingBufferId = self.staging_buffers.alloc((vertices_size + indices_size) as usize)?;
-        self.vertex_buffer = self.vertex_buffers.alloc(vertices_size as usize)?;
-        self.index_buffer = self.index_buffers.alloc(INDICES.len() as usize)?;
+        let rm = &mut self.context.resource_manager;
+
+        let id: StagingBufferId = rm.staging_buffers_mut().alloc((vertices_size + indices_size) as usize)?;
+        self.vertex_buffer = rm.vertex_buffers_mut().alloc(vertices_size as usize)?;
+        self.index_buffer = rm.index_buffers_mut().alloc(INDICES.len() as usize)?;
 
         let command_buffer = &self.context.command_manager.begin_one_time_submit(&self.context.device, vk::QueueFlags::TRANSFER)?;
 
-        self.staging_buffers.copy_to_staging(&self.context.device, id, &VERTICES)?;  // Copy vertices into staging buffer
-        self.staging_buffers.copy_to_staging_at(&self.context.device, id, &INDICES, vertices_size as usize)?;  // Copy indices into staging buffer
+        rm.staging_buffers().copy_to_staging(&self.context.device, id, &VERTICES)?;  // Copy vertices into staging buffer
+        rm.staging_buffers().copy_to_staging_at(&self.context.device, id, &INDICES, vertices_size as usize)?;  // Copy indices into staging buffer
 
-        let vertex_buffer_alloc_info = self.vertex_buffers.alloc_info(self.vertex_buffer as usize);
-        let index_buffer_alloc_info = self.index_buffers.alloc_info(self.index_buffer as usize);
+        let vertex_buffer_alloc_info = rm.vertex_buffers().alloc_info(self.vertex_buffer as usize);
+        let index_buffer_alloc_info = rm.index_buffers().alloc_info(self.index_buffer as usize);
 
-        self.staging_buffers.copy_to_buffer(&self.context.device,
+        rm.staging_buffers().copy_to_buffer(&self.context.device,
             command_buffer,
-            &self.vertex_buffers,
+            rm.vertex_buffers(),
             vertex_buffer_alloc_info,
             0,
         )?;  // Copy data from staging buffer to vertex buffer
-        self.staging_buffers.copy_to_buffer(
+        rm.staging_buffers().copy_to_buffer(
             &self.context.device,
             command_buffer,
-            &self.index_buffers,
+            rm.index_buffers(),
             index_buffer_alloc_info,
             vertices_size
         )?;  // Copy data from staging buffer to index buffer
         
         command_buffer.end_one_time_submit(&self.context.device, self.context.queue_manager.transfer(), None)?;
-        self.staging_buffers.free(id);
+        rm.staging_buffers_mut().free(id);
         Ok(())
     }
 
@@ -226,7 +221,7 @@ impl Blitz {
             self.context.device.logical().wait_for_fences(&[self.sync.images_in_flight_fence(image_index)], true, u64::MAX)?;
         }
         self.sync.update_image_in_flight_fence(image_index);
-        self.uniform_buffers.update(&self.context.device, self.uniform_buffer_[image_index], &delta, self.swapchain.extent())?;
+        self.context.resource_manager.uniform_buffers().update(&self.context.device, self.uniform_buffers[image_index], &delta, self.swapchain.extent())?;
 
         // Submit
 
@@ -267,10 +262,6 @@ impl Blitz {
         self.context.device.logical().device_wait_idle().unwrap();
 
         self.texture.destroy(&self.context.device);
-        self.uniform_buffers.destroy(&self.context.device);
-        self.index_buffers.destroy(&self.context.device);
-        self.vertex_buffers.destroy(&self.context.device);
-        self.staging_buffers.destroy(&self.context.device);
         self.pipeline.destroy(&self.context.device);  // Contains renderpass
         self.renderpass.destroy(&self.context.device);
         self.descriptor_set_layout.destroy(&self.context.device);
@@ -278,6 +269,7 @@ impl Blitz {
         self.sync.destroy(&self.context.device);
         self.depth_buffer.destroy(&self.context.device);
         self.swapchain.destroy(&self.context.device);
+        self.transfer_manager.destroy(&self.context.device);
         self.context.destroy();
     }
 
@@ -303,18 +295,21 @@ impl Blitz {
         self.context.command_manager.graphics_mut().allocate_buffers(&self.context.device, self.swapchain.framebuffer_count());
 
         let mut new_uniform_buffers = vec![];
-        self.uniform_buffer_
+        self.uniform_buffers
             .iter()
             .for_each(|id| {
-                self.uniform_buffers.free(*id);
-                new_uniform_buffers.push(self.uniform_buffers.alloc().unwrap());
+                self.context.resource_manager.uniform_buffers_mut().free(*id);
+                new_uniform_buffers.push(self.context.resource_manager.uniform_buffers_mut().alloc().unwrap());
         });
-        self.uniform_buffer_ = new_uniform_buffers;
+        self.uniform_buffers = new_uniform_buffers;
         self.descriptor_pool = DescriptorPool::new(&self.context.device, self.swapchain.framebuffer_count() as u32)?;
         self.descriptor_pool.allocate_descriptor_sets(&self.context.device, &self.descriptor_set_layout, self.swapchain.framebuffer_count())?;
 
 
-        let descriptor_set_update_info = DescriptorSetUpdateInfo { buffer: self.uniform_buffers.handle(), uniforms: self.uniform_buffers.get_data() };
+        let descriptor_set_update_info = DescriptorSetUpdateInfo { 
+            buffer: self.context.resource_manager.uniform_buffers().handle(),
+            uniforms: self.context.resource_manager.uniform_buffers().get_data()
+        };
         self.descriptor_pool.update(&self.context.device, descriptor_set_update_info, &self.texture);
 
         // Re-record command buffers
@@ -333,6 +328,7 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
 
     info!("Blitz::init");
     let mut context = Context::new(window)?;
+    let transfer_manager = TransferManager::new(&context.device)?;
     let mut swapchain = Swapchain::new(window, &context.instance, &context.device)?;
     context.command_manager.allocate_graphics_buffers(&context.device, swapchain.framebuffer_count())?;
 
@@ -351,30 +347,25 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
     )?;
     swapchain.create_framebuffers(&context.device, &renderpass, &depth_buffer);
 
+    let sync = Synchronization::new(&context, &swapchain)?;
 
-    let sync = Synchronization::new(&context, &swapchain)?; // Need to reorder this since I need this to make changes to the renderpass
-
-    let mut staging_buffers = StagingBuffer::new(&context, 1024 * 1024 * 4)?; // 4mb
-    let vbuffer_size = size_of::<Vertex>() * VERTICES.len() * 2;
-    let vertex_buffers = VertexBuffer::new(&context, vbuffer_size as vk::DeviceSize)?;
-    let index_buffers = IndexBuffer::new(&context, INDICES.len())?;
-    let mut uniform_buffers = UniformBuffer::new(&context, swapchain.framebuffer_count())?;
-    let mut uniform_buffer_ = vec![];
+    let mut uniform_buffers = vec![];
     for _ in 0..swapchain.framebuffer_count() {
-        uniform_buffer_.push(uniform_buffers.alloc()?);
+        uniform_buffers.push(context.resource_manager.uniform_buffers_mut().alloc()?);
     }
-    let texture = Texture::new(&context, &mut staging_buffers,"/home/krozu/Documents/Code/Rust/vulkan/app/img/image.png")?;
+    let texture = Texture::new(&mut context, &transfer_manager, "/home/krozu/Documents/Code/Rust/vulkan/app/img/image.png")?;
 
     let mut descriptor_pool = DescriptorPool::new(&context.device, swapchain.framebuffer_count() as u32)?;
     descriptor_pool.allocate_descriptor_sets(&context.device, &descriptor_set_layout, swapchain.framebuffer_count())?;
 
-    let descriptor_set_update_info = DescriptorSetUpdateInfo { buffer: uniform_buffers.handle(), uniforms: uniform_buffers.get_data() };
+    let descriptor_set_update_info = DescriptorSetUpdateInfo { buffer: context.resource_manager.uniform_buffers().handle(), uniforms: context.resource_manager.uniform_buffers().get_data() };
     descriptor_pool.update(&context.device, descriptor_set_update_info, &texture);
 
     // Create
 
     Ok(Blitz {
         context,
+        transfer_manager,
         swapchain,
         sync,
         depth_buffer,
@@ -382,13 +373,9 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
         descriptor_set_layout,
         renderpass,
         pipeline,
-        staging_buffers,
-        vertex_buffers,
         vertex_buffer: usize::MAX,
-        index_buffers,
         index_buffer: usize::MAX,
         uniform_buffers,
-        uniform_buffer_,
         texture,
     })
 }

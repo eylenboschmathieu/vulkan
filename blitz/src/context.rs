@@ -8,7 +8,11 @@ use vulkanalia::{
 use winit::window::Window;
 
 use crate::{
-    commands::CommandManager, device::Device, instance::Instance, queues::QueueManager, transfer_manager::TransferManager
+    commands::CommandManager,
+    device::Device,
+    instance::Instance,
+    queues::QueueManager,
+    resources::resource_manager::ResourceManager,
 };
 
 #[derive(Debug)]
@@ -18,7 +22,7 @@ pub struct Context {
     pub device: Device,
     pub queue_manager: QueueManager,
     pub command_manager: CommandManager,
-    pub transfer_manager: TransferManager,
+    pub resource_manager: ResourceManager,
 }
 
 impl Context {
@@ -30,14 +34,14 @@ impl Context {
         let device = Device::new(&entry, window, &instance)?;
         let queue_manager = QueueManager::new(&device)?;
         let command_manager = CommandManager::new(&instance, &device)?;
-        let transfer_manager = TransferManager::new(&device)?;
+        let resource_manager = ResourceManager::new(&device)?;
 
-        Ok(Self { entry, instance, device, queue_manager, command_manager, transfer_manager })
+        Ok(Self { entry, instance, device, queue_manager, command_manager, resource_manager })
     }
 
     pub unsafe fn destroy(&mut self) {
         self.command_manager.destroy(&self.device);
-        self.transfer_manager.destroy(&self.device);
+        self.resource_manager.destroy(&self.device);
         self.device.destroy();
         self.instance.destroy();
         info!("~ Context");

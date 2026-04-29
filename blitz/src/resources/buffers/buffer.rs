@@ -6,7 +6,7 @@ use log::*;
 use anyhow::Result;
 use vulkanalia::vk::{self, *};
 use crate::{
-    buffers::vertex_buffer::Vertex, context::Context, device::Device
+    resources::buffers::vertex_buffer::Vertex, device::Device
 };
 
 pub const VERTICES: [Vertex; 8] = [
@@ -55,16 +55,16 @@ impl Buffer {
         Ok(handle)
     }
 
-    pub unsafe fn create_memory(context: &Context, requirements: vk::MemoryRequirements, properties: vk::MemoryPropertyFlags) -> Result<vk::DeviceMemory> {
+    pub unsafe fn create_memory(device: &Device, requirements: vk::MemoryRequirements, properties: vk::MemoryPropertyFlags) -> Result<vk::DeviceMemory> {
         let memory_info = vk::MemoryAllocateInfo::builder()
             .allocation_size(requirements.size)
             .memory_type_index(Buffer::get_memory_type_index(
-                context,
+                device,
                 properties,
                 requirements)?
             );
 
-        let memory = context.device.logical().allocate_memory(&memory_info, None)?;
+        let memory = device.logical().allocate_memory(&memory_info, None)?;
 
         Ok(memory)
     }
@@ -90,8 +90,8 @@ impl Buffer {
         self.size
     }
 
-    pub unsafe fn get_memory_type_index(context: &Context, properties: vk::MemoryPropertyFlags, requirements: vk::MemoryRequirements) -> Result<u32> {
-        let memory_properties = context.device.memory_properties();
+    pub unsafe fn get_memory_type_index(device: &Device, properties: vk::MemoryPropertyFlags, requirements: vk::MemoryRequirements) -> Result<u32> {
+        let memory_properties = device.memory_properties();
         (0..memory_properties.memory_type_count)
             .find(|i| {
                 let suitable = (requirements.memory_type_bits & (1 << i)) != 0;

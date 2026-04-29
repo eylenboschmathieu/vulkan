@@ -9,9 +9,7 @@ use vulkanalia::vk::{self, DeviceV1_0, HasBuilder};
 use anyhow::Result;
 
 use crate::{
-    buffers::{
-        buffer::TransferDst, staging_buffer::StagingBuffer,
-    }, context::Context, device::Device, image::Image
+    context::Context, device::Device, image::Image, resources::buffers::buffer::TransferDst, transfer_manager::TransferManager
 };
 
 #[derive(Debug)]
@@ -22,7 +20,7 @@ pub struct Texture {
 }
 
 impl Texture {
-    pub unsafe fn new(context: &Context, sbuffer: &mut StagingBuffer, path: &str) -> Result<Self> {
+    pub unsafe fn new(context: &mut Context, transfer_manager: &TransferManager, path: &str) -> Result<Self> {
         let file = File::open(path)?;
 
         let decoder = png::Decoder::new(file);
@@ -37,7 +35,7 @@ impl Texture {
         // Handle + Memory
 
         let image = Image::new(
-            context,
+            &context.device,
             width,
             height,
             vk::Format::R8G8B8A8_SRGB,
@@ -46,7 +44,7 @@ impl Texture {
             vk::MemoryPropertyFlags::DEVICE_LOCAL,
         )?;
 
-        context.transfer_manager.buffer_to_image(context, sbuffer, &pixels, size, &image)?; // TODO sbuffer will be part of context.resource_manager
+        transfer_manager.buffer_to_image(context, &pixels, size, &image)?;
 
         let view = Image::build_view(
             &context.device,

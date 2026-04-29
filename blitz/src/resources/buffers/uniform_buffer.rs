@@ -9,7 +9,7 @@ use cgmath::{vec3, Deg, point3};
 use vulkanalia::vk::{self, *};
 
 use crate::{
-    buffers::{buffer::Buffer, freelist::{Allocation, Allocator}}, context::Context, device::Device
+    resources::buffers::{buffer::Buffer, freelist::{Allocation, Allocator}}, device::Device
 };
 
 type Mat4 = cgmath::Matrix4<f32>;
@@ -33,13 +33,13 @@ pub struct UniformBuffer {
 }
 
 impl UniformBuffer {
-    pub unsafe fn new(context: &Context, count: usize) -> Result<Self> {
+    pub unsafe fn new(device: &Device, count: usize) -> Result<Self> {
         let size = (size_of::<UniformBufferObject>() * count) as u64;
 
         // Buffer
         
         let handle = Buffer::create_buffer(
-            &context.device,
+            device,
             size,
             vk::BufferUsageFlags::UNIFORM_BUFFER
         )?;
@@ -47,10 +47,10 @@ impl UniformBuffer {
 
         // Memory
 
-        let requirements = context.device.logical().get_buffer_memory_requirements(handle);
+        let requirements = device.logical().get_buffer_memory_requirements(handle);
 
         let memory = Buffer::create_memory(
-            context,
+            device,
             requirements,
             vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE
         )?;
@@ -58,13 +58,13 @@ impl UniformBuffer {
 
         // Binding
 
-        context.device.logical().bind_buffer_memory(handle, memory, 0)?;
+        device.logical().bind_buffer_memory(handle, memory, 0)?;
 
         let buffer = Buffer::new(handle, memory, size)?;
 
         let allocator = Allocator::new(size as usize, requirements.alignment as usize);
 
-        let mapped_ptr = context.device.logical().map_memory(
+        let mapped_ptr = device.logical().map_memory(
             memory,
             0,
             size,

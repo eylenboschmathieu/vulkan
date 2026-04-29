@@ -8,13 +8,14 @@ use log::*;
 use anyhow::{anyhow, Result};
 use vulkanalia::vk::{self, *};
 use crate::{
-    buffers::{
-        buffer::{
-            Buffer, TransferDst
-        }, freelist::{Allocation, Allocator}
+    resources::{
+        buffers::{
+            buffer::{
+                Buffer, TransferDst
+            }, freelist::{Allocation, Allocator}
+        },
     },
     commands::CommandBuffer,
-    context::Context,
     device::Device,
     image::Image
 };
@@ -31,11 +32,11 @@ pub struct StagingBuffer {
 }
 
 impl StagingBuffer {
-    pub unsafe fn new(context: &Context, size: vk::DeviceSize) -> Result<Self> {
+    pub unsafe fn new(device: &Device, size: vk::DeviceSize) -> Result<Self> {
         // Buffer
         
         let handle = Buffer::create_buffer(
-            &context.device,
+            device,
             size,
             vk::BufferUsageFlags::TRANSFER_SRC
         )?;
@@ -43,10 +44,10 @@ impl StagingBuffer {
 
         // Memory
 
-        let requirements = context.device.logical().get_buffer_memory_requirements(handle);
+        let requirements = device.logical().get_buffer_memory_requirements(handle);
 
         let memory = Buffer::create_memory(
-            &context,
+            device,
             requirements,
             vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
         )?;
@@ -54,13 +55,13 @@ impl StagingBuffer {
 
         // Binding
 
-        context.device.logical().bind_buffer_memory(handle, memory, 0)?;
+        device.logical().bind_buffer_memory(handle, memory, 0)?;
 
         let buffer = Buffer::new(handle, memory, size)?;
 
         let allocator = Allocator::new(size as usize, requirements.alignment as usize);
 
-        let mapped_ptr = context.device.logical().map_memory(memory, 0, size, vk::MemoryMapFlags::empty())?;
+        let mapped_ptr = device.logical().map_memory(memory, 0, size, vk::MemoryMapFlags::empty())?;
 
         Ok(Self { buffer, allocator, alloc_list: vec![], free_list: vec![], mapped_ptr })
     }

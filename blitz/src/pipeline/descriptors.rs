@@ -5,7 +5,11 @@ use log::*;
 use anyhow::Result;
 
 use crate::{
-    buffers::Allocation, commands::CommandBuffer, device::Device, image::Texture, pipeline::Pipeline
+    resources::buffers::Allocation,
+    commands::CommandBuffer,
+    device::Device,
+    image::Texture,
+    pipeline::Pipeline
 };
 
 type Mat4 = cgmath::Matrix4<f32>;

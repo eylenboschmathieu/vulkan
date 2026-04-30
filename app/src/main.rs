@@ -34,6 +34,7 @@ fn main() -> Result<()> {
     // App
 
     let mut app: App = unsafe { App::new(&window)? };
+
     let mut minimized: bool = false;
     let mut tick = Instant::now();
 

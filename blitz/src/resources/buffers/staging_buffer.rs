@@ -9,6 +9,7 @@ use anyhow::{anyhow, Result};
 use vulkanalia::vk::{self, *};
 use crate::{
     resources::{
+        image::Image,
         buffers::{
             buffer::{
                 Buffer, TransferDst
@@ -17,7 +18,6 @@ use crate::{
     },
     commands::CommandBuffer,
     device::Device,
-    image::Image
 };
 
 pub type StagingBufferId = usize;
@@ -72,14 +72,14 @@ impl StagingBuffer {
     }
 
     /// Copies data into the staging buffer
-    pub unsafe fn copy_to_staging<T>(&self, device: &Device, id: StagingBufferId, data: &[T]) -> Result<()> {
-        self.copy_to_staging_at(device, id, data, 0)
+    pub unsafe fn copy_to_staging<T>(&self, id: StagingBufferId, data: &[T]) -> Result<()> {
+        self.copy_to_staging_at(id, data, 0)
     }
 
     /// Copies data into the staging buffer at offset
-    pub unsafe fn copy_to_staging_at<T>(&self, device: &Device, id: StagingBufferId, data: &[T], offset: usize) -> Result<()> {
-        let offset = offset + self.alloc_list[id].offset;
+    pub unsafe fn copy_to_staging_at<T>(&self, id: StagingBufferId, data: &[T], offset: usize) -> Result<()> {
         let size = (size_of::<T>() * data.len()) as usize;
+        let offset = self.alloc_list[id].offset + offset;
         memcpy(data.as_ptr(), self.mapped_ptr.add(offset).cast(), size as usize);
         Ok(())
     }

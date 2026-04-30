@@ -6,4 +6,12 @@ pub use image::{
     ImageMemoryBarrierQueueFamilyIndices,
     DepthBuffer,
 };
-pub use texture::Texture;
+
+pub use texture::{
+    TextureId
+};
+
+pub(crate) use texture::{
+    Textures,
+    Texture,
+};

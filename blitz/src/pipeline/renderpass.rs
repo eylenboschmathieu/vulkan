@@ -6,7 +6,8 @@ use vulkanalia::vk::{self, *};
 
 use crate::{
     Device,
-    commands::CommandBuffer, context::Context, image::DepthBuffer
+    commands::CommandBuffer, context::Context,
+    resources::image::DepthBuffer
 };
 
 #[derive(Clone, Debug)]

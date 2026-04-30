@@ -19,7 +19,7 @@ type Vec3 = cgmath::Vector3<f32>;
 pub type VertexBufferId = usize;
 
 #[repr(C)]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Vertex {
     pos: Vec3,
     color: Vec3,

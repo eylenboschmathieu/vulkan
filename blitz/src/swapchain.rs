@@ -13,7 +13,9 @@ use vulkanalia::{
 };
 
 use crate::{
-    Device, context::Context, image::{DepthBuffer, Image}, instance::{Instance, QueueFamilyIndices, SwapchainSupport}, pipeline::Renderpass
+    device::Device,
+    context::Context,
+    resources::image::{DepthBuffer, Image}, instance::{Instance, QueueFamilyIndices, SwapchainSupport}, pipeline::Renderpass
 };
 
 #[derive(Debug)]

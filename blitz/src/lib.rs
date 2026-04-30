@@ -4,12 +4,12 @@ mod context;
 mod instance;
 mod device;
 mod queues;
-mod transfer_manager;
 mod swapchain;
 mod pipeline;
 mod commands;
 mod resources;
-mod image;
+mod container;
+mod mesh;
 
 use std::{ops::Index, sync::atomic::{AtomicBool, Ordering}, time::Instant};
 
@@ -20,21 +20,42 @@ use vulkanalia::{
     vk::{self, DeviceV1_0, Handle, HasBuilder, KhrSwapchainExtensionDeviceCommands}
 };
 
+pub use crate::{
+    container::*,
+    mesh::Mesh,
+    resources::{
+        image::TextureId,
+        buffers::{
+            index_buffer::IndexBufferId,
+            vertex_buffer::{
+                VertexBufferId,
+                Vertex,
+            }
+        }
+    },
+};
+
 use crate::{
-    context::Context, device::Device, image::{DepthBuffer, Texture}, pipeline::{
+    context::Context,
+    device::Device,
+    
+    pipeline::{
         Pipeline,
         Renderpass,
         descriptors::{
             DescriptorPool,
             DescriptorSetLayout, DescriptorSetUpdateInfo
         },
-    }, resources::buffers::{
-            buffer::{INDICES, VERTICES},
-            index_buffer::IndexBufferId,
-            staging_buffer::StagingBufferId,
+    },
+    resources::{
+        image::{
+            DepthBuffer,
+        },
+        buffers::{
             uniform_buffer::UniformBufferId,
-            vertex_buffer::{Vertex, VertexBufferId}
-        }, swapchain::Swapchain, transfer_manager::TransferManager
+        },
+    },
+    swapchain::Swapchain,
 };
 
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
@@ -54,6 +75,7 @@ struct Synchronization {
     frames: Vec<FrameSync>,
     images_in_flight_fences: Vec<vk::Fence>,
     pub frame: usize,
+    pub image: usize,
 }
 
 impl Synchronization {
@@ -82,7 +104,7 @@ impl Synchronization {
         }
 
         info!("+ Synchronization");
-        Ok(Self { frames, images_in_flight_fences, frame: 0 })
+        Ok(Self { frames, images_in_flight_fences, frame: 0, image: 0 })
     }
     
     pub unsafe fn destroy(&self, device: &Device) {
@@ -106,12 +128,12 @@ impl Synchronization {
         self.frames[self.frame].in_flight_fence
     }
 
-    pub fn images_in_flight_fence(&self, image_index: usize) -> vk::Fence {
-        self.images_in_flight_fences[image_index]
+    pub fn images_in_flight_fence(&self) -> vk::Fence {
+        self.images_in_flight_fences[self.image]
     }
     
-    pub unsafe fn update_image_in_flight_fence(&mut self, image_index: usize) {
-        self.images_in_flight_fences[image_index] = self.in_flight_fence();
+    pub unsafe fn update_image_in_flight_fence(&mut self) {
+        self.images_in_flight_fences[self.image] = self.in_flight_fence();
     }
 }
 
@@ -126,7 +148,6 @@ impl Index<usize> for Synchronization {
 #[derive(Debug)]
 pub struct Blitz {
     context: Context,
-    transfer_manager: TransferManager,
     swapchain: Swapchain,
     sync: Synchronization,
     depth_buffer: DepthBuffer,
@@ -137,70 +158,49 @@ pub struct Blitz {
     vertex_buffer: VertexBufferId,
     index_buffer: IndexBufferId,
     uniform_buffers: Vec<UniformBufferId>,
-    texture: Texture,
 }
 
 impl Blitz {
-    pub unsafe fn record(&self) -> Result<()> {
-        for (image_index, command_buffer) in self.context.command_manager.graphics().into_iter().enumerate() {
-            command_buffer.begin_recording(
-                &self.context.device,
-                self.swapchain.extent(),
-                &self.renderpass,
-                self.swapchain[image_index].framebuffer()
-            )?;
-
-            self.pipeline.bind(&self.context.device, command_buffer);
-            self.context.resource_manager.vertex_buffers().bind(&self.context.device, command_buffer, self.vertex_buffer);
-            self.context.resource_manager.index_buffers().bind(&self.context.device, command_buffer, self.index_buffer);
-            self.descriptor_pool.bind(&self.context.device, &command_buffer, &self.pipeline, image_index);
-            self.context.resource_manager.index_buffers().draw(&self.context.device, command_buffer, self.index_buffer, Some(0));
-
-            command_buffer.end_recording(&self.context.device, &self.renderpass)?;
-        }
-        Ok(())
+    pub unsafe fn new_container(&self) -> Container<Loading> {
+        container::Container::new(&self.context.device).unwrap()
     }
 
-    pub unsafe fn upload(&mut self) -> Result<()> {
-        // Make sure the staging buffer is big enough to hold our data
-        let vertices_size = (size_of::<Vertex>() * VERTICES.len()) as u64;
-        let indices_size = (size_of::<u16>() * INDICES.len()) as u64;
+    pub unsafe fn process_container(&mut self, container: Container<Loading>) -> Result<Container<Resolved>> {
+        let mut container = container.transition::<Transfer>();
 
-        let rm = &mut self.context.resource_manager;
-
-        let id: StagingBufferId = rm.staging_buffers_mut().alloc((vertices_size + indices_size) as usize)?;
-        self.vertex_buffer = rm.vertex_buffers_mut().alloc(vertices_size as usize)?;
-        self.index_buffer = rm.index_buffers_mut().alloc(INDICES.len() as usize)?;
-
-        let command_buffer = &self.context.command_manager.begin_one_time_submit(&self.context.device, vk::QueueFlags::TRANSFER)?;
-
-        rm.staging_buffers().copy_to_staging(&self.context.device, id, &VERTICES)?;  // Copy vertices into staging buffer
-        rm.staging_buffers().copy_to_staging_at(&self.context.device, id, &INDICES, vertices_size as usize)?;  // Copy indices into staging buffer
-
-        let vertex_buffer_alloc_info = rm.vertex_buffers().alloc_info(self.vertex_buffer as usize);
-        let index_buffer_alloc_info = rm.index_buffers().alloc_info(self.index_buffer as usize);
-
-        rm.staging_buffers().copy_to_buffer(&self.context.device,
-            command_buffer,
-            rm.vertex_buffers(),
-            vertex_buffer_alloc_info,
-            0,
-        )?;  // Copy data from staging buffer to vertex buffer
-        rm.staging_buffers().copy_to_buffer(
+        container.process(
             &self.context.device,
-            command_buffer,
-            rm.index_buffers(),
-            index_buffer_alloc_info,
-            vertices_size
-        )?;  // Copy data from staging buffer to index buffer
+            &self.context.command_manager,
+            &mut self.context.resource_manager,
+            &self.context.queue_manager,
+        )?;
         
-        command_buffer.end_one_time_submit(&self.context.device, self.context.queue_manager.transfer(), None)?;
-        rm.staging_buffers_mut().free(id);
-        Ok(())
+        let container = container.transition::<Resolved>();
+        container.destroy(&self.context.device);
+        Ok(container)
     }
 
-    /// Renders a frame for our Vulkan app.
-    pub unsafe fn render(&mut self, window: &Window, delta: Instant) -> Result<()> {
+    pub unsafe fn update_descriptor_sets(&mut self, texture_id: TextureId) {
+        let data = self.context.resource_manager.uniform_buffer.get_data();
+        let descriptor_set_update_info = DescriptorSetUpdateInfo { buffer: self.context.resource_manager.uniform_buffer.handle(), uniforms: data };
+        self.descriptor_pool.update(&self.context.device, descriptor_set_update_info , &self.context.resource_manager.textures[texture_id]);
+    }
+
+    pub unsafe fn start_recording(&mut self) -> Result<()> {
+        let command_buffer = &self.context.command_manager.graphics()[self.sync.frame];
+        command_buffer.begin_recording(
+            &self.context.device,
+            self.swapchain.extent(),
+            &self.renderpass,
+            self.swapchain[self.sync.image].framebuffer())
+    }
+
+    pub unsafe fn end_recording(&mut self) -> Result<()> {
+        let command_buffer = &self.context.command_manager.graphics()[self.sync.frame];
+        command_buffer.end_recording(&self.context.device, &self.renderpass)
+    }
+
+    pub unsafe fn start_render(&mut self, window: &Window) -> Result<()> {
         self.context.device.logical().wait_for_fences(&[self.sync.in_flight_fence()], true, u64::MAX)?;
 
         let result = self.context.device.logical()
@@ -208,7 +208,8 @@ impl Blitz {
             u64::MAX, 
             self.sync.image_available_semaphore(), 
             vk::Fence::null());
-        let image_index = match result {
+
+        self.sync.image = match result {
             Ok((image_index, _)) => image_index as usize,
             Err(vk::ErrorCode::OUT_OF_DATE_KHR) => {
                 self.rebuild_swapchain(window)?;
@@ -217,17 +218,23 @@ impl Blitz {
             Err(e) => return Err(anyhow!(e)),
         };
 
-        if !self.sync.images_in_flight_fence(image_index).is_null() {
-            self.context.device.logical().wait_for_fences(&[self.sync.images_in_flight_fence(image_index)], true, u64::MAX)?;
+        if !self.sync.images_in_flight_fence().is_null() {
+            self.context.device.logical().wait_for_fences(&[self.sync.images_in_flight_fence()], true, u64::MAX)?;
         }
-        self.sync.update_image_in_flight_fence(image_index);
-        self.context.resource_manager.uniform_buffers().update(&self.context.device, self.uniform_buffers[image_index], &delta, self.swapchain.extent())?;
+        self.sync.update_image_in_flight_fence();
+
+        self.start_recording()
+    }
+
+    pub unsafe fn end_render(&mut self, window: &Window, delta: Instant) -> Result<()> {
+        self.end_recording()?;
+        self.context.resource_manager.uniform_buffer.update(&self.context.device, self.uniform_buffers[self.sync.frame], &delta, self.swapchain.extent())?;
 
         // Submit
 
         let wait_semaphores = &[self.sync.image_available_semaphore()];
         let wait_stages = &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-        let command_buffers = &[self.context.command_manager.graphics()[image_index as usize].handle()];
+        let command_buffers = &[self.context.command_manager.graphics()[self.sync.frame as usize].handle()];
         let signal_semaphores = &[self.sync.render_finished_semaphore()];
         let submit_info = vk::SubmitInfo::builder()
             .wait_semaphores(wait_semaphores)
@@ -242,7 +249,7 @@ impl Blitz {
         // Present
 
         let swapchains = &[self.swapchain.handle()];
-        let image_indices = &[image_index as u32];
+        let image_indices = &[self.sync.image as u32];
         let present_info = vk::PresentInfoKHR::builder()
             .wait_semaphores(signal_semaphores)
             .swapchains(swapchains)
@@ -252,7 +259,135 @@ impl Blitz {
             self.rebuild_swapchain(window)?;
         };
 
-        self.sync.frame = (image_index + 1) % FRAMES_IN_FLIGHT;
+        self.sync.frame = (self.sync.frame + 1) % FRAMES_IN_FLIGHT;
+
+        Ok(())
+    }
+
+    pub unsafe fn render_mesh(&self, mesh: Mesh) {
+        // TODO: Store current command buffer in sync
+        let command_buffer = &self.context.command_manager.graphics()[self.sync.frame];
+
+        self.pipeline.bind(&self.context.device, command_buffer);
+        self.descriptor_pool.bind(&self.context.device, &command_buffer, &self.pipeline, self.sync.frame);
+        self.context.resource_manager.vertex_buffer.bind(&self.context.device, command_buffer, mesh.vertices);
+        self.context.resource_manager.index_buffer.bind(&self.context.device, command_buffer, mesh.indices);
+        self.context.resource_manager.index_buffer.draw(&self.context.device, command_buffer, mesh.indices, Some(0));
+    }
+
+
+    pub unsafe fn record(&self) -> Result<()> {
+        for (image_index, command_buffer) in self.context.command_manager.graphics().into_iter().enumerate() {
+            command_buffer.begin_recording(
+                &self.context.device,
+                self.swapchain.extent(),
+                &self.renderpass,
+                self.swapchain[image_index].framebuffer()
+            )?;
+
+            self.pipeline.bind(&self.context.device, command_buffer);
+            self.descriptor_pool.bind(&self.context.device, &command_buffer, &self.pipeline, image_index);
+            self.context.resource_manager.vertex_buffer.bind(&self.context.device, command_buffer, self.vertex_buffer);
+            self.context.resource_manager.index_buffer.bind(&self.context.device, command_buffer, self.index_buffer);
+            self.context.resource_manager.index_buffer.draw(&self.context.device, command_buffer, self.index_buffer, Some(0));
+
+            command_buffer.end_recording(&self.context.device, &self.renderpass)?;
+        }
+        Ok(())
+    }
+/*
+    pub unsafe fn upload(&mut self) -> Result<()> {
+        // Make sure the staging buffer is big enough to hold our data
+        let vertices_size = (size_of::<Vertex>() * VERTICES.len()) as u64;
+        let indices_size = (size_of::<u16>() * INDICES.len()) as u64;
+
+        let rm = &mut self.context.resource_manager;
+
+        let id: StagingBufferId = rm.staging_buffer.alloc((vertices_size + indices_size) as usize)?;
+        self.vertex_buffer = rm.vertex_buffer.alloc(vertices_size as usize)?;
+        self.index_buffer = rm.index_buffer.alloc(INDICES.len() as usize)?;
+
+        let command_buffer = &self.context.command_manager.begin_one_time_submit(&self.context.device, vk::QueueFlags::TRANSFER)?;
+
+        rm.staging_buffer.copy_to_staging(id, &VERTICES)?;  // Copy vertices into staging buffer
+        rm.staging_buffer.copy_to_staging_at(id, &INDICES, vertices_size as usize)?;  // Copy indices into staging buffer
+
+        let vertex_buffer_alloc_info = rm.vertex_buffer.alloc_info(self.vertex_buffer as usize);
+        let index_buffer_alloc_info = rm.index_buffer.alloc_info(self.index_buffer as usize);
+
+        rm.staging_buffer.copy_to_buffer(&self.context.device,
+            command_buffer,
+            &rm.vertex_buffer,
+            vertex_buffer_alloc_info,
+            0,
+        )?;  // Copy data from staging buffer to vertex buffer
+        rm.staging_buffer.copy_to_buffer(
+            &self.context.device,
+            command_buffer,
+            &rm.index_buffer,
+            index_buffer_alloc_info,
+            vertices_size
+        )?;  // Copy data from staging buffer to index buffer
+        
+        command_buffer.end_one_time_submit(&self.context.device, self.context.queue_manager.transfer(), None)?;
+        rm.staging_buffer.free(id);
+        Ok(())
+    }
+*/
+    /// Renders a frame for our Vulkan app.
+    pub unsafe fn render(&mut self, window: &Window, delta: Instant) -> Result<()> {
+        self.context.device.logical().wait_for_fences(&[self.sync.in_flight_fence()], true, u64::MAX)?;
+
+        let result = self.context.device.logical()
+            .acquire_next_image_khr(self.swapchain.handle(), 
+            u64::MAX, 
+            self.sync.image_available_semaphore(), 
+            vk::Fence::null());
+        self.sync.image = match result {
+            Ok((image_index, _)) => image_index as usize,
+            Err(vk::ErrorCode::OUT_OF_DATE_KHR) => {
+                self.rebuild_swapchain(window)?;
+                return Ok(());
+            },
+            Err(e) => return Err(anyhow!(e)),
+        };
+
+        if !self.sync.images_in_flight_fence().is_null() {
+            self.context.device.logical().wait_for_fences(&[self.sync.images_in_flight_fence()], true, u64::MAX)?;
+        }
+        self.sync.update_image_in_flight_fence();
+        self.context.resource_manager.uniform_buffer.update(&self.context.device, self.uniform_buffers[self.sync.frame], &delta, self.swapchain.extent())?;
+
+        // Submit
+
+        let wait_semaphores = &[self.sync.image_available_semaphore()];
+        let wait_stages = &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
+        let command_buffers = &[self.context.command_manager.graphics()[self.sync.frame as usize].handle()];
+        let signal_semaphores = &[self.sync.render_finished_semaphore()];
+        let submit_info = vk::SubmitInfo::builder()
+            .wait_semaphores(wait_semaphores)
+            .wait_dst_stage_mask(wait_stages)
+            .command_buffers(command_buffers)
+            .signal_semaphores(signal_semaphores);
+
+        self.context.device.logical().reset_fences(&[self.sync.in_flight_fence()])?;
+
+        self.context.queue_manager.graphics().submit(&self.context.device, &[submit_info.build()], self.sync.in_flight_fence()).expect("Failed to submit command buffer.");
+
+        // Present
+
+        let swapchains = &[self.swapchain.handle()];
+        let image_indices = &[self.sync.image as u32];
+        let present_info = vk::PresentInfoKHR::builder()
+            .wait_semaphores(signal_semaphores)
+            .swapchains(swapchains)
+            .image_indices(image_indices);
+
+        if self.context.queue_manager.present().submit(&self.context.device, &present_info)? {
+            self.rebuild_swapchain(window)?;
+        };
+
+        self.sync.frame = (self.sync.image + 1) % FRAMES_IN_FLIGHT;
 
         Ok(())
     }
@@ -261,7 +396,6 @@ impl Blitz {
     pub unsafe fn destroy(&mut self) {
         self.context.device.logical().device_wait_idle().unwrap();
 
-        self.texture.destroy(&self.context.device);
         self.pipeline.destroy(&self.context.device);  // Contains renderpass
         self.renderpass.destroy(&self.context.device);
         self.descriptor_set_layout.destroy(&self.context.device);
@@ -269,7 +403,6 @@ impl Blitz {
         self.sync.destroy(&self.context.device);
         self.depth_buffer.destroy(&self.context.device);
         self.swapchain.destroy(&self.context.device);
-        self.transfer_manager.destroy(&self.context.device);
         self.context.destroy();
     }
 
@@ -298,8 +431,8 @@ impl Blitz {
         self.uniform_buffers
             .iter()
             .for_each(|id| {
-                self.context.resource_manager.uniform_buffers_mut().free(*id);
-                new_uniform_buffers.push(self.context.resource_manager.uniform_buffers_mut().alloc().unwrap());
+                self.context.resource_manager.uniform_buffer.free(*id);
+                new_uniform_buffers.push(self.context.resource_manager.uniform_buffer.alloc().unwrap());
         });
         self.uniform_buffers = new_uniform_buffers;
         self.descriptor_pool = DescriptorPool::new(&self.context.device, self.swapchain.framebuffer_count() as u32)?;
@@ -307,10 +440,10 @@ impl Blitz {
 
 
         let descriptor_set_update_info = DescriptorSetUpdateInfo { 
-            buffer: self.context.resource_manager.uniform_buffers().handle(),
-            uniforms: self.context.resource_manager.uniform_buffers().get_data()
+            buffer: self.context.resource_manager.uniform_buffer.handle(),
+            uniforms: self.context.resource_manager.uniform_buffer.get_data()
         };
-        self.descriptor_pool.update(&self.context.device, descriptor_set_update_info, &self.texture);
+        //self.descriptor_pool.update(&self.context.device, descriptor_set_update_info, &self.texture);
 
         // Re-record command buffers
 
@@ -328,9 +461,8 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
 
     info!("Blitz::init");
     let mut context = Context::new(window)?;
-    let transfer_manager = TransferManager::new(&context.device)?;
     let mut swapchain = Swapchain::new(window, &context.instance, &context.device)?;
-    context.command_manager.allocate_graphics_buffers(&context.device, swapchain.framebuffer_count())?;
+    context.command_manager.allocate_graphics_buffers(&context.device, FRAMES_IN_FLIGHT)?;
 
     let depth_buffer = DepthBuffer::new(&context, swapchain.extent().width, swapchain.extent().height)?;
 
@@ -350,22 +482,16 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
     let sync = Synchronization::new(&context, &swapchain)?;
 
     let mut uniform_buffers = vec![];
-    for _ in 0..swapchain.framebuffer_count() {
-        uniform_buffers.push(context.resource_manager.uniform_buffers_mut().alloc()?);
+    for _ in 0..FRAMES_IN_FLIGHT {
+        uniform_buffers.push(context.resource_manager.uniform_buffer.alloc()?);
     }
-    let texture = Texture::new(&mut context, &transfer_manager, "/home/krozu/Documents/Code/Rust/vulkan/app/img/image.png")?;
-
-    let mut descriptor_pool = DescriptorPool::new(&context.device, swapchain.framebuffer_count() as u32)?;
-    descriptor_pool.allocate_descriptor_sets(&context.device, &descriptor_set_layout, swapchain.framebuffer_count())?;
-
-    let descriptor_set_update_info = DescriptorSetUpdateInfo { buffer: context.resource_manager.uniform_buffers().handle(), uniforms: context.resource_manager.uniform_buffers().get_data() };
-    descriptor_pool.update(&context.device, descriptor_set_update_info, &texture);
+    let mut descriptor_pool = DescriptorPool::new(&context.device, FRAMES_IN_FLIGHT as u32)?;
+    descriptor_pool.allocate_descriptor_sets(&context.device, &descriptor_set_layout, FRAMES_IN_FLIGHT)?;
 
     // Create
 
     Ok(Blitz {
         context,
-        transfer_manager,
         swapchain,
         sync,
         depth_buffer,
@@ -376,6 +502,5 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
         vertex_buffer: usize::MAX,
         index_buffer: usize::MAX,
         uniform_buffers,
-        texture,
     })
 }

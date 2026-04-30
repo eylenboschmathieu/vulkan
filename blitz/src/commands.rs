@@ -17,10 +17,13 @@ pub struct CommandPool {
 }
 
 impl CommandPool {
-    pub unsafe fn new(instance: &Instance, device: &Device, queue_family_index: u32) -> Result<Self> {
-        // let indices = QueueFamilyIndices::get(instance, device.physical())?;
+    pub unsafe fn new(instance: &Instance, device: &Device, queue_family_index: u32, create_flags: Option<CommandPoolCreateFlags>) -> Result<Self> {
+        let flags = match create_flags {
+            Some(flags) => flags,
+            None => vk::CommandPoolCreateFlags::empty(),
+        };
         let pool_info = vk::CommandPoolCreateInfo::builder()
-            .flags(vk::CommandPoolCreateFlags::empty())
+            .flags(flags)
             .queue_family_index(queue_family_index); // indices.graphics()
 
         let handle = device.logical().create_command_pool(&pool_info, None)?;
@@ -116,8 +119,9 @@ pub struct CommandManager {
 impl CommandManager {
     pub unsafe fn new(instance: &Instance, device: &Device) -> Result<Self> {
         let queue_family_indices = device.queue_family_indices();
-        let graphics_pool = CommandPool::new(instance, &device, queue_family_indices.graphics())?;
-        let transfer_pool = CommandPool::new(instance, &device, queue_family_indices.transfer())?;
+        let create_flags = vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER;
+        let graphics_pool = CommandPool::new(instance, &device, queue_family_indices.graphics(), Some(create_flags))?;
+        let transfer_pool = CommandPool::new(instance, &device, queue_family_indices.transfer(), None)?;
 
         info!("+ CommandManager");
 

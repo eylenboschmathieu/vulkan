@@ -8,7 +8,7 @@ use crate::{
     resources::buffers::Allocation,
     commands::CommandBuffer,
     device::Device,
-    image::Texture,
+    resources::image::Texture,
     pipeline::Pipeline
 };
 
@@ -217,13 +217,13 @@ impl DescriptorPool {
         info!("Updated descriptor sets");
     }
 
-    pub unsafe fn bind(&self, device: &Device, command_buffer: &CommandBuffer, pipeline: &Pipeline, image_index: usize) {
+    pub unsafe fn bind(&self, device: &Device, command_buffer: &CommandBuffer, pipeline: &Pipeline, frame: usize) {
         device.logical().cmd_bind_descriptor_sets(
             command_buffer.handle(),
             vk::PipelineBindPoint::GRAPHICS,
             pipeline.layout(),
             0,
-            &[self.descriptor_sets[image_index]],
+            &[self.descriptor_sets[frame]],
             &[]
         );
     }

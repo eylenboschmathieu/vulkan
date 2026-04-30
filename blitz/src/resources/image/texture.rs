@@ -1,7 +1,7 @@
 #![allow(dead_code, unsafe_op_in_unsafe_fn, unused_variables, clippy::too_many_arguments, clippy::unnecessary_wraps)]
 
 use std::{
-    fs::File, ops::Deref,
+    ops::{Deref, Index},
 };
 
 use log::*;
@@ -9,33 +9,24 @@ use vulkanalia::vk::{self, DeviceV1_0, HasBuilder};
 use anyhow::Result;
 
 use crate::{
-    context::Context, device::Device, image::Image, resources::buffers::buffer::TransferDst, transfer_manager::TransferManager
+    TextureData, device::Device, resources::{
+        buffers::buffer::TransferDst, image::Image
+    },
 };
 
+pub type TextureId = usize;
+
 #[derive(Debug)]
-pub struct Texture {
-    image: Image,
-    view: vk::ImageView,
-    sampler: vk::Sampler,
+pub(crate) struct Texture {
+    pub(crate) image: Image,
+    pub(crate) view: vk::ImageView,
+    pub(crate) sampler: vk::Sampler,
 }
 
 impl Texture {
-    pub unsafe fn new(context: &mut Context, transfer_manager: &TransferManager, path: &str) -> Result<Self> {
-        let file = File::open(path)?;
-
-        let decoder = png::Decoder::new(file);
-        let mut reader = decoder.read_info()?;
-
-        let mut pixels = vec![0; reader.info().raw_bytes()];
-        reader.next_frame(&mut pixels)?;
-
-        let size = reader.info().raw_bytes() as u64;
-        let (width, height) = reader.info().size();
-
-        // Handle + Memory
-
+    pub unsafe fn new(device: &Device, width: u32, height: u32) -> Result<Self> {
         let image = Image::new(
-            &context.device,
+            device,
             width,
             height,
             vk::Format::R8G8B8A8_SRGB,
@@ -44,18 +35,14 @@ impl Texture {
             vk::MemoryPropertyFlags::DEVICE_LOCAL,
         )?;
 
-        transfer_manager.buffer_to_image(context, &pixels, size, &image)?;
-
         let view = Image::build_view(
-            &context.device,
+            device,
             image.handle(),
             vk::Format::R8G8B8A8_SRGB,
             vk::ImageAspectFlags::COLOR
         )?;
 
-        let sampler = Texture::build_sampler(&context.device)?;
-
-        info!("+ Texture");
+        let sampler = Texture::build_sampler(device)?;
 
         Ok(Self { image, view, sampler })
     }
@@ -109,8 +96,48 @@ impl Deref for Texture {
     }
 }
 
-/*impl DerefMut for Texture {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.image
+#[derive(Debug)]
+pub(crate) struct Textures {
+    textures: Vec<Texture>,
+    free_ids: Vec<usize>,
+}
+
+impl Textures {
+    pub(crate) fn new() -> Result<Self> {
+        Ok(Self {
+            textures: vec![],
+            free_ids: vec![],
+        })
     }
-}*/
+
+    pub(crate) unsafe fn destroy(&self, device: &Device) {
+        for texture in &self.textures {
+            texture.destroy(device);
+        }
+    }
+
+    pub(crate) unsafe fn new_texture(&mut self, device: &Device, data: &TextureData) -> Result<usize> {
+        let texture = Texture::new(device, data.width, data.height)?;
+        if self.free_ids.len() > 0 {
+            let id = self.free_ids.pop().unwrap();
+            self.textures[id] = texture;
+            return Ok(id);
+        }
+
+        self.textures.push(texture);
+        Ok(self.textures.len() - 1)
+    }
+
+    pub(crate) unsafe fn delete_texture(&mut self, device: &Device, id: TextureId) {
+        self.textures[id].destroy(device);
+        self.free_ids.push(id);
+    }
+}
+
+impl Index<usize> for Textures {
+    type Output = Texture;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.textures[index]
+    }
+}

@@ -6,14 +6,12 @@ use log::*;
 use anyhow::{anyhow, Result};
 use vulkanalia::vk::{self, *};
 use crate::{
-    resources::buffers::{
+    VertexBufferId, commands::CommandBuffer, device::Device, resources::buffers::{
         buffer::{
             Buffer, TransferDst,
         },
-        freelist::{Allocator, Allocation},
-    },
-    commands::CommandBuffer,
-    device::Device,
+        freelist::{Allocation, Allocator},
+    }
 };
 
 type IndexType = u16;
@@ -96,17 +94,12 @@ impl IndexBuffer {
             vk::IndexType::UINT16);
     }
 
-    pub unsafe fn draw(&self, device: &Device, command_buffer: &CommandBuffer, id: IndexBufferId, vertex_offset: Option<i32>) {
-        let vertex_offset = match vertex_offset {
-            Some(offset) => offset,
-            None => 0,
-        };
-
+    pub unsafe fn draw(&self, device: &Device, command_buffer: &CommandBuffer, id: IndexBufferId, vertex_offset: i32) {
         device.logical().cmd_draw_indexed(
             command_buffer.handle(),
             self.buffer_list[id].count as u32,
             1,
-            self.buffer_list[id].allocation.offset as u32,
+            0, // self.buffer_list[id].allocation.offset as u32,
             vertex_offset,
             0);
     }

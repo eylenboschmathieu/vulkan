@@ -18,6 +18,17 @@ pub const VERTICES: [blitz::Vertex; 8] = [
     Vertex::new(vec3(-0.5, 0.5, -0.5), vec3(1.0, 1.0, 1.0), vec2(1.0, 1.0)),
 ];
 
+pub const VERTICES2: [blitz::Vertex; 8] = [
+    Vertex::new(vec3(-2.0, -2.0, -1.0), vec3(1.0, 0.0, 0.0), vec2(1.0, 0.0)),
+    Vertex::new(vec3(2.0, -2.0, -1.0), vec3(0.0, 1.0, 0.0), vec2(0.0, 0.0)),
+    Vertex::new(vec3(2.0, 2.0, -1.0), vec3(0.0, 0.0, 1.0), vec2(0.0, 1.0)),
+    Vertex::new(vec3(-2.0, 2.0, -1.0), vec3(1.0, 1.0, 1.0), vec2(1.0, 1.0)),
+    Vertex::new(vec3(-0.5, -0.5, -1.5), vec3(1.0, 0.0, 0.0), vec2(1.0, 0.0)),
+    Vertex::new(vec3(0.5, -0.5, -1.5), vec3(0.0, 1.0, 0.0), vec2(0.0, 0.0)),
+    Vertex::new(vec3(0.5, 0.5, -1.5), vec3(0.0, 0.0, 1.0), vec2(0.0, 1.0)),
+    Vertex::new(vec3(-0.5, 0.5, -1.5), vec3(1.0, 1.0, 1.0), vec2(1.0, 1.0)),
+];
+
 pub const INDICES: &[u16] = &[
     0, 1, 2, 2, 3, 0,
     4, 5, 6, 6, 7, 4,
@@ -53,6 +64,31 @@ impl TestObject {
     }
 }
 
+#[derive(Debug)]
+struct TestObject2 {
+    mesh: Mesh,
+}
+impl TestObject2 {
+    pub unsafe fn new(container: &mut Container<Loading>) -> Result<Self> {
+        let mesh = container.load_mesh(
+            &VERTICES2,
+            &INDICES,
+        )?;
+
+        info!("+ TestObject");
+        Ok(Self { mesh })
+    }
+
+    pub fn resolve_upload(&mut self, container: &Container<Resolved>) {
+        self.mesh = container.resolve_mesh(self.mesh.vertices);
+    }
+
+    pub unsafe fn draw(&self, blitz: &mut Blitz) -> Result<()> {
+        blitz.render_mesh(self.mesh);
+        Ok(())
+    }
+}
+
 // Our Vulkan app.
 #[derive(Debug)]
 pub struct App{
@@ -60,6 +96,7 @@ pub struct App{
     delta: Instant,
     
     o: TestObject,
+    o2: TestObject2,
 }
 
 impl App {
@@ -70,19 +107,19 @@ impl App {
 
         // Pass container to a bunch of new objects
         let mut o = TestObject::new(&mut container)?;
+        let mut o2 = TestObject2::new(&mut container)?;
 
         // Process the container when all upload data is collected
         let container = blitz.process_container(container)?;
         
         // Resolve buffer ids for all created objects
         o.resolve_upload(&container);
+        o2.resolve_upload(&container);
 
         blitz.update_descriptor_sets(o.texture);
 
-        // blitz.record()?;
-
         info!("+ App");
-        Ok(Self { blitz, delta: Instant::now(), o })
+        Ok(Self { blitz, delta: Instant::now(), o, o2 })
     }
 
     /// Renders a frame for our Vulkan app.
@@ -91,11 +128,11 @@ impl App {
         self.blitz.start_render(window)?;
 
         self.o.draw(&mut self.blitz)?; // Rerecord command buffers, essentially
+        self.o2.draw(&mut self.blitz)?;
         
         // Tell blitz to end the render
         self.blitz.end_render(window, self.delta)?;
 
-        // self.blitz.render(window, self.delta).expect("Rendering failed");
         Ok(())
     }
 

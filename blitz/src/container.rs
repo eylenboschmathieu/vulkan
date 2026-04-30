@@ -123,7 +123,10 @@ impl Container<Transfer> {
 
         let buffer_id = self.process_buffers(device, &command_buffer, resource_manager)?;
         
-        let texture_id = self.process_textures(device, &command_buffer, resource_manager)?;
+        let mut texture_id = 0;
+        if self.textures.len() > 0 {
+            texture_id = self.process_textures(device, &command_buffer, resource_manager)?;
+        }
 
         command_buffer.end_one_time_submit(
             device,
@@ -139,10 +142,11 @@ impl Container<Transfer> {
             self.ownership_transfer(device, &command_buffer, resource_manager)?;
 
             command_buffer.end_one_time_submit(device, queue_manager.graphics(), Some(self.semaphore))?;
+            resource_manager.staging_buffer.free(texture_id);
         }
 
         resource_manager.staging_buffer.free(buffer_id);
-        resource_manager.staging_buffer.free(texture_id);
+
 
         Ok(())
     }

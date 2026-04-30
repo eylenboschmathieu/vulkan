@@ -265,75 +265,17 @@ impl Blitz {
     }
 
     pub unsafe fn render_mesh(&self, mesh: Mesh) {
-        // TODO: Store current command buffer in sync
         let command_buffer = &self.context.command_manager.graphics()[self.sync.frame];
 
         self.pipeline.bind(&self.context.device, command_buffer);
         self.descriptor_pool.bind(&self.context.device, &command_buffer, &self.pipeline, self.sync.frame);
         self.context.resource_manager.vertex_buffer.bind(&self.context.device, command_buffer, mesh.vertices);
         self.context.resource_manager.index_buffer.bind(&self.context.device, command_buffer, mesh.indices);
-        self.context.resource_manager.index_buffer.draw(&self.context.device, command_buffer, mesh.indices, Some(0));
+
+        // let offset = self.context.resource_manager.vertex_buffer.alloc_info(mesh.vertices).offset;
+        self.context.resource_manager.index_buffer.draw(&self.context.device, command_buffer, mesh.indices, 0);
     }
 
-
-    pub unsafe fn record(&self) -> Result<()> {
-        for (image_index, command_buffer) in self.context.command_manager.graphics().into_iter().enumerate() {
-            command_buffer.begin_recording(
-                &self.context.device,
-                self.swapchain.extent(),
-                &self.renderpass,
-                self.swapchain[image_index].framebuffer()
-            )?;
-
-            self.pipeline.bind(&self.context.device, command_buffer);
-            self.descriptor_pool.bind(&self.context.device, &command_buffer, &self.pipeline, image_index);
-            self.context.resource_manager.vertex_buffer.bind(&self.context.device, command_buffer, self.vertex_buffer);
-            self.context.resource_manager.index_buffer.bind(&self.context.device, command_buffer, self.index_buffer);
-            self.context.resource_manager.index_buffer.draw(&self.context.device, command_buffer, self.index_buffer, Some(0));
-
-            command_buffer.end_recording(&self.context.device, &self.renderpass)?;
-        }
-        Ok(())
-    }
-/*
-    pub unsafe fn upload(&mut self) -> Result<()> {
-        // Make sure the staging buffer is big enough to hold our data
-        let vertices_size = (size_of::<Vertex>() * VERTICES.len()) as u64;
-        let indices_size = (size_of::<u16>() * INDICES.len()) as u64;
-
-        let rm = &mut self.context.resource_manager;
-
-        let id: StagingBufferId = rm.staging_buffer.alloc((vertices_size + indices_size) as usize)?;
-        self.vertex_buffer = rm.vertex_buffer.alloc(vertices_size as usize)?;
-        self.index_buffer = rm.index_buffer.alloc(INDICES.len() as usize)?;
-
-        let command_buffer = &self.context.command_manager.begin_one_time_submit(&self.context.device, vk::QueueFlags::TRANSFER)?;
-
-        rm.staging_buffer.copy_to_staging(id, &VERTICES)?;  // Copy vertices into staging buffer
-        rm.staging_buffer.copy_to_staging_at(id, &INDICES, vertices_size as usize)?;  // Copy indices into staging buffer
-
-        let vertex_buffer_alloc_info = rm.vertex_buffer.alloc_info(self.vertex_buffer as usize);
-        let index_buffer_alloc_info = rm.index_buffer.alloc_info(self.index_buffer as usize);
-
-        rm.staging_buffer.copy_to_buffer(&self.context.device,
-            command_buffer,
-            &rm.vertex_buffer,
-            vertex_buffer_alloc_info,
-            0,
-        )?;  // Copy data from staging buffer to vertex buffer
-        rm.staging_buffer.copy_to_buffer(
-            &self.context.device,
-            command_buffer,
-            &rm.index_buffer,
-            index_buffer_alloc_info,
-            vertices_size
-        )?;  // Copy data from staging buffer to index buffer
-        
-        command_buffer.end_one_time_submit(&self.context.device, self.context.queue_manager.transfer(), None)?;
-        rm.staging_buffer.free(id);
-        Ok(())
-    }
-*/
     /// Renders a frame for our Vulkan app.
     pub unsafe fn render(&mut self, window: &Window, delta: Instant) -> Result<()> {
         self.context.device.logical().wait_for_fences(&[self.sync.in_flight_fence()], true, u64::MAX)?;
@@ -435,19 +377,14 @@ impl Blitz {
                 new_uniform_buffers.push(self.context.resource_manager.uniform_buffer.alloc().unwrap());
         });
         self.uniform_buffers = new_uniform_buffers;
-        self.descriptor_pool = DescriptorPool::new(&self.context.device, self.swapchain.framebuffer_count() as u32)?;
-        self.descriptor_pool.allocate_descriptor_sets(&self.context.device, &self.descriptor_set_layout, self.swapchain.framebuffer_count())?;
-
+        self.descriptor_pool = DescriptorPool::new(&self.context.device, FRAMES_IN_FLIGHT as u32)?;
+        self.descriptor_pool.allocate_descriptor_sets(&self.context.device, &self.descriptor_set_layout, FRAMES_IN_FLIGHT)?;
 
         let descriptor_set_update_info = DescriptorSetUpdateInfo { 
             buffer: self.context.resource_manager.uniform_buffer.handle(),
             uniforms: self.context.resource_manager.uniform_buffer.get_data()
         };
         //self.descriptor_pool.update(&self.context.device, descriptor_set_update_info, &self.texture);
-
-        // Re-record command buffers
-
-        self.record()?;
 
         Ok(())
     }

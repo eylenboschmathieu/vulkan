@@ -1,15 +1,17 @@
 #![allow(dead_code, unsafe_op_in_unsafe_fn, unused_variables, clippy::too_many_arguments, clippy::unnecessary_wraps)]
 
+use std::collections::HashMap;
+
 use vulkanalia::vk::{self, *};
 use log::*;
-use anyhow::Result;
+use anyhow::{anyhow,Result};
 
 use crate::{
     resources::buffers::Allocation,
     commands::CommandBuffer,
     device::Device,
     resources::image::Texture,
-    pipeline::Pipeline
+    pipeline::pipeline::Pipeline
 };
 
 type Mat4 = cgmath::Matrix4<f32>;
@@ -65,31 +67,89 @@ type Mat4 = cgmath::Matrix4<f32>;
 pub struct DescriptorSetUpdateInfo { pub buffer: vk::Buffer, pub uniforms: Vec<Allocation> }
 
 #[derive(Debug)]
+pub(crate) struct DescriptorSetLayouts {
+    layouts: HashMap<(u32, u32), DescriptorSetLayout>, // Key: (uniform_count, texture_count), Keep a reference counter in each layout.
+}
+
+impl DescriptorSetLayouts {
+    pub fn new() -> Result<Self> {
+        Ok(Self {
+            layouts: HashMap::new(),
+        })
+    }
+
+    pub unsafe fn destroy(&mut self, device: &Device) {
+        for dsl in self.layouts.values_mut() {
+            dsl.destroy(device);
+        }
+        self.layouts.clear();
+        info!("~ DescriptorSetLayouts")
+    }
+
+    pub unsafe fn alloc(&mut self, device: &Device, uniform_count: u32, texture_count: u32) -> &DescriptorSetLayout {
+        let key= (uniform_count, texture_count);
+        self.layouts
+            .entry(key)
+            .and_modify(|dsl| dsl.ref_count += 1)
+            .or_insert_with(|| {
+                DescriptorSetLayout::new(device, uniform_count, texture_count).unwrap()
+            })
+    }
+
+    pub unsafe fn free(&mut self, device: &Device, uniform_count: u32, texture_count: u32) -> Result<()> {
+        let key = (uniform_count, texture_count);
+        match self.layouts.get_mut(&key) {
+            Some(dsl) => {
+                if dsl.ref_count == 1 {
+                    dsl.destroy(device);
+                    self.layouts.remove(&key);
+                } else {
+                    dsl.ref_count -= 1;
+                }
+                Ok(())
+            },
+            None => Err(anyhow!("Tried freeing a descriptor set layout that doesn't exist."))
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct DescriptorSetLayout {
     handle: vk::DescriptorSetLayout,
+    pub ref_count: u32,
 }
 
 impl DescriptorSetLayout {
-    pub unsafe fn new(device: &Device) -> Result<Self> {
-        let bindings = &[
-            vk::DescriptorSetLayoutBinding::builder()
-                .binding(0)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::VERTEX),
-            vk::DescriptorSetLayoutBinding::builder()
-                .binding(1)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-        ];
+    pub unsafe fn new(device: &Device, uniform_count: u32, texture_count: u32) -> Result<Self> {
+        let mut bindings = vec![];
+        let mut binding = 0;
 
+        if uniform_count > 0 {
+            bindings.push(vk::DescriptorSetLayoutBinding::builder()
+                .binding(binding as u32)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .descriptor_count(uniform_count)
+                .stage_flags(vk::ShaderStageFlags::VERTEX)
+            );
+            binding += 1;
+        }
+
+        if texture_count > 0 {
+            bindings.push(vk::DescriptorSetLayoutBinding::builder()
+                .binding((binding) as u32)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(texture_count)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT)
+            );
+            // binding += 1;
+        }
+        
         let info = vk::DescriptorSetLayoutCreateInfo::builder()
-            .bindings(bindings);
+            .bindings(&bindings);
 
         let handle = device.logical().create_descriptor_set_layout(&info, None)?;
         info!("+ DescriptorSetLayout");
-        Ok(Self { handle })
+        Ok(Self { handle, ref_count: 1 })
     }
 
     pub unsafe fn destroy(&mut self, device: &Device) {

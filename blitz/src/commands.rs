@@ -7,11 +7,11 @@ use anyhow::{anyhow, Result};
 use vulkanalia::vk::{self, *};
 
 use crate::{
-    device::Device, instance::Instance, pipeline::Renderpass, queues::{Queue, QueueType}
+    device::Device, instance::Instance, pipeline::renderpass::Renderpass, queues::{Queue, QueueType}
 };
 
 #[derive(Debug)]
-pub struct CommandPool {
+pub(crate) struct CommandPool {
     handle: vk::CommandPool,
     buffers: Vec<CommandBuffer>,
 }
@@ -103,7 +103,7 @@ impl<'a> IntoIterator for &'a CommandPool {
 
 // Essentially a wrapper to collect command pools
 #[derive(Debug)]
-pub struct CommandManager {
+pub(crate) struct CommandManager {
     /*
     === Graphics Pool ===
         Creating 1 command buffer for each swapchain image for render operations
@@ -170,7 +170,7 @@ impl CommandManager {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct CommandBuffer {
+pub(crate) struct CommandBuffer {
     handle: vk::CommandBuffer,
     pool: vk::CommandPool,
 }

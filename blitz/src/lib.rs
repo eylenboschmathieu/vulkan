@@ -3,6 +3,7 @@
 mod context;
 mod instance;
 mod device;
+mod sync;
 mod queues;
 mod swapchain;
 mod pipeline;
@@ -11,7 +12,7 @@ mod resources;
 mod container;
 mod mesh;
 
-use std::{ops::Index, sync::atomic::{AtomicBool, Ordering}, time::Instant};
+use std::{sync::atomic::{AtomicBool, Ordering}, time::Instant};
 
 use log::*;
 use anyhow::{anyhow, Result};
@@ -27,122 +28,38 @@ pub use crate::{
         image::TextureId,
         buffers::{
             index_buffer::IndexBufferId,
-            vertex_buffer::{
-                VertexBufferId,
-                Vertex,
-            }
-        }
+            vertex_buffer::VertexBufferId,
+            uniform_buffer::UniformBufferId,
+        },
+        material::{MaterialDef, MaterialId},
+        vertices::*,
     },
 };
 
 use crate::{
-    context::Context,
-    device::Device,
-    
+    context::Context, device::Device,
     pipeline::{
-        Pipeline,
-        Renderpass,
+        pipeline::Pipeline,
+        renderpass::Renderpass,
         descriptors::{
             DescriptorPool,
-            DescriptorSetLayout, DescriptorSetUpdateInfo
-        },
+            DescriptorSetUpdateInfo,
+        }
     },
-    resources::{
-        image::{
-            DepthBuffer,
-        },
-        buffers::{
-            uniform_buffer::UniformBufferId,
-        },
-    },
+    resources::image::DepthBuffer,
     swapchain::Swapchain,
+    sync::{
+        FRAMES_IN_FLIGHT,
+        Synchronization,
+    }
 };
 
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
-const FRAMES_IN_FLIGHT: usize = 2;
 
-// Structure containing per frame objects
-#[derive(Clone, Debug)]
-struct FrameSync {
-    image_available_semaphore: vk::Semaphore,
-    render_finished_semaphore: vk::Semaphore,
-    in_flight_fence: vk::Fence,
-}
-
-// Helper class to deal with synchronization
-#[derive(Clone, Debug)]
-struct Synchronization {
-    frames: Vec<FrameSync>,
-    images_in_flight_fences: Vec<vk::Fence>,
-    pub frame: usize,
-    pub image: usize,
-}
-
-impl Synchronization {
-    pub unsafe fn new(context: &Context, swapchain: &Swapchain) -> Result<Self> {
-        let swapchain_image_count = swapchain.framebuffer_count();
-        let width = swapchain.extent().width;
-        let height = swapchain.extent().height;
-
-        let semaphore_info = vk::SemaphoreCreateInfo::builder();
-        let fence_info = vk::FenceCreateInfo::builder()
-            .flags(vk::FenceCreateFlags::SIGNALED);
-
-        let mut frames = vec![];
-
-        for _ in 0..FRAMES_IN_FLIGHT {
-            frames.push(FrameSync {
-                image_available_semaphore: context.device.logical().create_semaphore(&semaphore_info, None)?,
-                render_finished_semaphore: context.device.logical().create_semaphore(&semaphore_info, None)?,
-                in_flight_fence: context.device.logical().create_fence(&fence_info, None)?,
-            });
-        }
-
-        let mut images_in_flight_fences = vec![];
-        for _ in 0..swapchain_image_count {
-            images_in_flight_fences.push(vk::Fence::null());
-        }
-
-        info!("+ Synchronization");
-        Ok(Self { frames, images_in_flight_fences, frame: 0, image: 0 })
-    }
-    
-    pub unsafe fn destroy(&self, device: &Device) {
-        for frame in &self.frames {
-            device.logical().destroy_fence(frame.in_flight_fence, None);
-            device.logical().destroy_semaphore(frame.image_available_semaphore, None);
-            device.logical().destroy_semaphore(frame.render_finished_semaphore, None);
-        }
-        info!("~ Synchronization")
-    }
-
-    pub fn image_available_semaphore(&self) -> vk::Semaphore {
-        self.frames[self.frame].image_available_semaphore
-    }
-
-    pub fn render_finished_semaphore(&self) -> vk::Semaphore {
-        self.frames[self.frame].render_finished_semaphore
-    }
-
-    pub fn in_flight_fence(&self) -> vk::Fence {
-        self.frames[self.frame].in_flight_fence
-    }
-
-    pub fn images_in_flight_fence(&self) -> vk::Fence {
-        self.images_in_flight_fences[self.image]
-    }
-    
-    pub unsafe fn update_image_in_flight_fence(&mut self) {
-        self.images_in_flight_fences[self.image] = self.in_flight_fence();
-    }
-}
-
-impl Index<usize> for Synchronization {
-    type Output = FrameSync;
-
-    fn index(&self, index: usize) -> &Self::Output  {
-        &self.frames[index]
-    }
+#[derive(Debug)]
+struct DrawCall {
+    pub mesh: Mesh,
+    pub material: MaterialId,
 }
 
 #[derive(Debug)]
@@ -152,15 +69,12 @@ pub struct Blitz {
     sync: Synchronization,
     depth_buffer: DepthBuffer,
     renderpass: Renderpass,
-    pipeline: Pipeline,
-    descriptor_set_layout: DescriptorSetLayout,
-    descriptor_pool: DescriptorPool,
-    vertex_buffer: VertexBufferId,
-    index_buffer: IndexBufferId,
-    uniform_buffers: Vec<UniformBufferId>,
+    descriptor_pool: DescriptorPool,  // Needs moving to resources
+    draw_queue: Vec<DrawCall>,
 }
 
 impl Blitz {
+    /// Used to upload vertex and index data to the graphics card, as well as textures.
     pub unsafe fn new_container(&self) -> Container<Loading> {
         container::Container::new(&self.context.device).unwrap()
     }
@@ -180,9 +94,62 @@ impl Blitz {
         Ok(container)
     }
 
+    pub unsafe fn new_material(&mut self, material_def: MaterialDef) -> Result<MaterialId> {
+        let descriptor_set_layout = self.context.resource_manager.descriptor_set_layouts.alloc(
+            &self.context.device,
+            material_def.uniforms,
+            material_def.textures,
+        );
+        
+        self.descriptor_pool.allocate_descriptor_sets(&self.context.device, &descriptor_set_layout, FRAMES_IN_FLIGHT)?;
+        
+        let pipeline = Pipeline::new(
+            &self.context.device,
+            &self.renderpass,
+            self.swapchain.extent(),
+            self.swapchain.format(),
+            &[descriptor_set_layout.handle()],
+            &material_def
+        );
+
+        self.context.resource_manager.materials.alloc(
+            &self.context.device,
+            pipeline,
+        )
+    }
+
+    pub unsafe fn new_uniform_buffers(&mut self) -> Vec<UniformBufferId> {
+        (0..FRAMES_IN_FLIGHT)
+            .map(|_| {
+                self.context.resource_manager.uniform_buffer.alloc().unwrap()
+            })
+            .collect()
+    }
+
+    pub unsafe fn bind_material(&self, id: MaterialId) {
+        let command_buffer = &self.context.command_manager.graphics()[self.sync.frame];
+        let pipeline = &self.context.resource_manager.materials[id].pipeline;
+        self.context.resource_manager.materials.bind(&self.context.device, command_buffer, id);
+        self.descriptor_pool.bind(&self.context.device, command_buffer, pipeline, self.sync.frame);
+    }
+
+    pub unsafe fn update_uniform_buffers(&self, uniform_buffers: &[UniformBufferId], delta: Instant) -> Result<()> {
+        self.context.resource_manager.uniform_buffer.update(
+            &self.context.device,
+            uniform_buffers[self.sync.frame],  // Get the uniform buffer id associated with this frame
+            &delta,
+            self.swapchain.extent()
+        )?;
+
+        Ok(())
+    }
+
     pub unsafe fn update_descriptor_sets(&mut self, texture_id: TextureId) {
         let data = self.context.resource_manager.uniform_buffer.get_data();
-        let descriptor_set_update_info = DescriptorSetUpdateInfo { buffer: self.context.resource_manager.uniform_buffer.handle(), uniforms: data };
+        let descriptor_set_update_info = DescriptorSetUpdateInfo {
+            buffer: self.context.resource_manager.uniform_buffer.handle(),
+            uniforms: data
+        };
         self.descriptor_pool.update(&self.context.device, descriptor_set_update_info , &self.context.resource_manager.textures[texture_id]);
     }
 
@@ -196,12 +163,19 @@ impl Blitz {
     }
 
     pub unsafe fn end_recording(&mut self) -> Result<()> {
+        self.flush_draw();
+
         let command_buffer = &self.context.command_manager.graphics()[self.sync.frame];
         command_buffer.end_recording(&self.context.device, &self.renderpass)
     }
 
-    pub unsafe fn start_render(&mut self, window: &Window) -> Result<()> {
+    /// Returns Ok(true) if render started successfully, Ok(false) if not (swapchain out of date)
+    pub unsafe fn start_render(&mut self, window: &Window) -> Result<bool> {
+        // Wait until a frame is available for rendering.
+
         self.context.device.logical().wait_for_fences(&[self.sync.in_flight_fence()], true, u64::MAX)?;
+
+        // Get the next swapchain image index
 
         let result = self.context.device.logical()
             .acquire_next_image_khr(self.swapchain.handle(), 
@@ -213,22 +187,34 @@ impl Blitz {
             Ok((image_index, _)) => image_index as usize,
             Err(vk::ErrorCode::OUT_OF_DATE_KHR) => {
                 self.rebuild_swapchain(window)?;
-                return Ok(());
+                return Ok(false);
             },
             Err(e) => return Err(anyhow!(e)),
         };
 
+        // Check if this image is already being rendered to. If so, wait until it is finished.
+
         if !self.sync.images_in_flight_fence().is_null() {
             self.context.device.logical().wait_for_fences(&[self.sync.images_in_flight_fence()], true, u64::MAX)?;
         }
-        self.sync.update_image_in_flight_fence();
+        self.sync.update_image_in_flight_fence();  // Link the swapchain image to the current frame_in_flight fence
 
-        self.start_recording()
+        // Start recording
+        // pipeline and descriptor binding currently hardcoded.
+
+        self.start_recording()?;
+
+        Ok(true)
     }
 
-    pub unsafe fn end_render(&mut self, window: &Window, delta: Instant) -> Result<()> {
+    pub unsafe fn end_render(&mut self, window: &Window) -> Result<()> {
+        // Stop recording
+
         self.end_recording()?;
-        self.context.resource_manager.uniform_buffer.update(&self.context.device, self.uniform_buffers[self.sync.frame], &delta, self.swapchain.extent())?;
+
+        // Update uniform buffers
+
+        // ... moved to blitz::update_uniform_buffers()
 
         // Submit
 
@@ -242,9 +228,13 @@ impl Blitz {
             .command_buffers(command_buffers)
             .signal_semaphores(signal_semaphores);
 
-        self.context.device.logical().reset_fences(&[self.sync.in_flight_fence()])?;
+        self.context.device.logical().reset_fences(&[self.sync.in_flight_fence()])?; // Render was completed for this frame, reset the fence.
 
-        self.context.queue_manager.graphics().submit(&self.context.device, &[submit_info.build()], self.sync.in_flight_fence()).expect("Failed to submit command buffer.");
+        self.context.queue_manager.graphics().submit(
+            &self.context.device,
+            &[submit_info.build()],
+            self.sync.in_flight_fence()
+        ).expect("Failed to submit command buffer.");
 
         // Present
 
@@ -264,83 +254,35 @@ impl Blitz {
         Ok(())
     }
 
-    pub unsafe fn render_mesh(&self, mesh: Mesh) {
-        let command_buffer = &self.context.command_manager.graphics()[self.sync.frame];
-
-        self.pipeline.bind(&self.context.device, command_buffer);
-        self.descriptor_pool.bind(&self.context.device, &command_buffer, &self.pipeline, self.sync.frame);
-        self.context.resource_manager.vertex_buffer.bind(&self.context.device, command_buffer, mesh.vertices);
-        self.context.resource_manager.index_buffer.bind(&self.context.device, command_buffer, mesh.indices);
-
-        // let offset = self.context.resource_manager.vertex_buffer.alloc_info(mesh.vertices).offset;
-        self.context.resource_manager.index_buffer.draw(&self.context.device, command_buffer, mesh.indices, 0);
+    /// Batches draw calls
+    pub unsafe fn draw(&mut self, mesh: Mesh, material: MaterialId) {
+        self.draw_queue.push(DrawCall { mesh, material });
     }
 
-    /// Renders a frame for our Vulkan app.
-    pub unsafe fn render(&mut self, window: &Window, delta: Instant) -> Result<()> {
-        self.context.device.logical().wait_for_fences(&[self.sync.in_flight_fence()], true, u64::MAX)?;
+    /// Record all batched and reordered draw calls by material
+    pub unsafe fn flush_draw(&mut self) {
+        let command_buffer = &self.context.command_manager.graphics()[self.sync.frame];
+        self.draw_queue.sort_by_key(|d| d.material);
 
-        let result = self.context.device.logical()
-            .acquire_next_image_khr(self.swapchain.handle(), 
-            u64::MAX, 
-            self.sync.image_available_semaphore(), 
-            vk::Fence::null());
-        self.sync.image = match result {
-            Ok((image_index, _)) => image_index as usize,
-            Err(vk::ErrorCode::OUT_OF_DATE_KHR) => {
-                self.rebuild_swapchain(window)?;
-                return Ok(());
-            },
-            Err(e) => return Err(anyhow!(e)),
-        };
+        let mut current_material = None;
 
-        if !self.sync.images_in_flight_fence().is_null() {
-            self.context.device.logical().wait_for_fences(&[self.sync.images_in_flight_fence()], true, u64::MAX)?;
+        for draw in &self.draw_queue {
+            if current_material!= Some(draw.material) {
+                self.bind_material(draw.material);
+                current_material = Some(draw.material);
+            }
+
+            self.context.resource_manager.vertex_buffer.bind(&self.context.device, command_buffer, draw.mesh.vertices);
+            self.context.resource_manager.index_buffer.bind(&self.context.device, command_buffer, draw.mesh.indices);
+            self.context.resource_manager.index_buffer.draw(&self.context.device, command_buffer, draw.mesh.indices, 0);
         }
-        self.sync.update_image_in_flight_fence();
-        self.context.resource_manager.uniform_buffer.update(&self.context.device, self.uniform_buffers[self.sync.frame], &delta, self.swapchain.extent())?;
-
-        // Submit
-
-        let wait_semaphores = &[self.sync.image_available_semaphore()];
-        let wait_stages = &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-        let command_buffers = &[self.context.command_manager.graphics()[self.sync.frame as usize].handle()];
-        let signal_semaphores = &[self.sync.render_finished_semaphore()];
-        let submit_info = vk::SubmitInfo::builder()
-            .wait_semaphores(wait_semaphores)
-            .wait_dst_stage_mask(wait_stages)
-            .command_buffers(command_buffers)
-            .signal_semaphores(signal_semaphores);
-
-        self.context.device.logical().reset_fences(&[self.sync.in_flight_fence()])?;
-
-        self.context.queue_manager.graphics().submit(&self.context.device, &[submit_info.build()], self.sync.in_flight_fence()).expect("Failed to submit command buffer.");
-
-        // Present
-
-        let swapchains = &[self.swapchain.handle()];
-        let image_indices = &[self.sync.image as u32];
-        let present_info = vk::PresentInfoKHR::builder()
-            .wait_semaphores(signal_semaphores)
-            .swapchains(swapchains)
-            .image_indices(image_indices);
-
-        if self.context.queue_manager.present().submit(&self.context.device, &present_info)? {
-            self.rebuild_swapchain(window)?;
-        };
-
-        self.sync.frame = (self.sync.image + 1) % FRAMES_IN_FLIGHT;
-
-        Ok(())
+        self.draw_queue.clear();
     }
 
     /// Destroys our Vulkan app.
     pub unsafe fn destroy(&mut self) {
         self.context.device.logical().device_wait_idle().unwrap();
-
-        self.pipeline.destroy(&self.context.device);  // Contains renderpass
         self.renderpass.destroy(&self.context.device);
-        self.descriptor_set_layout.destroy(&self.context.device);
         self.descriptor_pool.destroy(&self.context.device);
         self.sync.destroy(&self.context.device);
         self.depth_buffer.destroy(&self.context.device);
@@ -356,7 +298,7 @@ impl Blitz {
 
         self.descriptor_pool.destroy(&self.context.device);
         self.context.command_manager.graphics_mut().free_buffers(&self.context.device);
-        self.pipeline.clean(&self.context.device);
+        self.context.resource_manager.materials.clean(&self.context.device);
         self.renderpass.destroy(&self.context.device);
         self.depth_buffer.destroy(&self.context.device);
 
@@ -365,20 +307,19 @@ impl Blitz {
         self.swapchain.rebuild(window, &self.context)?;
         self.depth_buffer = DepthBuffer::new(&self.context, self.swapchain.extent().width, self.swapchain.extent().height)?;
         self.renderpass.rebuild(&self.context, self.swapchain.format())?;
-        self.pipeline.rebuild(&self.context, &self.renderpass, self.swapchain.extent(), self.swapchain.format())?;
+        self.context.resource_manager.materials.rebuild(&self.context.device, &self.renderpass, self.swapchain.extent(), self.swapchain.format());
         self.swapchain.create_framebuffers(&self.context.device, &self.renderpass, &self.depth_buffer);
         self.context.command_manager.graphics_mut().allocate_buffers(&self.context.device, self.swapchain.framebuffer_count());
 
-        let mut new_uniform_buffers = vec![];
-        self.uniform_buffers
-            .iter()
-            .for_each(|id| {
-                self.context.resource_manager.uniform_buffer.free(*id);
-                new_uniform_buffers.push(self.context.resource_manager.uniform_buffer.alloc().unwrap());
-        });
-        self.uniform_buffers = new_uniform_buffers;
+        //let mut new_uniform_buffers = vec![];
+        //self.uniform_buffers
+        //    .iter()
+        //    .for_each(|id| {
+        //        self.context.resource_manager.uniform_buffer.free(*id);
+        //        new_uniform_buffers.push(self.context.resource_manager.uniform_buffer.alloc().unwrap());
+        //});
+        //self.uniform_buffers = new_uniform_buffers;
         self.descriptor_pool = DescriptorPool::new(&self.context.device, FRAMES_IN_FLIGHT as u32)?;
-        self.descriptor_pool.allocate_descriptor_sets(&self.context.device, &self.descriptor_set_layout, FRAMES_IN_FLIGHT)?;
 
         let descriptor_set_update_info = DescriptorSetUpdateInfo { 
             buffer: self.context.resource_manager.uniform_buffer.handle(),
@@ -403,27 +344,13 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
 
     let depth_buffer = DepthBuffer::new(&context, swapchain.extent().width, swapchain.extent().height)?;
 
-    let descriptor_set_layout = DescriptorSetLayout::new(&context.device)?;
-
     let renderpass= Renderpass::new(&context, swapchain.format())?;
 
-    let pipeline = Pipeline::new(
-        &context,
-        &renderpass,
-        swapchain.extent(),
-        swapchain.format(),
-        &[descriptor_set_layout.handle()]
-    )?;
     swapchain.create_framebuffers(&context.device, &renderpass, &depth_buffer);
 
     let sync = Synchronization::new(&context, &swapchain)?;
 
-    let mut uniform_buffers = vec![];
-    for _ in 0..FRAMES_IN_FLIGHT {
-        uniform_buffers.push(context.resource_manager.uniform_buffer.alloc()?);
-    }
-    let mut descriptor_pool = DescriptorPool::new(&context.device, FRAMES_IN_FLIGHT as u32)?;
-    descriptor_pool.allocate_descriptor_sets(&context.device, &descriptor_set_layout, FRAMES_IN_FLIGHT)?;
+    let descriptor_pool = DescriptorPool::new(&context.device, FRAMES_IN_FLIGHT as u32)?;
 
     // Create
 
@@ -433,11 +360,7 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
         sync,
         depth_buffer,
         descriptor_pool,
-        descriptor_set_layout,
         renderpass,
-        pipeline,
-        vertex_buffer: usize::MAX,
-        index_buffer: usize::MAX,
-        uniform_buffers,
+        draw_queue: vec![],
     })
 }

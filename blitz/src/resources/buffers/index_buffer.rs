@@ -6,7 +6,7 @@ use log::*;
 use anyhow::{anyhow, Result};
 use vulkanalia::vk::{self, *};
 use crate::{
-    VertexBufferId, commands::CommandBuffer, device::Device, resources::buffers::{
+    commands::CommandBuffer, device::Device, resources::buffers::{
         buffer::{
             Buffer, TransferDst,
         },
@@ -99,7 +99,7 @@ impl IndexBuffer {
             command_buffer.handle(),
             self.buffer_list[id].count as u32,
             1,
-            0, // self.buffer_list[id].allocation.offset as u32,
+            0,
             vertex_offset,
             0);
     }

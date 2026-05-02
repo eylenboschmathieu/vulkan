@@ -3,44 +3,58 @@
 use log::*;
 use anyhow::Result;
 use vulkanalia::{
-    bytecode::Bytecode, vk::{self, DeviceV1_0, Extent2D, Handle, HasBuilder}
+    bytecode::Bytecode, vk::{self, DeviceV1_0, Handle, HasBuilder}
 };
 
 use crate::{
-    resources::buffers::vertex_buffer::Vertex,
-    commands::CommandBuffer,
-    context::Context,
-    device::Device,
-    pipeline::renderpass::Renderpass
+    MaterialDef, VertexFormat, commands::CommandBuffer, device::Device, pipeline::renderpass::Renderpass,
 };
 
-
 #[derive(Debug)]
-pub struct Pipeline {
-    handle: vk::Pipeline,
-    layout: vk::PipelineLayout,
+pub(crate) struct Pipelines {
+
 }
 
-impl Pipeline {
-    pub unsafe fn new(context: &Context, renderpass: &Renderpass, extent: Extent2D, format: vk::Format, descriptor_set_layouts: &[vk::DescriptorSetLayout]) -> Result<Self> {
-        
+impl Pipelines {
+
+}
+
+#[derive(Debug)]
+pub(crate) struct Pipeline {
+    handle: vk::Pipeline,
+    layout: vk::PipelineLayout,
+
+    vertex_format: VertexFormat,
+    vertex_shader: &'static [u8],
+    fragment_shader: &'static [u8],
+}
+
+impl Pipeline {    
+    pub unsafe fn new(device: &Device, renderpass: &Renderpass, extent: vk::Extent2D, format: vk::Format, descriptor_set_layouts: &[vk::DescriptorSetLayout], material_def: &MaterialDef) -> Self {
+                
         // Layout
 
-        let layout= Pipeline::build_layout(&context.device, descriptor_set_layouts)?;
+        let layout= Pipeline::build_layout(device, descriptor_set_layouts).unwrap();
 
         // Create
         
-        let handle = Pipeline::build_pipeline(&context.device, extent, format, &renderpass, layout)?;
+        let handle = Pipeline::build_pipeline(device, extent, format, &renderpass, layout, material_def).unwrap();
 
-        Ok(Self { handle, layout })
+        Self {
+            handle,
+            layout,
+            vertex_format: material_def.vertex_format.clone(),
+            vertex_shader: material_def.vertex_shader,
+            fragment_shader: material_def.fragment_shader
+        }
     }
 
-    unsafe fn build_pipeline(device: &Device, extent: vk::Extent2D, format: vk::Format, renderpass: &Renderpass, layout: vk::PipelineLayout) -> Result<vk::Pipeline> {
+    unsafe fn build_pipeline(device: &Device, extent: vk::Extent2D, format: vk::Format, renderpass: &Renderpass, layout: vk::PipelineLayout, material_def: &MaterialDef) -> Result<vk::Pipeline> {
 
         // Shaders
 
-        let vert = include_bytes!("../../shaders/texture.vert.spv");
-        let frag = include_bytes!("../../shaders/texture.frag.spv");
+        let vert = material_def.vertex_shader;
+        let frag = material_def.fragment_shader;
 
         let shaders = vec![ // Used for cleanup later
             Pipeline::build_shader(device, vert)?, // Vertex shader
@@ -60,8 +74,8 @@ impl Pipeline {
 
         // Vertex input
 
-        let binding_descriptions = &[Vertex::binding_description(0)];
-        let attribute_descriptions = Vertex::attribute_description();
+        let binding_descriptions = &[material_def.vertex_format.binding_description(0)];
+        let attribute_descriptions = material_def.vertex_format.attribute_description(0);
         let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::builder()
             .vertex_binding_descriptions(binding_descriptions)
             .vertex_attribute_descriptions(&attribute_descriptions);
@@ -178,8 +192,20 @@ impl Pipeline {
         Ok(layout)
     }
 
-    pub unsafe fn rebuild(&mut self, context: &Context, renderpass: &Renderpass, extent: vk::Extent2D, format: vk::Format) -> Result<()> {
-        self.handle = Pipeline::build_pipeline(&context.device, extent, format, renderpass, self.layout)?;
+    pub unsafe fn rebuild(&mut self, device: &Device, renderpass: &Renderpass, extent: vk::Extent2D, format: vk::Format) -> Result<()> {
+        self.handle = Pipeline::build_pipeline(
+            device,
+            extent, format,
+            renderpass,
+            self.layout,
+            &MaterialDef {
+                vertex_format: self.vertex_format.clone(),
+                vertex_shader: self.vertex_shader,
+                fragment_shader: self.fragment_shader,
+                uniforms: 0,
+                textures: 0,
+            }
+        )?;
         Ok(())
     }
     

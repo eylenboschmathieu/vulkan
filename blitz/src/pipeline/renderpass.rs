@@ -11,7 +11,7 @@ use crate::{
 };
 
 #[derive(Clone, Debug)]
-pub struct Renderpass {
+pub(crate) struct Renderpass {
     handle: vk::RenderPass
 }
 

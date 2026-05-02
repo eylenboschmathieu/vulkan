@@ -1,6 +1,3 @@
-pub mod descriptors;
-mod pipeline;
-mod renderpass;
-
-pub use self::pipeline::*;
-pub use self::renderpass::*;
+pub(crate) mod descriptors;
+pub(crate) mod renderpass;
+pub(crate) mod pipeline;

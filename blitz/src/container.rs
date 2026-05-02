@@ -6,12 +6,23 @@ use anyhow::Result;
 use vulkanalia::vk::{self, DeviceV1_0, HasBuilder, Semaphore};
 
 use crate::{
-    TextureId, commands::{CommandBuffer, CommandManager}, device::Device, mesh::Mesh, queues::QueueManager, resources::{buffers::vertex_buffer::Vertex, image::ImageMemoryBarrierQueueFamilyIndices, resource_manager::ResourceManager
-}
+    TextureId,
+    commands::{
+        CommandBuffer,
+        CommandManager
+    },
+    device::Device,
+    mesh::Mesh,
+    queues::QueueManager,
+    resources::{
+        vertices::Vertex_3D_Color_Texture,
+        image::ImageMemoryBarrierQueueFamilyIndices,
+        resource_manager::ResourceManager
+    }
 };
 
 pub(crate) struct MeshData {
-    pub vertices: Vec<Vertex>,
+    pub vertices: Vec<Vertex_3D_Color_Texture>,
     pub vertices_size: usize,
     pub indices: Vec<u16>,
     pub indices_size: usize,
@@ -74,10 +85,10 @@ impl Container<Loading> {
     }
 
     /// Returns Mesh where vertices is the Id to internal mesh vector
-    pub fn load_mesh (&mut self, vertices: &[Vertex], indices: &[u16]) -> Result<Mesh> {
+    pub fn load_mesh (&mut self, vertices: &[Vertex_3D_Color_Texture], indices: &[u16]) -> Result<Mesh> {
         let mesh = MeshData {
             vertices: vertices.to_vec(),
-            vertices_size: vertices.len() * size_of::<Vertex>(),
+            vertices_size: vertices.len() * size_of::<Vertex_3D_Color_Texture>(),
             indices: indices.to_vec(),
             indices_size: indices.len() * size_of::<u16>(),
         };

@@ -9,7 +9,7 @@ use anyhow::Result;
 use vulkanalia::vk::{self, *};
 
 use crate::{
-    commands::CommandBuffer, device::Device, vk::{KhrSwapchainExtensionDeviceCommands, PresentInfoKHR, SubmitInfo}
+    commands::CommandBuffer, globals, vk::{KhrSwapchainExtensionDeviceCommands, PresentInfoKHR, SubmitInfo}
 };
 
 #[derive(Debug)]
@@ -20,11 +20,11 @@ pub struct QueueManager {
 }
 
 impl QueueManager {
-    pub unsafe fn new(device: &Device) -> Result<Self> {
+    pub unsafe fn new() -> Result<Self> {
         Ok(Self {
-            graphics: GraphicsQueue::new(device)?,
-            transfer: TransferQueue::new(device)?,
-            present: PresentQueue::new(device)?,
+            graphics: GraphicsQueue::new()?,
+            transfer: TransferQueue::new()?,
+            present: PresentQueue::new()?,
         })
     }
 
@@ -42,7 +42,7 @@ impl QueueManager {
 }
 
 pub trait QueueType {
-    unsafe fn submit_transfer(&self, device: &Device, command_buffer: &CommandBuffer, semaphore: Option<vk::Semaphore>) -> Result<()>;
+    unsafe fn submit_transfer(&self, command_buffer: &CommandBuffer, semaphore: Option<vk::Semaphore>) -> Result<()>;
 }
 
 #[derive(Debug)]
@@ -62,7 +62,7 @@ pub struct GraphicsQueue {
 }
 
 impl QueueType for GraphicsQueue {
-    unsafe fn submit_transfer(&self, device: &Device, command_buffer: &CommandBuffer, wait_semaphore: Option<vk::Semaphore>) -> Result<()> {
+    unsafe fn submit_transfer(&self, command_buffer: &CommandBuffer, wait_semaphore: Option<vk::Semaphore>) -> Result<()> {
         let wait_semaphores = &[wait_semaphore];
         let command_buffers = &[command_buffer.handle()];
 
@@ -75,19 +75,19 @@ impl QueueType for GraphicsQueue {
             let wait_semaphores = &[signal];
             submit_info.signal_semaphores(wait_semaphores);
         }
-        device.logical().queue_submit(self.handle, &[submit_info], vk::Fence::null())?;
+        globals::device().logical().queue_submit(self.handle, &[submit_info], vk::Fence::null())?;
         Ok(())
     }
 }
 
 impl GraphicsQueue {
-    pub unsafe fn new(device: &Device) -> Result<Self> {
-        let queue = Queue { handle: device.logical().get_device_queue(device.queue_family_indices().graphics(), 0) };
+    pub unsafe fn new() -> Result<Self> {
+        let queue = Queue { handle: globals::device().logical().get_device_queue(globals::device().queue_family_indices().graphics(), 0) };
         Ok(Self { queue })
     }
 
-    pub unsafe fn submit(&self, device: &Device, info: &[SubmitInfo], fence: vk::Fence) -> Result<()> {
-        device.logical().queue_submit(self.handle, info, fence)?;
+    pub unsafe fn submit(&self, info: &[SubmitInfo], fence: vk::Fence) -> Result<()> {
+        globals::device().logical().queue_submit(self.handle, info, fence)?;
         Ok(())
     }
 }
@@ -106,14 +106,14 @@ pub struct TransferQueue {
 }
 
 impl TransferQueue {
-    pub unsafe fn new(device: &Device) -> Result<Self> {
-        let queue = Queue { handle: device.logical().get_device_queue(device.queue_family_indices().transfer(), 0) };
+    pub unsafe fn new() -> Result<Self> {
+        let queue = Queue { handle: globals::device().logical().get_device_queue(globals::device().queue_family_indices().transfer(), 0) };
         Ok(Self { queue })
     }
 }
 
 impl QueueType for TransferQueue {
-    unsafe fn submit_transfer(&self, device: &Device, command_buffer: &CommandBuffer, signal_semaphore: Option<vk::Semaphore>) -> Result<()> {
+    unsafe fn submit_transfer(&self, command_buffer: &CommandBuffer, signal_semaphore: Option<vk::Semaphore>) -> Result<()> {
         let command_buffers = &[command_buffer.handle()];
 
         let info = vk::SubmitInfo::builder()
@@ -124,8 +124,8 @@ impl QueueType for TransferQueue {
             info.signal_semaphores(signal_semaphores);
         }
 
-        device.logical().queue_submit(self.handle, &[info], vk::Fence::null())?;
-        device.logical().queue_wait_idle(self.handle)?;
+        globals::device().logical().queue_submit(self.handle, &[info], vk::Fence::null())?;
+        globals::device().logical().queue_wait_idle(self.handle)?;
         Ok(())
     }
 }
@@ -144,16 +144,16 @@ pub struct PresentQueue {
 }
 
 impl PresentQueue {
-    pub unsafe fn new(device: &Device) -> Result<Self> {
-        let queue = Queue { handle: device.logical().get_device_queue(device.queue_family_indices().present(), 0) };
+    pub unsafe fn new() -> Result<Self> {
+        let queue = Queue { handle: globals::device().logical().get_device_queue(globals::device().queue_family_indices().present(), 0) };
         Ok(Self { queue })
     }
 
     /// Returns Ok(true) if presenting was successful, but swapchain needs rebuilding, Ok(false) if it doesn't need rebuilding
-    pub unsafe fn submit(&self, device: &Device, info: &PresentInfoKHR) -> Result<bool> {
-        let result = device.logical().queue_present_khr(self.handle, info);
+    pub unsafe fn submit(&self, info: &PresentInfoKHR) -> Result<bool> {
+        let result = globals::device().logical().queue_present_khr(self.handle, info);
         let changed = result == Ok(vk::SuccessCode::SUBOPTIMAL_KHR) || result == Err(vk::ErrorCode::OUT_OF_DATE_KHR);
-        
+
         if changed {
             return Ok(true)
         };

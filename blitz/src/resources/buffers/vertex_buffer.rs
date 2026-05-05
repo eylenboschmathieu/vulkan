@@ -9,9 +9,10 @@ use anyhow::{anyhow, Result};
 use vulkanalia::vk::{self, *};
 
 use crate::{
+    globals,
     resources::buffers::{buffer::{
         Buffer, TransferDst,
-    }, freelist::{Allocation, Allocator},}, commands::CommandBuffer, device::Device,
+    }, freelist::{Allocation, Allocator},}, commands::CommandBuffer,
 };
 
 pub type VertexBufferId = usize;
@@ -25,12 +26,11 @@ pub struct VertexBuffer {
 }
 
 impl VertexBuffer {
-    pub unsafe fn new(device: &Device, size: vk::DeviceSize) -> Result<Self> {
+    pub unsafe fn new(size: vk::DeviceSize) -> Result<Self> {
 
         // Buffer
-        
+
         let handle = Buffer::create_buffer(
-            device,
             size,
             vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST
         )?;
@@ -38,10 +38,9 @@ impl VertexBuffer {
 
         // Memory
 
-        let requirements = device.logical().get_buffer_memory_requirements(handle);
+        let requirements = globals::device().logical().get_buffer_memory_requirements(handle);
 
         let memory = Buffer::create_memory(
-            device,
             requirements,
             vk::MemoryPropertyFlags::DEVICE_LOCAL
         )?;
@@ -49,7 +48,7 @@ impl VertexBuffer {
 
         // Binding
 
-        device.logical().bind_buffer_memory(handle, memory, 0)?;
+        globals::device().logical().bind_buffer_memory(handle, memory, 0)?;
 
         let buffer = Buffer::new(handle, memory, size)?;
 
@@ -58,8 +57,8 @@ impl VertexBuffer {
         Ok(Self { buffer, allocator, alloc_list: vec![], free_list: vec![] })
     }
 
-    pub unsafe fn bind(&self, device: &Device, command_buffer: &CommandBuffer, id: VertexBufferId) {
-        device.logical().cmd_bind_vertex_buffers(
+    pub unsafe fn bind(&self, command_buffer: &CommandBuffer, id: VertexBufferId) {
+        globals::device().logical().cmd_bind_vertex_buffers(
             command_buffer.handle(),
             0,
             &[self.handle()],

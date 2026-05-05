@@ -5,13 +5,17 @@ use std::{
 };
 
 use log::*;
-use vulkanalia::vk::{self, DeviceV1_0, HasBuilder};
+use vulkanalia::vk::{self, DeviceV1_0, Handle, HasBuilder};
 use anyhow::Result;
 
 use crate::{
-    TextureData, device::Device, resources::{
-        buffers::buffer::TransferDst, image::Image
-    },
+    TextureData, globals, pipeline::{
+        DescriptorSetLayout,
+        descriptor_set_layout::DescriptorSetLayoutBuildInfo,
+    }, resources::{
+        buffers::buffer::TransferDst,
+        image::Image,
+    }
 };
 
 pub type TextureId = usize;
@@ -21,12 +25,12 @@ pub(crate) struct Texture {
     pub(crate) image: Image,
     pub(crate) view: vk::ImageView,
     pub(crate) sampler: vk::Sampler,
+    pub(crate) descriptor_set: vk::DescriptorSet,
 }
 
 impl Texture {
-    pub unsafe fn new(device: &Device, width: u32, height: u32) -> Result<Self> {
+    pub unsafe fn new(layout: vk::DescriptorSetLayout, width: u32, height: u32) -> Result<Self> {
         let image = Image::new(
-            device,
             width,
             height,
             vk::Format::R8G8B8A8_SRGB,
@@ -36,25 +40,26 @@ impl Texture {
         )?;
 
         let view = Image::build_view(
-            device,
             image.handle(),
             vk::Format::R8G8B8A8_SRGB,
             vk::ImageAspectFlags::COLOR
         )?;
 
-        let sampler = Texture::build_sampler(device)?;
+        let sampler = Texture::build_sampler()?;
 
-        Ok(Self { image, view, sampler })
+        let descriptor_set = globals::descriptor_pool_mut().alloc(layout, 1)?[0];
+
+        Ok(Self { image, view, sampler, descriptor_set })
     }
 
-    pub unsafe fn destroy(&self, device: &Device) {
-        device.logical().destroy_sampler(self.sampler, None);
-        device.logical().destroy_image_view(self.view, None);
-        self.image.destroy(device);
+    pub unsafe fn destroy(&self) {
+        globals::device().logical().destroy_sampler(self.sampler, None);
+        globals::device().logical().destroy_image_view(self.view, None);
+        self.image.destroy();
         info!("~ Texture")
     }
 
-    unsafe fn build_sampler(device: &Device) -> Result<vk::Sampler> {
+    unsafe fn build_sampler() -> Result<vk::Sampler> {
         let create_info = vk::SamplerCreateInfo::builder()
             .mag_filter(vk::Filter::LINEAR)
             .min_filter(vk::Filter::LINEAR)
@@ -72,7 +77,7 @@ impl Texture {
             .min_lod(0.0)
             .max_lod(0.0);
 
-        let sampler = device.logical().create_sampler(&create_info, None)?;
+        let sampler = globals::device().logical().create_sampler(&create_info, None)?;
 
         Ok(sampler)
     }
@@ -100,26 +105,36 @@ impl Deref for Texture {
 pub(crate) struct Textures {
     textures: Vec<Texture>,
     free_ids: Vec<usize>,
+    pub descriptor_set_layout: vk::DescriptorSetLayout,
 }
 
 impl Textures {
-    pub(crate) fn new() -> Result<Self> {
+    pub unsafe fn new() -> Result<Self> {
+        let build_info = vec![
+            DescriptorSetLayoutBuildInfo { binding: 0, count: 1, descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER }, // Texture
+        ];
+        let descriptor_set_layout = DescriptorSetLayout::alloc(  // Texture descriptor set layout
+            build_info,
+        )?;
+
         Ok(Self {
             textures: vec![],
             free_ids: vec![],
+            descriptor_set_layout,
         })
     }
 
-    pub(crate) unsafe fn destroy(&self, device: &Device) {
+    pub unsafe fn destroy(&mut self) {
         for texture in &self.textures {
-            texture.destroy(device);
+            texture.destroy();
         }
+        DescriptorSetLayout::free(self.descriptor_set_layout);
+        self.descriptor_set_layout = vk::DescriptorSetLayout::null();
     }
 
-    pub(crate) unsafe fn new_texture(&mut self, device: &Device, data: &TextureData) -> Result<usize> {
-        let texture = Texture::new(device, data.width, data.height)?;
-        if self.free_ids.len() > 0 {
-            let id = self.free_ids.pop().unwrap();
+    pub unsafe fn new_texture(&mut self, data: &TextureData) -> Result<usize> {
+        let texture = Texture::new(self.descriptor_set_layout, data.width, data.height)?;
+        if let Some(id) = self.free_ids.pop() {
             self.textures[id] = texture;
             return Ok(id);
         }
@@ -128,8 +143,8 @@ impl Textures {
         Ok(self.textures.len() - 1)
     }
 
-    pub(crate) unsafe fn delete_texture(&mut self, device: &Device, id: TextureId) {
-        self.textures[id].destroy(device);
+    pub(crate) unsafe fn delete_texture(&mut self, id: TextureId) {
+        self.textures[id].destroy();
         self.free_ids.push(id);
     }
 }

@@ -3,23 +3,19 @@
 use std::{fs::File, marker::PhantomData};
 
 use anyhow::Result;
-use vulkanalia::vk::{self, DeviceV1_0, HasBuilder, Semaphore};
+use vulkanalia::vk::{self, DeviceV1_0, Handle, HasBuilder, Semaphore};
 
 use crate::{
-    TextureId,
-    commands::{
-        CommandBuffer,
-        CommandManager
-    },
-    device::Device,
-    mesh::Mesh,
-    queues::QueueManager,
-    resources::{
-        vertices::Vertex_3D_Color_Texture,
-        image::ImageMemoryBarrierQueueFamilyIndices,
-        resource_manager::ResourceManager
+    DescriptorSetUpdateInfo, commands::CommandBuffer, globals, mesh::Mesh, resources::{
+        image::ImageMemoryBarrierQueueFamilyIndices, vertices::Vertex_3D_Color_Texture
     }
 };
+
+#[derive(Debug, Clone, Copy)]
+pub struct MeshHandle(pub usize);
+
+#[derive(Debug, Clone, Copy)]
+pub struct TextureHandle(pub usize);
 
 pub(crate) struct MeshData {
     pub vertices: Vec<Vertex_3D_Color_Texture>,
@@ -70,9 +66,9 @@ impl<S> Container<S> {
 
 // App requests one of these and fills it up with data
 impl Container<Loading> {
-    pub unsafe fn new(device: &Device) -> Result<Self> {
+    pub unsafe fn new() -> Result<Self> {
         let semaphore_info = vk::SemaphoreCreateInfo::builder();
-        let semaphore = device.logical().create_semaphore(&semaphore_info, None)?;
+        let semaphore = globals::device().logical().create_semaphore(&semaphore_info, None)?;
 
         Ok(Self {
             _state: PhantomData,
@@ -84,20 +80,17 @@ impl Container<Loading> {
         })
     }
 
-    /// Returns Mesh where vertices is the Id to internal mesh vector
-    pub fn load_mesh (&mut self, vertices: &[Vertex_3D_Color_Texture], indices: &[u16]) -> Result<Mesh> {
-        let mesh = MeshData {
+    pub fn load_mesh(&mut self, vertices: &[Vertex_3D_Color_Texture], indices: &[u16]) -> Result<MeshHandle> {
+        self.meshes.push(MeshData {
             vertices: vertices.to_vec(),
             vertices_size: vertices.len() * size_of::<Vertex_3D_Color_Texture>(),
             indices: indices.to_vec(),
             indices_size: indices.len() * size_of::<u16>(),
-        };
-        self.meshes.push(mesh);
-        
-        Ok(Mesh { vertices: self.meshes.len() - 1, indices: 0})
+        });
+        Ok(MeshHandle(self.meshes.len() - 1))
     }
 
-    pub fn load_texture(&mut self, path: &str) -> Result<TextureId> {
+    pub fn load_texture(&mut self, path: &str) -> Result<TextureHandle> {
         let file = File::open(path)?;
 
         let decoder = png::Decoder::new(file);
@@ -106,8 +99,24 @@ impl Container<Loading> {
         let mut pixels = vec![0; reader.info().raw_bytes()];
         reader.next_frame(&mut pixels)?;
 
-        let size = reader.info().raw_bytes() as u64;
         let (width, height) = reader.info().size();
+
+        let pixels: Vec<u8> = match (reader.info().color_type, reader.info().bit_depth) {
+            (png::ColorType::Rgba, png::BitDepth::Eight)    => pixels,
+            (png::ColorType::Rgb,  png::BitDepth::Eight)    => pixels
+                .chunks(3)
+                .flat_map(|p| [p[0], p[1], p[2], 255])
+                .collect(),
+            (png::ColorType::Rgba, png::BitDepth::Sixteen)  => pixels
+                .chunks(8)   // 4 channels × 2 bytes each
+                .flat_map(|p| [p[0], p[2], p[4], p[6]])    // high byte of each channel
+                .collect(),
+            (png::ColorType::Rgb,  png::BitDepth::Sixteen)  => pixels
+                .chunks(6)   // 3 channels × 2 bytes each
+                .flat_map(|p| [p[0], p[2], p[4], 255])
+                .collect(),
+            (t, d) => return Err(anyhow::anyhow!("Unsupported PNG format: {:?} {:?}", t, d)),
+        };
 
         let texture = TextureData {
             width,
@@ -117,56 +126,62 @@ impl Container<Loading> {
 
         self.textures.push(texture);
 
-        Ok(self.textures.len() - 1)
+        Ok(TextureHandle(self.textures.len() - 1))
     }
 }
 
 // App passes a container back to the vulkan lib, which then processes it by
 // creating staging buffers and uploading the data
 impl Container<Transfer> {
-    pub unsafe fn process(
-        &mut self, device: &Device,
-        command_manager: &CommandManager,
-        resource_manager: &mut ResourceManager,
-        queue_manager: &QueueManager
-    ) -> Result<()> {
-        let command_buffer = command_manager.begin_one_time_submit(device, vk::QueueFlags::TRANSFER)?;
+    pub unsafe fn process(&mut self) -> Result<()> {
+        let command_buffer = globals::command_manager().begin_one_time_submit(vk::QueueFlags::TRANSFER)?;
+        let mut update_info = vec![];
 
-        let buffer_id = self.process_buffers(device, &command_buffer, resource_manager)?;
-        
-        let mut texture_id = 0;
+        let staging_buffer_id = self.process_buffers(&command_buffer)?;
+
+        let mut staging_texture_id = 0;
         if self.textures.len() > 0 {
-            texture_id = self.process_textures(device, &command_buffer, resource_manager)?;
+            staging_texture_id = self.process_textures(&command_buffer)?;
         }
 
         command_buffer.end_one_time_submit(
-            device,
-            queue_manager.transfer(),
-            if self.textures.len() > 0 { Some(self.semaphore) } else { None }
+            globals::queue_manager().transfer(),
+            if self.textures.len() > 0 { Some(self.semaphore) } else { None },
         )?;
 
         // Ownership transfer for textures
 
         if self.textures.len() > 0 {
-            let command_buffer = command_manager.begin_one_time_submit(device, vk::QueueFlags::GRAPHICS)?;
+            let command_buffer = globals::command_manager().begin_one_time_submit(vk::QueueFlags::GRAPHICS)?;
 
-            self.ownership_transfer(device, &command_buffer, resource_manager)?;
+            self.ownership_transfer(&command_buffer)?;
 
-            command_buffer.end_one_time_submit(device, queue_manager.graphics(), Some(self.semaphore))?;
-            resource_manager.staging_buffer.free(texture_id);
+            command_buffer.end_one_time_submit(globals::queue_manager().graphics(), Some(self.semaphore))?;
+            globals::staging_buffer_mut().free(staging_texture_id);
         }
 
-        resource_manager.staging_buffer.free(buffer_id);
+        // Update descriptor sets
 
+        for &id in &self.resolved_textures {
+            update_info.push(DescriptorSetUpdateInfo {
+                binding: 0,
+                descriptor_set: vk::DescriptorSet::null(), // Fetched from the texture directly
+                descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                id,
+            });
+        }
+        globals::descriptor_pool().update(&update_info);
+
+        globals::staging_buffer_mut().free(staging_buffer_id);
 
         Ok(())
     }
 
-    // Returns the staging buffer to free at the end
-    unsafe fn process_buffers(&mut self, device: &Device, command_buffer: &CommandBuffer, resource_manager: &mut ResourceManager) -> Result<usize> {
-        let sb = &mut resource_manager.staging_buffer;
-        let vb = &mut resource_manager.vertex_buffer;
-        let ib = &mut resource_manager.index_buffer;
+    // Returns the staging buffer id to free at the end
+    unsafe fn process_buffers(&mut self, command_buffer: &CommandBuffer) -> Result<usize> {
+        let sb = globals::staging_buffer_mut();
+        let vb = globals::vertex_buffer_mut();
+        let ib = globals::index_buffer_mut();
 
         // Calculate size of staging buffer
         let mut size = 0;
@@ -194,7 +209,7 @@ impl Container<Transfer> {
             let v_alloc = vb.alloc_info(v_id);
             let i_alloc = ib.alloc_info(i_id);
 
-            sb.copy_to_buffer(device, // Copy data from staging buffer to vertex buffer
+            sb.copy_to_buffer( // Copy data from staging buffer to vertex buffer
                 command_buffer,
                 vb,
                 v_alloc,
@@ -202,7 +217,6 @@ impl Container<Transfer> {
             )?;
             offset += mesh.vertices_size;
             sb.copy_to_buffer( // Copy data from staging buffer to index buffer
-                device,
                 command_buffer,
                 ib,
                 i_alloc,
@@ -214,72 +228,68 @@ impl Container<Transfer> {
         Ok(s_id)
     }
 
-    // Returns the staging buffer to free at the end
-    unsafe fn process_textures(&mut self, device: &Device, command_buffer: &CommandBuffer, resource_manager: &mut ResourceManager) -> Result<usize> {
-        let sb = &mut resource_manager.staging_buffer;
-        let queue_family_indices = device.queue_family_indices();
+    // Returns the staging buffer id to free at the end
+    unsafe fn process_textures(&mut self, command_buffer: &CommandBuffer) -> Result<usize> {
+        let queue_family_indices = globals::device().queue_family_indices();
 
         // Create staging buffer for textures and copy data into it
         let mut size = 0;
         for texture in &self.textures {
             size += texture.pixels.len() * size_of::<u8>();
         }
-        let s_id = sb.alloc(size)?; // Staging buffer id
-        
+        let s_id = globals::staging_buffer_mut().alloc(size)?; // Staging buffer id
+
         // Upload data
         let mut offset = 0;
         for tex_data in &self.textures {
-            sb.copy_to_staging_at(s_id, tex_data.pixels.as_ref(), offset)?;
+            globals::staging_buffer_mut().copy_to_staging_at(s_id, tex_data.pixels.as_ref(), offset)?;
             offset += tex_data.pixels.len() * size_of::<u8>();
         }
         offset = 0;
         for tex_data in &self.textures {
-            let id = resource_manager.textures.new_texture(device, tex_data)?;
+            let id = globals::textures_mut().new_texture(tex_data)?;
             self.resolved_textures.push(id);
-            let image = &resource_manager.textures[id].image;
-            
+            let image = globals::textures()[id].image.clone();
+
             image.transition_image_layout(
-                device,
                 command_buffer,
                 vk::Format::R8G8B8A8_SRGB,
                 vk::ImageLayout::UNDEFINED,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 None,
             )?;
-            sb.copy_to_image_at(
-                device,
-                &command_buffer,
+            globals::staging_buffer_mut().copy_to_image_at(
+                command_buffer,
                 s_id,
-                image,
+                &image,
                 offset as u64,
             )?;
             image.transition_image_layout(
-                device,
                 command_buffer,
                 vk::Format::R8G8B8A8_SRGB,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                Some(ImageMemoryBarrierQueueFamilyIndices {  // Release queue ownership
+                Some(ImageMemoryBarrierQueueFamilyIndices { // Release queue ownership
                     src_queue_family_index: queue_family_indices.transfer(),
                     dst_queue_family_index: queue_family_indices.graphics(),
                 }),
             )?;
+            offset += tex_data.pixels.len();
         }
 
         Ok(s_id)
     }
 
-    unsafe fn ownership_transfer(&self, device: &Device, command_buffer: &CommandBuffer, resource_manager: &ResourceManager) -> Result<()> {
-        let queue_family_indices = device.queue_family_indices();
+    unsafe fn ownership_transfer(&self, command_buffer: &CommandBuffer) -> Result<()> {
+        let queue_family_indices = globals::device().queue_family_indices();
         for id in &self.resolved_textures {
-            let image = &resource_manager.textures[*id].image;
+            let image = globals::textures()[*id].image.clone();
             image.transition_image_layout(
-                device,
                 command_buffer,
                 vk::Format::R8G8B8A8_SRGB,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                Some(ImageMemoryBarrierQueueFamilyIndices {  // Acquire queue ownership
+                Some(ImageMemoryBarrierQueueFamilyIndices { // Acquire queue ownership
                     src_queue_family_index: queue_family_indices.transfer(),
                     dst_queue_family_index: queue_family_indices.graphics(),
                 }),
@@ -292,16 +302,15 @@ impl Container<Transfer> {
 
 // Resolve the temporary ids returned by the container into real gpu buffer ids
 impl Container<Resolved> {
-    pub fn resolve_mesh(&self, id: usize) -> Mesh {
-        self.resolved_meshes[id]
+    pub fn resolve_mesh(&self, handle: MeshHandle) -> Mesh {
+        self.resolved_meshes[handle.0]
     }
 
-    pub fn resolve_texture(&self, id: usize) -> usize {
-        // self.resolved_textures[id]
-        0
+    pub fn resolve_texture(&self, handle: TextureHandle) -> usize {
+        self.resolved_textures[handle.0]
     }
 
-    pub unsafe fn destroy(&self, device: &Device) {
-        device.logical().destroy_semaphore(self.semaphore, None);
+    pub unsafe fn destroy(&self) {
+        globals::device().logical().destroy_semaphore(self.semaphore, None);
     }
 }

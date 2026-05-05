@@ -1,24 +1,26 @@
 #![allow(dead_code, unsafe_op_in_unsafe_fn, unused_variables, clippy::too_many_arguments, clippy::unnecessary_wraps)]
 
 mod app;
+mod camera;
 mod world;
 mod chunk;
 mod block;
 
-use std::time::Instant;
+use std::{collections::HashSet, time::Instant};
 
 use anyhow::Result;
 use log::*;
 use winit::{
     dpi::LogicalSize,
-    event::{Event, WindowEvent},
+    event::{DeviceEvent, Event, WindowEvent},
     event_loop::EventLoop,
-    window::{Window, WindowBuilder}
+    keyboard::{KeyCode, PhysicalKey},
+    window::{CursorGrabMode, Window, WindowBuilder},
 };
 
 use app::App;
 
-const TICK_RATE: u128 = 1000 / 60;  // In miliseconds
+const TICK_RATE: u128 = 1000 / 60;  // In milliseconds
 
 fn main() -> Result<()> {
     pretty_env_logger::init();
@@ -35,19 +37,44 @@ fn main() -> Result<()> {
 
     let mut app: App = unsafe { App::new(&window)? };
 
+    window.set_cursor_grab(CursorGrabMode::Locked)
+        .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined))
+        .expect("Failed to grab cursor");
+    window.set_cursor_visible(false);
+
     let mut minimized: bool = false;
     let mut tick = Instant::now();
+    let mut keys: HashSet<KeyCode> = HashSet::new();
 
     event_loop.run(move |event, elwt| {
         match event {
-            // Request a redraw when all events were processed.
+            Event::DeviceEvent { event: DeviceEvent::MouseMotion { delta }, .. } => {
+                app.mouse_move(delta.0 as f32, delta.1 as f32);
+            },
             Event::AboutToWait => window.request_redraw(),
             Event::WindowEvent { event, .. } => match event {
-                // Render a frame if our Vulkan app is not being destroyed.
+                WindowEvent::KeyboardInput { event, .. } => {
+                    if let PhysicalKey::Code(code) = event.physical_key {
+                        if code == KeyCode::Escape && event.state.is_pressed() {
+                            let _ = window.set_cursor_grab(CursorGrabMode::None);
+                            window.set_cursor_visible(true);
+                            elwt.exit();
+                            unsafe { app.destroy() }
+                            return;
+                        }
+
+                        if event.state.is_pressed() {
+                            keys.insert(code);
+                        } else {
+                            keys.remove(&code);
+                        }
+                    }
+                },
                 WindowEvent::RedrawRequested if !elwt.exiting() && !minimized => unsafe {
-                    // Only render once a second
                     let now = Instant::now();
                     if now.duration_since(tick).as_millis() > TICK_RATE {
+                        let dt = now.duration_since(tick).as_secs_f32();
+                        app.input(&keys, dt);
                         app.render(&window).expect("Failed to render.");
                         tick = now;
                     }
@@ -60,8 +87,9 @@ fn main() -> Result<()> {
                         minimized = false;
                     }
                 },
-                // Destroy our Vulkan app.
                 WindowEvent::CloseRequested => {
+                    let _ = window.set_cursor_grab(CursorGrabMode::None);
+                    window.set_cursor_visible(true);
                     elwt.exit();
                     unsafe { app.destroy(); }
                 }

@@ -6,7 +6,7 @@ use log::*;
 use anyhow::{anyhow, Result};
 use vulkanalia::vk::{self, *};
 use crate::{
-    commands::CommandBuffer, device::Device, resources::buffers::{
+    commands::CommandBuffer, globals, resources::buffers::{
         buffer::{
             Buffer, TransferDst,
         },
@@ -30,13 +30,12 @@ pub struct IndexBuffer {
 
 // Need to incorporate this into a resource manager at some point
 impl IndexBuffer {
-    pub unsafe fn new(device: &Device, count: usize) -> Result<Self> {
+    pub unsafe fn new(count: usize) -> Result<Self> {
         let size = size_of::<IndexType>() * count;  // We're going with the assumption indices ur u16
 
         // Buffer
-        
+
         let handle = Buffer::create_buffer(
-            device,
             size as u64,
             vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST
         )?;
@@ -44,10 +43,9 @@ impl IndexBuffer {
 
         // Memory
 
-        let requirements = device.logical().get_buffer_memory_requirements(handle);
+        let requirements = globals::device().logical().get_buffer_memory_requirements(handle);
 
         let memory = Buffer::create_memory(
-            device,
             requirements,
             vk::MemoryPropertyFlags::DEVICE_LOCAL
         )?;
@@ -55,7 +53,7 @@ impl IndexBuffer {
 
         // Binding
 
-        device.logical().bind_buffer_memory(handle, memory, 0)?;
+        globals::device().logical().bind_buffer_memory(handle, memory, 0)?;
 
         let buffer = Buffer::new(handle, memory, size as u64)?;
 
@@ -86,16 +84,16 @@ impl IndexBuffer {
         self.buffer_list[id] = IndexBufferData { allocation: Allocation { offset: 0, size: 0 }, count: 0 }
     }
 
-    pub unsafe fn bind(&self, device: &Device, command_buffer: &CommandBuffer, id: usize) {
-        device.logical().cmd_bind_index_buffer(
+    pub unsafe fn bind(&self, command_buffer: &CommandBuffer, id: usize) {
+        globals::device().logical().cmd_bind_index_buffer(
             command_buffer.handle(),
             self.handle(),
             self.buffer_list[id].allocation.offset as u64,
             vk::IndexType::UINT16);
     }
 
-    pub unsafe fn draw(&self, device: &Device, command_buffer: &CommandBuffer, id: IndexBufferId, vertex_offset: i32) {
-        device.logical().cmd_draw_indexed(
+    pub unsafe fn draw(&self, command_buffer: &CommandBuffer, id: IndexBufferId, vertex_offset: i32) {
+        globals::device().logical().cmd_draw_indexed(
             command_buffer.handle(),
             self.buffer_list[id].count as u32,
             1,

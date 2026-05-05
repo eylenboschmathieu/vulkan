@@ -1,5 +1,8 @@
 #![allow(dead_code, unsafe_op_in_unsafe_fn, unused_variables, clippy::too_many_arguments, clippy::unnecessary_wraps)]
 
+use std::process::Command;
+
+use cgmath::Matrix4;
 use log::*;
 use anyhow::Result;
 use vulkanalia::{
@@ -7,16 +10,14 @@ use vulkanalia::{
 };
 
 use crate::{
-    MaterialDef, VertexFormat, commands::CommandBuffer, device::Device, pipeline::renderpass::Renderpass,
+    commands::CommandBuffer, globals, pipeline::renderpass::Renderpass,
 };
 
-#[derive(Debug)]
-pub(crate) struct Pipelines {
-
-}
-
-impl Pipelines {
-
+pub struct PipelineDef {
+    pub vertex_format: crate::resources::vertices::VertexFormat,
+    pub vertex_shader: &'static [u8],
+    pub fragment_shader: &'static [u8],
+    pub push_constants: bool,
 }
 
 #[derive(Debug)]
@@ -24,41 +25,45 @@ pub(crate) struct Pipeline {
     handle: vk::Pipeline,
     layout: vk::PipelineLayout,
 
-    vertex_format: VertexFormat,
     vertex_shader: &'static [u8],
     fragment_shader: &'static [u8],
 }
 
 impl Pipeline {    
-    pub unsafe fn new(device: &Device, renderpass: &Renderpass, extent: vk::Extent2D, format: vk::Format, descriptor_set_layouts: &[vk::DescriptorSetLayout], material_def: &MaterialDef) -> Self {
-                
+    pub unsafe fn new(
+        renderpass: &Renderpass,
+        extent: vk::Extent2D,
+        format: vk::Format,
+        descriptor_set_layouts: &[vk::DescriptorSetLayout],
+        pipeline_def: &PipelineDef
+    ) -> Result<Self> {
+
         // Layout
 
-        let layout= Pipeline::build_layout(device, descriptor_set_layouts).unwrap();
+        let layout = Pipeline::build_layout(descriptor_set_layouts, pipeline_def.push_constants)?;
 
         // Create
-        
-        let handle = Pipeline::build_pipeline(device, extent, format, &renderpass, layout, material_def).unwrap();
 
-        Self {
+        let handle = Pipeline::build_pipeline(extent, format, &renderpass, layout, pipeline_def)?;
+
+        Ok(Self {
             handle,
             layout,
-            vertex_format: material_def.vertex_format.clone(),
-            vertex_shader: material_def.vertex_shader,
-            fragment_shader: material_def.fragment_shader
-        }
+            vertex_shader: pipeline_def.vertex_shader,
+            fragment_shader: pipeline_def.fragment_shader,
+        })
     }
 
-    unsafe fn build_pipeline(device: &Device, extent: vk::Extent2D, format: vk::Format, renderpass: &Renderpass, layout: vk::PipelineLayout, material_def: &MaterialDef) -> Result<vk::Pipeline> {
+    unsafe fn build_pipeline(extent: vk::Extent2D, format: vk::Format, renderpass: &Renderpass, layout: vk::PipelineLayout, pipeline_def: &PipelineDef) -> Result<vk::Pipeline> {
 
         // Shaders
 
-        let vert = material_def.vertex_shader;
-        let frag = material_def.fragment_shader;
+        let vert = pipeline_def.vertex_shader;
+        let frag = pipeline_def.fragment_shader;
 
         let shaders = vec![ // Used for cleanup later
-            Pipeline::build_shader(device, vert)?, // Vertex shader
-            Pipeline::build_shader(device, frag)?, // Fragment shader
+            Pipeline::build_shader(vert)?, // Vertex shader
+            Pipeline::build_shader(frag)?, // Fragment shader
         ];
 
         let stages = vec![
@@ -74,8 +79,8 @@ impl Pipeline {
 
         // Vertex input
 
-        let binding_descriptions = &[material_def.vertex_format.binding_description(0)];
-        let attribute_descriptions = material_def.vertex_format.attribute_description(0);
+        let binding_descriptions = &[pipeline_def.vertex_format.binding_description(0)];
+        let attribute_descriptions = pipeline_def.vertex_format.attribute_description(0);
         let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::builder()
             .vertex_binding_descriptions(binding_descriptions)
             .vertex_attribute_descriptions(&attribute_descriptions);
@@ -172,55 +177,61 @@ impl Pipeline {
             .base_pipeline_index(-1); // Optional
 
         // the creation function returns a tuple when successful. A vector of pipelines, and a success code. Hence the ?.0
-        let handle = device.logical().create_graphics_pipelines(vk::PipelineCache::null(), &[info], None)?.0[0];
+        let handle = globals::device().logical().create_graphics_pipelines(vk::PipelineCache::null(), &[info], None)?.0[0];
 
         info!("+ Handle");
 
         for shader in shaders {
-            device.logical().destroy_shader_module(shader, None);
+            globals::device().logical().destroy_shader_module(shader, None);
         }
 
         Ok(handle)
     }
 
-    unsafe fn build_layout(device: &Device, descriptor_set_layouts: &[vk::DescriptorSetLayout]) -> Result<vk::PipelineLayout> {
-        let layout_info = vk::PipelineLayoutCreateInfo::builder()
-            .set_layouts(descriptor_set_layouts);
+    unsafe fn build_layout(descriptor_set_layouts: &[vk::DescriptorSetLayout], push_constants: bool) -> Result<vk::PipelineLayout> {
+        let push_constant_range = vk::PushConstantRange::builder()
+            .stage_flags(vk::ShaderStageFlags::VERTEX)
+            .offset(0)
+            .size(size_of::<Matrix4<f32>>() as u32)
+            .build();
 
-        let layout = device.logical().create_pipeline_layout(&layout_info, None)?;
+        let ranges: &[vk::PushConstantRange] = if push_constants {
+            std::slice::from_ref(&push_constant_range)
+        } else {
+            &[]
+        };
+
+        let layout_info = vk::PipelineLayoutCreateInfo::builder()
+            .set_layouts(descriptor_set_layouts)
+            .push_constant_ranges(ranges);
+
+        let layout = globals::device().logical().create_pipeline_layout(&layout_info, None)?;
         info!("+ Layout");
         Ok(layout)
     }
 
-    pub unsafe fn rebuild(&mut self, device: &Device, renderpass: &Renderpass, extent: vk::Extent2D, format: vk::Format) -> Result<()> {
-        self.handle = Pipeline::build_pipeline(
-            device,
-            extent, format,
-            renderpass,
-            self.layout,
-            &MaterialDef {
-                vertex_format: self.vertex_format.clone(),
-                vertex_shader: self.vertex_shader,
-                fragment_shader: self.fragment_shader,
-                uniforms: 0,
-                textures: 0,
-            }
-        )?;
+    pub unsafe fn rebuild(&mut self, renderpass: &Renderpass, extent: vk::Extent2D, format: vk::Format) -> Result<()> {
+        //self.handle = Pipeline::build_pipeline(
+        //    device,
+        //    extent, format,
+        //    renderpass,
+        //    self.layout,
+        //)?;
         Ok(())
     }
     
     /// Cleaning means destroying the pipeline. Not the layout. Useful for rebuilding a pipeline.
-    pub unsafe fn clean(&mut self, device: &Device) {
-        device.logical().destroy_pipeline(self.handle, None);
+    pub unsafe fn clean(&mut self) {
+        globals::device().logical().destroy_pipeline(self.handle, None);
         self.handle = vk::Pipeline::null();
         info!("~ Handle");
     }
 
-    pub unsafe fn destroy(&mut self, device: &Device) {
-        device.logical().destroy_pipeline(self.handle, None);
+    pub unsafe fn destroy(&mut self) {
+        globals::device().logical().destroy_pipeline(self.handle, None);
         self.handle = vk::Pipeline::null();
         info!("~ Handle");
-        device.logical().destroy_pipeline_layout(self.layout, None);
+        globals::device().logical().destroy_pipeline_layout(self.layout, None);
         self.layout = vk::PipelineLayout::null();
         info!("~ Layout")
     }
@@ -229,17 +240,41 @@ impl Pipeline {
         self.layout
     }
 
-    unsafe fn build_shader(device: &Device, bytecode: &[u8]) -> Result<vk::ShaderModule> {
+    unsafe fn build_shader(bytecode: &[u8]) -> Result<vk::ShaderModule> {
         let bytecode = Bytecode::new(bytecode)?;
 
         let info = vk::ShaderModuleCreateInfo::builder()
             .code(bytecode.code())
             .code_size(bytecode.code_size());
 
-        Ok(device.logical().create_shader_module(&info, None)?)
+        Ok(globals::device().logical().create_shader_module(&info, None)?)
     }
 
-    pub unsafe fn bind(&self, device: &Device, command_buffer: &CommandBuffer) {
-        device.logical().cmd_bind_pipeline(command_buffer.handle(), vk::PipelineBindPoint::GRAPHICS, self.handle);
+    pub unsafe fn bind(&self, command_buffer: &CommandBuffer) {
+        globals::device().logical().cmd_bind_pipeline(command_buffer.handle(), vk::PipelineBindPoint::GRAPHICS, self.handle);
+    }
+
+    pub unsafe fn bind_sets(&self, command_buffer: &CommandBuffer, descriptor_sets: &[vk::DescriptorSet], set_index: u32) {
+        globals::device().logical().cmd_bind_descriptor_sets(
+            command_buffer.handle(),
+            vk::PipelineBindPoint::GRAPHICS,
+            self.layout,
+            set_index, // Works in conjunction with descriptor_sets below this.
+            descriptor_sets,
+            &[]
+        );
+    }
+
+    pub unsafe fn push_constants(&self, command_buffer: &CommandBuffer, data: &Matrix4<f32>) {
+        globals::device().logical().cmd_push_constants(  // Create a pipeline struct and add a push_constant method to it, as well as other bindings
+            command_buffer.handle(),
+            self.layout,
+            vk::ShaderStageFlags::VERTEX,
+            0,
+            std::slice::from_raw_parts(
+                data as *const cgmath::Matrix4<f32> as *const u8,
+                size_of::<cgmath::Matrix4<f32>>()
+            )
+        );
     }
 }

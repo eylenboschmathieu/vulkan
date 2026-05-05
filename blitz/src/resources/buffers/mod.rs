@@ -5,4 +5,3 @@ pub mod vertex_buffer;
 pub mod index_buffer;
 pub mod uniform_buffer;
 
-pub use freelist::Allocation;

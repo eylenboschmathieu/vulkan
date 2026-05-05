@@ -8,6 +8,7 @@ use log::*;
 use anyhow::{anyhow, Result};
 use vulkanalia::vk::{self, *};
 use crate::{
+    globals,
     resources::{
         image::Image,
         buffers::{
@@ -17,7 +18,6 @@ use crate::{
         },
     },
     commands::CommandBuffer,
-    device::Device,
 };
 
 pub type StagingBufferId = usize;
@@ -32,11 +32,10 @@ pub struct StagingBuffer {
 }
 
 impl StagingBuffer {
-    pub unsafe fn new(device: &Device, size: vk::DeviceSize) -> Result<Self> {
+    pub unsafe fn new(size: vk::DeviceSize) -> Result<Self> {
         // Buffer
-        
+
         let handle = Buffer::create_buffer(
-            device,
             size,
             vk::BufferUsageFlags::TRANSFER_SRC
         )?;
@@ -44,10 +43,9 @@ impl StagingBuffer {
 
         // Memory
 
-        let requirements = device.logical().get_buffer_memory_requirements(handle);
+        let requirements = globals::device().logical().get_buffer_memory_requirements(handle);
 
         let memory = Buffer::create_memory(
-            device,
             requirements,
             vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
         )?;
@@ -55,20 +53,20 @@ impl StagingBuffer {
 
         // Binding
 
-        device.logical().bind_buffer_memory(handle, memory, 0)?;
+        globals::device().logical().bind_buffer_memory(handle, memory, 0)?;
 
         let buffer = Buffer::new(handle, memory, size)?;
 
         let allocator = Allocator::new(size as usize, requirements.alignment as usize);
 
-        let mapped_ptr = device.logical().map_memory(memory, 0, size, vk::MemoryMapFlags::empty())?;
+        let mapped_ptr = globals::device().logical().map_memory(memory, 0, size, vk::MemoryMapFlags::empty())?;
 
         Ok(Self { buffer, allocator, alloc_list: vec![], free_list: vec![], mapped_ptr })
     }
 
-    pub unsafe fn destroy(&mut self, device: &Device) {
-        device.logical().unmap_memory(self.memory());
-        self.buffer.destroy(device);
+    pub unsafe fn destroy(&mut self) {
+        globals::device().logical().unmap_memory(self.memory());
+        self.buffer.destroy();
     }
 
     /// Copies data into the staging buffer
@@ -85,28 +83,28 @@ impl StagingBuffer {
     }
 
     // dst_buffer should be the buffer, and the alloc info
-    pub unsafe fn copy_to_buffer<T>(&self, device: &Device, command_buffer: &CommandBuffer, dst_buffer: &T, allocation: Allocation, src_offset: u64) -> Result<()>
+    pub unsafe fn copy_to_buffer<T>(&self, command_buffer: &CommandBuffer, dst_buffer: &T, allocation: Allocation, src_offset: u64) -> Result<()>
     where T: TransferDst + Deref<Target = Buffer> {
         let regions = vk::BufferCopy::builder()
             .size(allocation.size as u64)
             .src_offset(src_offset)
-            .dst_offset(allocation.offset as u64); 
+            .dst_offset(allocation.offset as u64);
 
-        device.logical().cmd_copy_buffer(
+        globals::device().logical().cmd_copy_buffer(
             command_buffer.handle(),
             self.handle(),
             dst_buffer.handle(),
             &[regions]
         );
-        
+
         Ok(())
     }
 
-    pub unsafe fn copy_to_image(&self, device: &Device, command_buffer: &CommandBuffer, id: StagingBufferId, dst_image: &Image) -> Result<()> {
-        self.copy_to_image_at(device, command_buffer, id, dst_image, 0)
+    pub unsafe fn copy_to_image(&self, command_buffer: &CommandBuffer, id: StagingBufferId, dst_image: &Image) -> Result<()> {
+        self.copy_to_image_at(command_buffer, id, dst_image, 0)
     }
 
-    pub unsafe fn copy_to_image_at(&self, device: &Device, command_buffer: &CommandBuffer, id: StagingBufferId, dst_image: &Image, offset: u64) -> Result<()> {
+    pub unsafe fn copy_to_image_at(&self, command_buffer: &CommandBuffer, id: StagingBufferId, dst_image: &Image, offset: u64) -> Result<()> {
         let subresource = vk::ImageSubresourceLayers::builder()
             .aspect_mask(vk::ImageAspectFlags::COLOR)
             .mip_level(0)
@@ -114,14 +112,14 @@ impl StagingBuffer {
             .layer_count(1);
 
         let regions = vk::BufferImageCopy::builder()
-            .buffer_offset(self.alloc_list[id].offset as u64)
+            .buffer_offset(self.alloc_list[id].offset as u64 + offset)
             .buffer_row_length(0)
             .buffer_image_height(0)
             .image_subresource(subresource)
             .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
             .image_extent(vk::Extent3D { width: dst_image.width(), height: dst_image.height(), depth: 1});
 
-        device.logical().cmd_copy_buffer_to_image(
+        globals::device().logical().cmd_copy_buffer_to_image(
             command_buffer.handle(),
             self.handle(),
             dst_image.handle(),

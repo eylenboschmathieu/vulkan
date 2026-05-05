@@ -2,7 +2,7 @@
 
 use crate::{IndexBufferId, VertexBufferId};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct Mesh {
     pub vertices: VertexBufferId,
     pub indices: IndexBufferId,

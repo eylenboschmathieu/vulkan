@@ -7,9 +7,10 @@ use log::*;
 use anyhow::{anyhow, Result};
 
 use crate::{
+    globals,
     resources::buffers::buffer::{
             Buffer, TransferDst
-        }, commands::CommandBuffer, context::Context, device::Device,
+        }, commands::CommandBuffer,
 };
 
 pub struct ImageMemoryBarrierQueueFamilyIndices {
@@ -28,7 +29,6 @@ pub struct Image {
 
 impl Image {
     pub unsafe fn new(
-        device: &Device,
         width: u32,
         height: u32,
         format: vk::Format,
@@ -36,18 +36,17 @@ impl Image {
         usage: vk::ImageUsageFlags,
         properties: vk::MemoryPropertyFlags,
     ) -> Result<Self> {
-        let handle = Image::build_image(device, width, height, format, tiling, usage)?;
-        let memory = Image::build_memory(device, handle, properties)?;
+        let handle = Image::build_image(width, height, format, tiling, usage)?;
+        let memory = Image::build_memory(handle, properties)?;
         let size = (width * height * 4) as u64;
 
-        device.logical().bind_image_memory(handle, memory, 0)?;
+        globals::device().logical().bind_image_memory(handle, memory, 0)?;
 
         Ok(Self { handle, memory, width, height, size })
     }
 
-    unsafe fn build_image(device: &Device, width: u32, height: u32, format: vk::Format, tiling: vk::ImageTiling, usage: vk::ImageUsageFlags) -> Result<vk::Image> {
-        let device_queue_family_indices = device.queue_family_indices();
-        // let queue_family_indices = &[device_queue_family_indices.transfer(), device_queue_family_indices.graphics()];
+    unsafe fn build_image(width: u32, height: u32, format: vk::Format, tiling: vk::ImageTiling, usage: vk::ImageUsageFlags) -> Result<vk::Image> {
+        // let queue_family_indices = &[globals::device().queue_family_indices().transfer(), globals::device().queue_family_indices().graphics()];
 
         let create_info = vk::ImageCreateInfo::builder()
             .image_type(vk::ImageType::_2D)
@@ -72,29 +71,28 @@ impl Image {
             vk::ImageLayout::PREINITIALIZED – Not usable by the GPU, but the first transition will preserve the texels.
         */
 
-        let handle = device.logical().create_image(&create_info, None)?;
+        let handle = globals::device().logical().create_image(&create_info, None)?;
         info!("+ Handle");
 
         Ok(handle)
     }
 
-    unsafe fn build_memory(device: &Device, image: vk::Image, properties: vk::MemoryPropertyFlags) -> Result<vk::DeviceMemory> {
-        let requirements = device.logical().get_image_memory_requirements(image);
+    unsafe fn build_memory(image: vk::Image, properties: vk::MemoryPropertyFlags) -> Result<vk::DeviceMemory> {
+        let requirements = globals::device().logical().get_image_memory_requirements(image);
         let allocate_info = vk::MemoryAllocateInfo::builder()
             .allocation_size(requirements.size)
             .memory_type_index(Buffer::get_memory_type_index(
-                device,
                 properties,
                 requirements)?
             );
 
-        let memory = device.logical().allocate_memory(&allocate_info, None)?;
+        let memory = globals::device().logical().allocate_memory(&allocate_info, None)?;
         info!("+ Memory");
 
         Ok(memory)
     }
 
-    pub unsafe fn build_view(device: &Device, image: vk::Image, format: vk::Format, aspects: vk::ImageAspectFlags) -> Result<vk::ImageView> {
+    pub unsafe fn build_view(image: vk::Image, format: vk::Format, aspects: vk::ImageAspectFlags) -> Result<vk::ImageView> {
         let subresource_range = vk::ImageSubresourceRange::builder()
             .aspect_mask(vk::ImageAspectFlags::COLOR)
             .base_mip_level(0)
@@ -109,7 +107,7 @@ impl Image {
             .format(format)
             .subresource_range(subresource_range);
 
-        let view = device.logical().create_image_view(&create_info, None)?;
+        let view = globals::device().logical().create_image_view(&create_info, None)?;
 
         Ok(view)
     }
@@ -136,7 +134,6 @@ impl Image {
 
     pub unsafe fn transition_image_layout(
         &self,
-        device: &Device,
         command_buffer: &CommandBuffer,
         format: vk::Format,
         old_layout: vk::ImageLayout,
@@ -199,13 +196,12 @@ impl Image {
         let info = vk::DependencyInfo::builder()
             .image_memory_barriers(barriers);
 
-        device.logical().cmd_pipeline_barrier2(command_buffer.handle(), &info);
+        globals::device().logical().cmd_pipeline_barrier2(command_buffer.handle(), &info);
         Ok(())
     }
 
     pub unsafe fn transition_depth_layout(
         &self,
-        device: &Device,
         command_buffer: &CommandBuffer,
         format: vk::Format,
         old_layout: vk::ImageLayout,
@@ -268,13 +264,13 @@ impl Image {
         let info = vk::DependencyInfo::builder()
             .image_memory_barriers(barriers);
 
-        device.logical().cmd_pipeline_barrier2(command_buffer.handle(), &info);
+        globals::device().logical().cmd_pipeline_barrier2(command_buffer.handle(), &info);
         Ok(())
     }
 
-    pub unsafe fn destroy(&self, device: &Device) {
-        device.logical().free_memory(self.memory, None);
-        device.logical().destroy_image(self.handle, None);
+    pub unsafe fn destroy(&self) {
+        globals::device().logical().free_memory(self.memory, None);
+        globals::device().logical().destroy_image(self.handle, None);
     }
 }
 
@@ -287,41 +283,40 @@ pub struct DepthBuffer {
 }
 
 impl DepthBuffer {
-    pub unsafe fn new(context: &Context, width: u32, height: u32) -> Result<Self> {
-        let format = DepthBuffer::get_depth_format(context)?;
+    pub unsafe fn new(width: u32, height: u32) -> Result<Self> {
+        let format = DepthBuffer::get_depth_format()?;
 
         let image = Image::new(
-            &context.device,
             width, height,
             format,
             vk::ImageTiling::OPTIMAL,
             vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
             vk::MemoryPropertyFlags::DEVICE_LOCAL)?;
 
-        let view = Image::build_view(&context.device, image.handle(), format, vk::ImageAspectFlags::DEPTH)?;
+        let view = Image::build_view(image.handle(), format, vk::ImageAspectFlags::DEPTH)?;
 
         info!("+ DepthBuffer");
         Ok(Self { image, view })
     }
 
-    pub unsafe fn get_depth_format(context: &Context) -> Result<vk::Format> {
+    pub unsafe fn get_depth_format() -> Result<vk::Format> {
         let candidates = &[
             vk::Format::D32_SFLOAT,
             vk::Format::D32_SFLOAT_S8_UINT,
-            vk::Format::D24_UNORM_S8_UINT,  
+            vk::Format::D24_UNORM_S8_UINT,
         ];
 
-        context.instance.get_supported_format(
-            &context.device,
+        globals::instance().get_supported_format(
+            globals::device(),
             candidates,
             vk::ImageTiling::OPTIMAL,
             vk::FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT
         )
     }
 
-    pub unsafe fn destroy(&self, device: &Device) {
-        device.logical().destroy_image_view(self.view, None);
-        self.image.destroy(device);
+    pub unsafe fn destroy(&self) {
+        globals::device().logical().destroy_image_view(self.view, None);
+        self.image.destroy();
         info!("~ DepthBuffer")
     }
 

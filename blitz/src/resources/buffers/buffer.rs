@@ -3,9 +3,7 @@
 use anyhow::{anyhow,Result};
 use log::*;
 use vulkanalia::vk::{self, *};
-use crate::{
-    device::Device
-};
+use crate::globals;
 
 pub trait TransferDst {}  // Implemented by VertexBuffer and IndexBuffer so they're treated as Transfer targets
 
@@ -21,8 +19,8 @@ impl Buffer {
         Ok(Self { handle, memory, size })
     }
 
-    pub unsafe fn create_buffer(device: &Device, size: u64, usage: vk::BufferUsageFlags) -> Result<vk::Buffer> {
-        let queue_family_indices = &[device.queue_family_indices().graphics(), device.queue_family_indices().transfer()];
+    pub unsafe fn create_buffer(size: u64, usage: vk::BufferUsageFlags) -> Result<vk::Buffer> {
+        let queue_family_indices = &[globals::device().queue_family_indices().graphics(), globals::device().queue_family_indices().transfer()];
 
         let mut create_info = vk::BufferCreateInfo::builder()
             .size(size)
@@ -32,30 +30,29 @@ impl Buffer {
             .queue_family_indices(queue_family_indices);  // If SharingMode::CONCURRENT -> List the family indices that will be used
         create_info.queue_family_index_count = 2;
 
-        let handle = device.logical().create_buffer(&create_info, None)?;
+        let handle = globals::device().logical().create_buffer(&create_info, None)?;
 
         Ok(handle)
     }
 
-    pub unsafe fn create_memory(device: &Device, requirements: vk::MemoryRequirements, properties: vk::MemoryPropertyFlags) -> Result<vk::DeviceMemory> {
+    pub unsafe fn create_memory(requirements: vk::MemoryRequirements, properties: vk::MemoryPropertyFlags) -> Result<vk::DeviceMemory> {
         let memory_info = vk::MemoryAllocateInfo::builder()
             .allocation_size(requirements.size)
             .memory_type_index(Buffer::get_memory_type_index(
-                device,
                 properties,
                 requirements)?
             );
 
-        let memory = device.logical().allocate_memory(&memory_info, None)?;
+        let memory = globals::device().logical().allocate_memory(&memory_info, None)?;
 
         Ok(memory)
     }
 
-    pub unsafe fn destroy(&mut self, device: &Device) {
-        device.logical().free_memory(self.memory, None);
+    pub unsafe fn destroy(&mut self) {
+        globals::device().logical().free_memory(self.memory, None);
         self.memory = vk::DeviceMemory::null();
         info!("~ Memory");
-        device.logical().destroy_buffer(self.handle, None);
+        globals::device().logical().destroy_buffer(self.handle, None);
         self.handle = vk::Buffer::null();
         info!("~ Handle");
     }
@@ -72,8 +69,8 @@ impl Buffer {
         self.size
     }
 
-    pub unsafe fn get_memory_type_index(device: &Device, properties: vk::MemoryPropertyFlags, requirements: vk::MemoryRequirements) -> Result<u32> {
-        let memory_properties = device.memory_properties();
+    pub unsafe fn get_memory_type_index(properties: vk::MemoryPropertyFlags, requirements: vk::MemoryRequirements) -> Result<u32> {
+        let memory_properties = globals::device().memory_properties();
         (0..memory_properties.memory_type_count)
             .find(|i| {
                 let suitable = (requirements.memory_type_bits & (1 << i)) != 0;

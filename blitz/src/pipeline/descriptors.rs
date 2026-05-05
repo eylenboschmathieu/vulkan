@@ -1,18 +1,10 @@
 #![allow(dead_code, unsafe_op_in_unsafe_fn, unused_variables, clippy::too_many_arguments, clippy::unnecessary_wraps)]
 
-use std::collections::HashMap;
-
 use vulkanalia::vk::{self, *};
 use log::*;
-use anyhow::{anyhow,Result};
+use anyhow::Result;
 
-use crate::{
-    resources::buffers::Allocation,
-    commands::CommandBuffer,
-    device::Device,
-    resources::image::Texture,
-    pipeline::pipeline::Pipeline
-};
+use crate::globals;
 
 type Mat4 = cgmath::Matrix4<f32>;
 
@@ -64,228 +56,126 @@ type Mat4 = cgmath::Matrix4<f32>;
                 pool.combined_image_sampler: 4 -> 2
 */
 
-pub struct DescriptorSetUpdateInfo { pub buffer: vk::Buffer, pub uniforms: Vec<Allocation> }
+/* General rule:
+        1 texture -> 1 descriptor set
+        uniform buffers -> FRAMES_IN_FLIGHT descriptor sets
+
+        camera uniform buffers are bound to set 0
+        textures are bound to set 1
+        uniform buffers are bound to set 2
+*/
+
+pub struct DescriptorSetUpdateInfo {
+    pub descriptor_set: vk::DescriptorSet,
+    pub binding: u32,
+    pub descriptor_type: vk::DescriptorType,
+    pub id: usize, // Uniform Id, or Texture Id
+}
+
+pub type DescriptorSetId = usize;
 
 #[derive(Debug)]
-pub(crate) struct DescriptorSetLayouts {
-    layouts: HashMap<(u32, u32), DescriptorSetLayout>, // Key: (uniform_count, texture_count), Keep a reference counter in each layout.
-}
-
-impl DescriptorSetLayouts {
-    pub fn new() -> Result<Self> {
-        Ok(Self {
-            layouts: HashMap::new(),
-        })
-    }
-
-    pub unsafe fn destroy(&mut self, device: &Device) {
-        for dsl in self.layouts.values_mut() {
-            dsl.destroy(device);
-        }
-        self.layouts.clear();
-        info!("~ DescriptorSetLayouts")
-    }
-
-    pub unsafe fn alloc(&mut self, device: &Device, uniform_count: u32, texture_count: u32) -> &DescriptorSetLayout {
-        let key= (uniform_count, texture_count);
-        self.layouts
-            .entry(key)
-            .and_modify(|dsl| dsl.ref_count += 1)
-            .or_insert_with(|| {
-                DescriptorSetLayout::new(device, uniform_count, texture_count).unwrap()
-            })
-    }
-
-    pub unsafe fn free(&mut self, device: &Device, uniform_count: u32, texture_count: u32) -> Result<()> {
-        let key = (uniform_count, texture_count);
-        match self.layouts.get_mut(&key) {
-            Some(dsl) => {
-                if dsl.ref_count == 1 {
-                    dsl.destroy(device);
-                    self.layouts.remove(&key);
-                } else {
-                    dsl.ref_count -= 1;
-                }
-                Ok(())
-            },
-            None => Err(anyhow!("Tried freeing a descriptor set layout that doesn't exist."))
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct DescriptorSetLayout {
-    handle: vk::DescriptorSetLayout,
-    pub ref_count: u32,
-}
-
-impl DescriptorSetLayout {
-    pub unsafe fn new(device: &Device, uniform_count: u32, texture_count: u32) -> Result<Self> {
-        let mut bindings = vec![];
-        let mut binding = 0;
-
-        if uniform_count > 0 {
-            bindings.push(vk::DescriptorSetLayoutBinding::builder()
-                .binding(binding as u32)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                .descriptor_count(uniform_count)
-                .stage_flags(vk::ShaderStageFlags::VERTEX)
-            );
-            binding += 1;
-        }
-
-        if texture_count > 0 {
-            bindings.push(vk::DescriptorSetLayoutBinding::builder()
-                .binding((binding) as u32)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(texture_count)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT)
-            );
-            // binding += 1;
-        }
-        
-        let info = vk::DescriptorSetLayoutCreateInfo::builder()
-            .bindings(&bindings);
-
-        let handle = device.logical().create_descriptor_set_layout(&info, None)?;
-        info!("+ DescriptorSetLayout");
-        Ok(Self { handle, ref_count: 1 })
-    }
-
-    pub unsafe fn destroy(&mut self, device: &Device) {
-        device.logical().destroy_descriptor_set_layout(self.handle, None);
-        self.handle = vk::DescriptorSetLayout::null();
-        info!("~ DescriptorSetLayout");
-    }
-
-    pub fn handle(&self) -> vk::DescriptorSetLayout {
-        self.handle
-    }
-}
-
-#[derive(Debug)]
-pub struct DescriptorPool {
+pub(crate) struct DescriptorPool {
     handle: vk::DescriptorPool,
-    descriptor_sets: Vec<vk::DescriptorSet>,
 }
 
 impl DescriptorPool {
-    pub unsafe fn new(device: &Device, max_sets: u32) -> Result<Self> {
-        // descriptor_count = swapchain_images_count
-        // max_sets = max_frames_in_flight
+    pub unsafe fn new(max_sets: u32) -> Result<Self> {
+        // Just set the pool to contain 16 of each for now
 
         let pool_sizes = &[
             vk::DescriptorPoolSize::builder()
                 .type_(vk::DescriptorType::UNIFORM_BUFFER)
-                .descriptor_count(8),
+                .descriptor_count(16),
             vk::DescriptorPoolSize::builder()
                 .type_(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(8)
+                .descriptor_count(16),
         ];
 
         let create_info = vk::DescriptorPoolCreateInfo::builder()
+            .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET)
             .pool_sizes(pool_sizes)
             .max_sets(max_sets);
 
-        let handle = device.logical().create_descriptor_pool(&create_info, None)?;
-
-        Ok(Self { handle, descriptor_sets: vec![] })
+        let handle = globals::device().logical().create_descriptor_pool(&create_info, None)?;
+        info!("+ DescriptorPool");
+        Ok(Self { handle })
     }
 
-    pub unsafe fn destroy(&mut self, device: &Device) {
-        device.logical().destroy_descriptor_pool(self.handle, None);
+    pub unsafe fn destroy(&mut self) {
+        globals::device().logical().destroy_descriptor_pool(self.handle, None);
         self.handle = vk::DescriptorPool::null();
-        info!("~ Handle");
+        info!("~ DescriptorPool");
     }
 
-    pub unsafe fn allocate_descriptor_sets(&mut self, device: &Device, descriptor_set_layout: &DescriptorSetLayout, descriptor_set_count: usize) -> Result<()> {
-        let layouts = vec![descriptor_set_layout.handle(); descriptor_set_count];
+    pub unsafe fn alloc(&mut self, layout: vk::DescriptorSetLayout, count: u32) -> Result<Vec<DescriptorSet>> {
+        let layouts = vec![layout; count as usize];
 
-        let allocate_info = vk::DescriptorSetAllocateInfo::builder()
+        let mut alloc_info: DescriptorSetAllocateInfoBuilder<'_> = vk::DescriptorSetAllocateInfo::builder()
             .descriptor_pool(self.handle)
             .set_layouts(&layouts);
 
-        self.descriptor_sets = device.logical().allocate_descriptor_sets(&allocate_info)?;
+        alloc_info.descriptor_set_count = count;
 
+        Ok(globals::device().logical().allocate_descriptor_sets(&alloc_info)?)
+    }
+
+    pub unsafe fn free(&mut self, sets: &[DescriptorSet]) -> Result<()> {
+        globals::device().logical().free_descriptor_sets(self.handle, sets)?;
         Ok(())
     }
 
-    pub unsafe fn update(&self, device: &Device, update_info: DescriptorSetUpdateInfo, texture: &Texture) {
-        // This method looks to be a better fit for descriptor set layouts
-
+    pub unsafe fn update(&self, updates: &[DescriptorSetUpdateInfo]) {
         let mut descriptor_writes: Vec<vk::WriteDescriptorSet> = vec![];
 
-        // Uniform buffer
+        // Intermediate storage to keep buffer/image infos alive until the Vulkan call.
+        let mut buffer_infos_store: Vec<vk::DescriptorBufferInfo> = vec![];
+        let mut image_infos_store: Vec<vk::DescriptorImageInfo> = vec![];
 
-        let buffer_infos: Vec<vk::DescriptorBufferInfo> = update_info.uniforms
-            .iter()
-            .map(|uniform_info| {
-                vk::DescriptorBufferInfo::builder()
-                    .buffer(update_info.buffer)
-                    .offset(uniform_info.offset as u64)
-                    .range(uniform_info.size as u64)
-                    .build()
-            })
-            .collect();
+        for update_info in updates {
+            match update_info.descriptor_type {
+                vk::DescriptorType::UNIFORM_BUFFER => {
+                    let alloc = globals::uniform_buffer().alloc_info(update_info.id);
+                    buffer_infos_store.push(vk::DescriptorBufferInfo::builder()
+                        .buffer(globals::uniform_buffer().handle())
+                        .offset(alloc.offset as u64)
+                        .range(alloc.size as u64)
+                        .build()
+                    );
+                    descriptor_writes.push(vk::WriteDescriptorSet::builder()
+                        .dst_set(update_info.descriptor_set)
+                        .dst_binding(update_info.binding)
+                        .dst_array_element(0)
+                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                        .buffer_info(std::slice::from_ref(buffer_infos_store.last().unwrap()))
+                        .build()
+                    );
+                },
+                vk::DescriptorType::COMBINED_IMAGE_SAMPLER => {
+                    let texture = &globals::textures()[update_info.id];
+                    image_infos_store.push(vk::DescriptorImageInfo::builder()
+                        .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                        .image_view(texture.view())
+                        .sampler(texture.sampler())
+                        .build()
+                    );
+                    descriptor_writes.push(vk::WriteDescriptorSet::builder()
+                        .dst_set(texture.descriptor_set)
+                        .dst_binding(update_info.binding)
+                        .dst_array_element(0)
+                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                        .image_info(std::slice::from_ref(image_infos_store.last().unwrap()))
+                        .build()
+                    );
+                },
+                _ => {}
+            }
+        }
 
-        buffer_infos
-            .iter()
-            .enumerate()
-            .for_each(|(i, info)| {
-                descriptor_writes.push(vk::WriteDescriptorSet::builder()
-                    .dst_set(self.descriptor_sets[i])
-                    .dst_binding(0)
-                    .dst_array_element(0)
-                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                    .buffer_info(std::slice::from_ref(info))
-                    .build()
-                );
-            });
-
-        // Image
-
-        let image_infos: Vec<vk::DescriptorImageInfo> = (0..update_info.uniforms.len())
-            .map(|_| {
-                vk::DescriptorImageInfo::builder()
-                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                    .image_view(texture.view())
-                    .sampler(texture.sampler())
-                    .build()
-            })
-            .collect();
-
-        image_infos
-            .iter()
-            .enumerate()
-            .for_each(|(i, info)| {
-                descriptor_writes.push(vk::WriteDescriptorSet::builder()
-                    .dst_set(self.descriptor_sets[i])
-                    .dst_binding(1)
-                    .dst_array_element(0)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(std::slice::from_ref(info))
-                    .build()
-                );
-            });
-
-        // Update
-
-        device.logical().update_descriptor_sets(
+        globals::device().logical().update_descriptor_sets(
             &descriptor_writes,
             &[] as &[vk::CopyDescriptorSet]
         );
         info!("Updated descriptor sets");
     }
-
-    pub unsafe fn bind(&self, device: &Device, command_buffer: &CommandBuffer, pipeline: &Pipeline, frame: usize) {
-        device.logical().cmd_bind_descriptor_sets(
-            command_buffer.handle(),
-            vk::PipelineBindPoint::GRAPHICS,
-            pipeline.layout(),
-            0,
-            &[self.descriptor_sets[frame]],
-            &[]
-        );
-    }
-
 }

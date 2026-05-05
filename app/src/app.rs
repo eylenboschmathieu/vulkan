@@ -1,11 +1,13 @@
 #![allow(dead_code, unsafe_op_in_unsafe_fn, unused_variables, clippy::too_many_arguments, clippy::unnecessary_wraps)]
 
-use cgmath::{vec2, vec3};
+use cgmath::{vec2, vec3, point3, Deg};
 use anyhow::Result;
-use std::time::Instant;
+use std::{collections::HashSet, time::Instant};
 use log::*;
-use winit::window::Window;
+use winit::{keyboard::KeyCode, window::Window};
 use blitz::*;
+
+use crate::camera::FpCamera;
 
 pub const VERTICES: [blitz::Vertex_3D_Color_Texture; 8] = [
     Vertex_3D_Color_Texture::new(vec3(-0.5, -0.5, 0.0), vec3(1.0, 0.0, 0.0), vec2(1.0, 0.0)),
@@ -34,73 +36,83 @@ pub const INDICES: &[u16] = &[
     4, 5, 6, 6, 7, 4,
 ];
 
+pub const GROUND_VERTICES: [blitz::Vertex_3D_Color_Texture; 4] = [
+    Vertex_3D_Color_Texture::new(vec3(-5.0, -5.0, -2.0), vec3(1.0, 1.0, 1.0), vec2(5.0, 0.0)),
+    Vertex_3D_Color_Texture::new(vec3( 5.0, -5.0, -2.0), vec3(1.0, 1.0, 1.0), vec2(0.0, 0.0)),
+    Vertex_3D_Color_Texture::new(vec3( 5.0,  5.0, -2.0), vec3(1.0, 1.0, 1.0), vec2(0.0, 5.0)),
+    Vertex_3D_Color_Texture::new(vec3(-5.0,  5.0, -2.0), vec3(1.0, 1.0, 1.0), vec2(5.0, 5.0)),
+];
+
+pub const GROUND_INDICES: &[u16] = &[0, 1, 2, 2, 3, 0];
+
 #[derive(Debug)]
-struct TestObject {
-    texture: TextureId,
+struct DynamicObject {
+    mesh_handle: MeshHandle,  // Temporary handle for resolving the real id's
     mesh: Mesh,
-    material: MaterialId,
+    texture_id: TextureId,
+    angle: f32,
+    pub speed: f32,
 }
 
-impl TestObject {
-    pub unsafe fn new(container: &mut Container<Loading>, material: MaterialId) -> Result<Self> {
-        let mesh = container.load_mesh(
-            &VERTICES,
-            &INDICES,
-        )?;
-
-        let texture = container.load_texture("/home/krozu/Documents/Code/Rust/vulkan/app/img/image.png")?;
-
-        info!("+ TestObject");
-        Ok(Self { texture, mesh, material })
+impl DynamicObject {
+    pub unsafe fn new(container: &mut Container<Loading>, vertices: &[Vertex_3D_Color_Texture], indices: &[u16]) -> Result<Self> {
+        let mesh_handle = container.load_mesh(vertices, indices)?;
+        info!("+ DynamicObject");
+        Ok(Self { mesh_handle, mesh: Mesh::default(), texture_id: 0, angle: 0.0, speed: 0.0 })
     }
 
     pub fn resolve_upload(&mut self, container: &Container<Resolved>) {
-        self.mesh = container.resolve_mesh(self.mesh.vertices);
-        self.texture = container.resolve_texture(self.texture);
+        self.mesh = container.resolve_mesh(self.mesh_handle);
     }
 
-    pub unsafe fn draw(&self, blitz: &mut Blitz) -> Result<()> {
-        blitz.draw(self.mesh, self.material);
-        Ok(())
+    pub fn update(&mut self, dt: f32) -> cgmath::Matrix4<f32> {
+        self.angle += dt * self.speed;
+        if self.angle > 360.0 {
+            self.angle -= 360.0;
+        }
+        cgmath::Matrix4::from_angle_z(Deg(self.angle))
+    }
+
+    pub unsafe fn draw_static(&self, blitz: &mut Blitz) {
+        blitz.draw_static(self.mesh, self.texture_id);
+    }
+
+    pub unsafe fn draw_dynamic(&self, blitz: &mut Blitz, transform: cgmath::Matrix4<f32>) {
+        blitz.draw_dynamic(self.mesh, self.texture_id, transform);
     }
 }
 
 #[derive(Debug)]
-struct TestObject2 {
+struct StaticObject {
+    mesh_handle: MeshHandle,
     mesh: Mesh,
-    material: MaterialId,
+    texture_id: TextureId,
 }
-impl TestObject2 {
-    pub unsafe fn new(container: &mut Container<Loading>, material: MaterialId) -> Result<Self> {
-        let mesh = container.load_mesh(
-            &VERTICES2,
-            &INDICES,
-        )?;
 
-        info!("+ TestObject");
-        Ok(Self { mesh, material })
+impl StaticObject {
+    pub unsafe fn new(container: &mut Container<Loading>, vertices: &[Vertex_3D_Color_Texture], indices: &[u16]) -> Result<Self> {
+        let mesh_handle = container.load_mesh(vertices, indices)?;
+        Ok(Self { mesh_handle, mesh: Mesh::default(), texture_id: 0 })
     }
 
     pub fn resolve_upload(&mut self, container: &Container<Resolved>) {
-        self.mesh = container.resolve_mesh(self.mesh.vertices);
+        self.mesh = container.resolve_mesh(self.mesh_handle);
     }
 
-    pub unsafe fn draw(&self, blitz: &mut Blitz) -> Result<()> {
-        blitz.draw(self.mesh, self.material);
-        Ok(())
+    pub unsafe fn draw(&self, blitz: &mut Blitz) {
+        blitz.draw_static(self.mesh, self.texture_id);
     }
 }
 
 // Our Vulkan app.
 #[derive(Debug)]
-pub struct App{
+pub struct App {
     blitz: blitz::Blitz,
     delta: Instant,
-    
-    material: MaterialId,
-    o: TestObject,
-    o2: TestObject2,
-    uniform_buffers: Vec<UniformBufferId>,
+    o: DynamicObject,
+    o2: DynamicObject,
+    ground: StaticObject,
+    camera: FpCamera,
 }
 
 impl App {
@@ -108,46 +120,63 @@ impl App {
     pub unsafe fn new(window: &Window) -> Result<Self> {
         let mut blitz = blitz::init(window)?;
 
-        let material = blitz.new_material(MaterialDef {
-            vertex_shader: include_bytes!("../shaders/texture.vert.spv"),
-            fragment_shader: include_bytes!("../shaders/texture.frag.spv"),
-            vertex_format: VertexFormat::Vertex3D_Color_Texture,
-            textures: 1,
-            uniforms: 1,
-        })?;
-
         let mut container = blitz.new_container();
 
-        // Pass container to a bunch of new objects
-        let mut o = TestObject::new(&mut container, material)?;
-        let mut o2 = TestObject2::new(&mut container, material)?;
+        let texture_id_h = container.load_texture("/home/krozu/Documents/Code/Rust/vulkan/app/img/image.png")?;
+        let grass_id_h = container.load_texture("/home/krozu/Documents/Code/Rust/vulkan/app/img/grass_256x256.png")?;
 
-        // Process the container when all upload data is collected
+        let mut o = DynamicObject::new(&mut container, &VERTICES, &INDICES)?;
+        let mut o2 = DynamicObject::new(&mut container, &VERTICES2, &INDICES)?;
+        let mut ground = StaticObject::new(&mut container, &GROUND_VERTICES, GROUND_INDICES)?;
+
         let container = blitz.process_container(container)?;
-        
-        // Resolve buffer ids for all created objects
+
+        let texture_id = container.resolve_texture(texture_id_h);
+        let grass_id = container.resolve_texture(grass_id_h);
+
+        o.texture_id = texture_id;
+        o2.texture_id = texture_id;
+        ground.texture_id = grass_id;
+
+        o.speed = 20.0;
+        o2.speed = 10.0;
+
         o.resolve_upload(&container);
         o2.resolve_upload(&container);
+        ground.resolve_upload(&container);
 
-        let uniforms = blitz.new_uniform_buffers(); // Return FRAMES_IN_FLIGHT uniform buffers
-
-        blitz.update_descriptor_sets(o.texture);
+        let camera = FpCamera::new(point3(3.0, 3.0, 3.0), 225.0, -35.0);
 
         info!("+ App");
-        Ok(Self { blitz, delta: Instant::now(), o, o2, material, uniform_buffers: uniforms })
+        Ok(Self { blitz, delta: Instant::now(), o, o2, ground, camera })
+    }
+
+    pub fn input(&mut self, keys: &HashSet<KeyCode>, dt: f32) {
+        self.camera.input(keys, dt);
+    }
+
+    pub fn mouse_move(&mut self, dx: f32, dy: f32) {
+        self.camera.mouse_move(dx, dy);
     }
 
     /// Renders a frame for our Vulkan app.
     pub unsafe fn render(&mut self, window: &Window) -> Result<()> {
-        // Tell blitz to start a render
+        let dt = self.delta.elapsed().as_secs_f32();
+        self.delta = Instant::now();
+
+        let size = window.inner_size();
+        let aspect = size.width as f32 / size.height as f32;
+        self.blitz.update_camera(self.camera.ubo(aspect));
+
         if self.blitz.start_render(window)? {
+            self.ground.draw(&mut self.blitz);
 
-            self.o.draw(&mut self.blitz)?; // Rerecord command buffers, essentially
-            self.o2.draw(&mut self.blitz)?;
-            
-            self.blitz.update_uniform_buffers(&self.uniform_buffers, self.delta)?;
+            let transform = self.o.update(dt);
+            self.o.draw_dynamic(&mut self.blitz, transform);
 
-            // Tell blitz to end the render
+            let transform = self.o2.update(dt);
+            self.o2.draw_dynamic(&mut self.blitz, transform);
+
             self.blitz.end_render(window)?;
         }
 

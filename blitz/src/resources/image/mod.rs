@@ -13,5 +13,4 @@ pub use texture::{
 
 pub(crate) use texture::{
     Textures,
-    Texture,
 };

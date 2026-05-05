@@ -5,10 +5,8 @@ use log::*;
 use vulkanalia::vk::{self, DeviceV1_0, Handle, HasBuilder};
 
 use crate::{
+    globals,
     swapchain::Swapchain,
-    context::Context,
-    device::Device,
-
 };
 
 pub(crate) const FRAMES_IN_FLIGHT: usize = 2;
@@ -31,10 +29,8 @@ pub(crate) struct Synchronization {
 }
 
 impl Synchronization {
-    pub unsafe fn new(context: &Context, swapchain: &Swapchain) -> Result<Self> {
+    pub unsafe fn new(swapchain: &Swapchain) -> Result<Self> {
         let swapchain_image_count = swapchain.framebuffer_count();
-        let width = swapchain.extent().width;
-        let height = swapchain.extent().height;
 
         let semaphore_info = vk::SemaphoreCreateInfo::builder();
         let fence_info = vk::FenceCreateInfo::builder()
@@ -44,9 +40,9 @@ impl Synchronization {
 
         for _ in 0..FRAMES_IN_FLIGHT {
             frames.push(FrameSync {
-                image_available_semaphore: context.device.logical().create_semaphore(&semaphore_info, None)?,
-                render_finished_semaphore: context.device.logical().create_semaphore(&semaphore_info, None)?,
-                in_flight_fence: context.device.logical().create_fence(&fence_info, None)?,
+                image_available_semaphore: globals::device().logical().create_semaphore(&semaphore_info, None)?,
+                render_finished_semaphore: globals::device().logical().create_semaphore(&semaphore_info, None)?,
+                in_flight_fence: globals::device().logical().create_fence(&fence_info, None)?,
             });
         }
 
@@ -59,11 +55,11 @@ impl Synchronization {
         Ok(Self { frames, images_in_flight_fences, frame: 0, image: 0 })
     }
     
-    pub unsafe fn destroy(&self, device: &Device) {
+    pub unsafe fn destroy(&self) {
         for frame in &self.frames {
-            device.logical().destroy_fence(frame.in_flight_fence, None);
-            device.logical().destroy_semaphore(frame.image_available_semaphore, None);
-            device.logical().destroy_semaphore(frame.render_finished_semaphore, None);
+            globals::device().logical().destroy_fence(frame.in_flight_fence, None);
+            globals::device().logical().destroy_semaphore(frame.image_available_semaphore, None);
+            globals::device().logical().destroy_semaphore(frame.render_finished_semaphore, None);
         }
         info!("~ Synchronization")
     }

@@ -5,8 +5,8 @@ use anyhow::Result;
 use vulkanalia::vk::{self, *};
 
 use crate::{
-    Device,
-    commands::CommandBuffer, context::Context,
+    globals,
+    commands::CommandBuffer,
     resources::image::DepthBuffer
 };
 
@@ -16,11 +16,11 @@ pub(crate) struct Renderpass {
 }
 
 impl Renderpass {
-    pub unsafe fn new(context: &Context, format: Format) -> Result<Self> {
-        Ok(Self { handle: Renderpass::build_renderpass(context, format)? })
+    pub unsafe fn new(format: Format) -> Result<Self> {
+        Ok(Self { handle: Renderpass::build_renderpass(format)? })
     }
 
-    unsafe fn build_renderpass(context: &Context, format: Format) -> Result<vk::RenderPass> {
+    unsafe fn build_renderpass(format: Format) -> Result<vk::RenderPass> {
         let attachments = &[
             vk::AttachmentDescription::builder() // Color attachment
                 .format(format)
@@ -32,7 +32,7 @@ impl Renderpass {
                 .initial_layout(vk::ImageLayout::UNDEFINED)
                 .final_layout(vk::ImageLayout::PRESENT_SRC_KHR),
             vk::AttachmentDescription::builder() // Depth attachment
-                .format(DepthBuffer::get_depth_format(context)?)
+                .format(DepthBuffer::get_depth_format()?)
                 .samples(vk::SampleCountFlags::_1)
                 .load_op(vk::AttachmentLoadOp::CLEAR)
                 .store_op(vk::AttachmentStoreOp::DONT_CARE)
@@ -74,29 +74,29 @@ impl Renderpass {
             .subpasses(subpasses)
             .dependencies(dependencies);
 
-        let handle = context.device.logical().create_render_pass(&info, None)?;
-        
+        let handle = globals::device().logical().create_render_pass(&info, None)?;
+
         info!("+ Handle");
 
         Ok(handle)
     }
 
-    pub unsafe fn rebuild(&mut self, context: &Context, format: Format) -> Result<()> {
-        self.handle = Renderpass::build_renderpass(context, format)?;
+    pub unsafe fn rebuild(&mut self, format: Format) -> Result<()> {
+        self.handle = Renderpass::build_renderpass(format)?;
         Ok(())
     }
 
-    pub unsafe fn destroy(&mut self, device: &Device) {
-        device.logical().destroy_render_pass(self.handle, None);
+    pub unsafe fn destroy(&mut self) {
+        globals::device().logical().destroy_render_pass(self.handle, None);
         self.handle = vk::RenderPass::null();
-        info!("~ Handle") 
+        info!("~ Handle")
     }
 
     pub fn handle(&self) -> vk::RenderPass{
         self.handle
     }
 
-    pub unsafe fn begin(&self, device: &Device, command_buffer: &CommandBuffer, frame_buffer: vk::Framebuffer, extent: vk::Extent2D) {
+    pub unsafe fn begin(&self, command_buffer: &CommandBuffer, frame_buffer: vk::Framebuffer, extent: vk::Extent2D) {
         let render_area = vk::Rect2D::builder()
             .offset(vk::Offset2D::default())
             .extent(extent);
@@ -121,10 +121,10 @@ impl Renderpass {
             .render_area(render_area)
             .clear_values(clear_values);
 
-        device.logical().cmd_begin_render_pass(command_buffer.handle(), &info, vk::SubpassContents::INLINE);
+        globals::device().logical().cmd_begin_render_pass(command_buffer.handle(), &info, vk::SubpassContents::INLINE);
     }
 
-    pub unsafe fn end(&self, device: &Device, command_buffer: &CommandBuffer) {
-        device.logical().cmd_end_render_pass(command_buffer.handle());
+    pub unsafe fn end(&self, command_buffer: &CommandBuffer) {
+        globals::device().logical().cmd_end_render_pass(command_buffer.handle());
     }
 }

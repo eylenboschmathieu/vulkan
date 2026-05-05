@@ -1,26 +1,26 @@
 #![allow(dead_code, unsafe_op_in_unsafe_fn, unused_variables, clippy::too_many_arguments, clippy::unnecessary_wraps)]
 
 use std::{
-    ffi::c_void, ops::{Deref, DerefMut}, ptr::{copy_nonoverlapping as memcpy}, time::Instant
+    ffi::c_void, ops::{Deref, DerefMut}, ptr::copy_nonoverlapping as memcpy,
 };
 use log::*;
 use anyhow::{anyhow, Result};
-use cgmath::{vec3, Deg, point3};
 use vulkanalia::vk::{self, *};
 
 use crate::{
-    resources::buffers::{buffer::Buffer, freelist::{Allocation, Allocator}}, device::Device
+    globals,
+    resources::buffers::{buffer::Buffer, freelist::{Allocation, Allocator}},
 };
 
 type Mat4 = cgmath::Matrix4<f32>;
 pub type UniformBufferId = usize;
 
 #[repr(C)]
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct UniformBufferObject {
-    model: Mat4,
-    view: Mat4,
-    proj: Mat4,
+    pub model: Mat4,
+    pub view: Mat4,
+    pub proj: Mat4,
 }
 
 #[derive(Debug)]
@@ -33,13 +33,12 @@ pub struct UniformBuffer {
 }
 
 impl UniformBuffer {
-    pub unsafe fn new(device: &Device, count: usize) -> Result<Self> {
+    pub unsafe fn new(count: usize) -> Result<Self> {
         let size = (size_of::<UniformBufferObject>() * count) as u64;
 
         // Buffer
-        
+
         let handle = Buffer::create_buffer(
-            device,
             size,
             vk::BufferUsageFlags::UNIFORM_BUFFER
         )?;
@@ -47,10 +46,9 @@ impl UniformBuffer {
 
         // Memory
 
-        let requirements = device.logical().get_buffer_memory_requirements(handle);
+        let requirements = globals::device().logical().get_buffer_memory_requirements(handle);
 
         let memory = Buffer::create_memory(
-            device,
             requirements,
             vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE
         )?;
@@ -58,13 +56,13 @@ impl UniformBuffer {
 
         // Binding
 
-        device.logical().bind_buffer_memory(handle, memory, 0)?;
+        globals::device().logical().bind_buffer_memory(handle, memory, 0)?;
 
         let buffer = Buffer::new(handle, memory, size)?;
 
         let allocator = Allocator::new(size as usize, requirements.alignment as usize);
 
-        let mapped_ptr = device.logical().map_memory(
+        let mapped_ptr = globals::device().logical().map_memory(
             memory,
             0,
             size,
@@ -74,13 +72,13 @@ impl UniformBuffer {
         Ok(Self { buffer, allocator, alloc_list: vec![], free_list: vec![], mapped_ptr })
     }
 
-    pub unsafe fn destroy(&mut self, device: &Device) {
-        device.logical().unmap_memory(self.memory());
-        self.buffer.destroy(device);
+    pub unsafe fn destroy(&mut self) {
+        globals::device().logical().unmap_memory(self.memory());
+        self.buffer.destroy();
     }
 
-    pub unsafe fn update(&self, device: &Device, id: UniformBufferId, delta: &Instant, extent: vk::Extent2D) -> Result<()> {
-        let dt = delta.elapsed().as_secs_f32();
+    pub unsafe fn update(&self, id: UniformBufferId, ubo: UniformBufferObject) -> Result<()> {
+        /*let dt = delta.elapsed().as_secs_f32();
 
         let model = Mat4::from_axis_angle(
             vec3(0.0, 0.0, 1.0),
@@ -107,7 +105,7 @@ impl UniformBuffer {
             10.0,
         );
 
-        let ubo = UniformBufferObject { model, view, proj };
+        let ubo = UniformBufferObject { model, view, proj };*/
 
         let offset = self.alloc_list[id].offset;
 

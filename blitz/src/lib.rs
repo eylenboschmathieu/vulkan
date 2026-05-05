@@ -86,16 +86,35 @@ pub struct Blitz {
 }
 
 impl Blitz {
-    pub unsafe fn new_container(&self) -> Container<Loading> {
-        container::Container::new().unwrap()
-    }
-
-    pub unsafe fn process_container(&mut self, container: Container<Loading>) -> Result<Container<Resolved>> {
-        let mut container = container.transition::<Transfer>();
+    /// Uploads meshes and texture in a closure by way of:
+    ///     container.upload_mesh(&vertices, &indices)
+    ///     container.upload_texture(path)
+    /// 
+    /// Eagerly returns their id's
+    /// 
+    /// # Example
+    /// ```rust
+    /// impl Obj {    /// 
+    ///    pub unsafe fn upload(&mut self, container: &mut Container, vertices: &[Vertex_3D_Color_Texture], indices: &[u16]) {
+    ///        self.mesh = container.load_mesh(vertices, indices);
+    ///    }                      // ^^^^^^^^^ Eagerly returns buffer id's
+    /// }
+    /// 
+    /// let obj0 = Obj::new()
+    /// let obj1 = Obj::new()
+    /// 
+    /// blitz.upload(|container| {  // Actual data uploads happens in blitz.upload
+    ///     obj0.upload(&container, &VERTICES0, &INDICES0);
+    ///     obj1.upload(&container, &VERTICES1, &INDICES1);
+    /// })?;
+    /// # };
+    /// ```
+    pub unsafe fn upload<F: FnOnce(&mut Container) -> Result<()>>(&mut self, f: F) -> Result<()> {
+        let mut container = Container::new()?;
+        f(&mut container)?;
         container.process()?;
-        let container = container.transition::<Resolved>();
         container.destroy();
-        Ok(container)
+        Ok(())
     }
 
     pub unsafe fn start_recording(&mut self) -> Result<()> {

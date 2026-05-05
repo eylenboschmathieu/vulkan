@@ -47,7 +47,6 @@ pub const GROUND_INDICES: &[u16] = &[0, 1, 2, 2, 3, 0];
 
 #[derive(Debug)]
 struct DynamicObject {
-    mesh_handle: MeshHandle,  // Temporary handle for resolving the real id's
     mesh: Mesh,
     texture_id: TextureId,
     angle: f32,
@@ -55,14 +54,12 @@ struct DynamicObject {
 }
 
 impl DynamicObject {
-    pub unsafe fn new(container: &mut Container<Loading>, vertices: &[Vertex_3D_Color_Texture], indices: &[u16]) -> Result<Self> {
-        let mesh_handle = container.load_mesh(vertices, indices)?;
-        info!("+ DynamicObject");
-        Ok(Self { mesh_handle, mesh: Mesh::default(), texture_id: 0, angle: 0.0, speed: 0.0 })
+    pub fn new() -> Self {
+        Self { mesh: Mesh::default(), texture_id: 0, angle: 0.0, speed: 0.0 }
     }
 
-    pub fn resolve_upload(&mut self, container: &Container<Resolved>) {
-        self.mesh = container.resolve_mesh(self.mesh_handle);
+    pub unsafe fn upload(&mut self, container: &mut Container, vertices: &[Vertex_3D_Color_Texture], indices: &[u16]) {
+        self.mesh = container.load_mesh(vertices, indices);
     }
 
     pub fn update(&mut self, dt: f32) -> cgmath::Matrix4<f32> {
@@ -84,19 +81,17 @@ impl DynamicObject {
 
 #[derive(Debug)]
 struct StaticObject {
-    mesh_handle: MeshHandle,
     mesh: Mesh,
     texture_id: TextureId,
 }
 
 impl StaticObject {
-    pub unsafe fn new(container: &mut Container<Loading>, vertices: &[Vertex_3D_Color_Texture], indices: &[u16]) -> Result<Self> {
-        let mesh_handle = container.load_mesh(vertices, indices)?;
-        Ok(Self { mesh_handle, mesh: Mesh::default(), texture_id: 0 })
+    pub fn new() -> Self {
+        Self { mesh: Mesh::default(), texture_id: 0 }
     }
 
-    pub fn resolve_upload(&mut self, container: &Container<Resolved>) {
-        self.mesh = container.resolve_mesh(self.mesh_handle);
+    pub unsafe fn upload(&mut self, container: &mut Container, vertices: &[Vertex_3D_Color_Texture], indices: &[u16]) {
+        self.mesh = container.load_mesh(vertices, indices);
     }
 
     pub unsafe fn draw(&self, blitz: &mut Blitz) {
@@ -120,30 +115,26 @@ impl App {
     pub unsafe fn new(window: &Window) -> Result<Self> {
         let mut blitz = blitz::init(window)?;
 
-        let mut container = blitz.new_container();
+        let mut o = DynamicObject::new();
+        let mut o2 = DynamicObject::new();
+        let mut ground = StaticObject::new();
+        let mut texture_id: TextureId = 0;
+        let mut grass_id: TextureId = 0;
 
-        let texture_id_h = container.load_texture("/home/krozu/Documents/Code/Rust/vulkan/app/img/image.png")?;
-        let grass_id_h = container.load_texture("/home/krozu/Documents/Code/Rust/vulkan/app/img/grass_256x256.png")?;
-
-        let mut o = DynamicObject::new(&mut container, &VERTICES, &INDICES)?;
-        let mut o2 = DynamicObject::new(&mut container, &VERTICES2, &INDICES)?;
-        let mut ground = StaticObject::new(&mut container, &GROUND_VERTICES, GROUND_INDICES)?;
-
-        let container = blitz.process_container(container)?;
-
-        let texture_id = container.resolve_texture(texture_id_h);
-        let grass_id = container.resolve_texture(grass_id_h);
+        blitz.upload(|container| unsafe {
+            texture_id = container.load_texture("/home/krozu/Documents/Code/Rust/vulkan/app/img/image.png")?;
+            grass_id = container.load_texture("/home/krozu/Documents/Code/Rust/vulkan/app/img/grass_256x256.png")?;
+            o.upload(container, &VERTICES, &INDICES);
+            o2.upload(container, &VERTICES2, &INDICES);
+            ground.upload(container, &GROUND_VERTICES, GROUND_INDICES);
+            Ok(())
+        })?;
 
         o.texture_id = texture_id;
         o2.texture_id = texture_id;
         ground.texture_id = grass_id;
-
         o.speed = 20.0;
         o2.speed = 10.0;
-
-        o.resolve_upload(&container);
-        o2.resolve_upload(&container);
-        ground.resolve_upload(&container);
 
         let camera = FpCamera::new(point3(3.0, 3.0, 3.0), 225.0, -35.0);
 

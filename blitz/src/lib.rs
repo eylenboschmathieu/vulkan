@@ -1,3 +1,26 @@
+//! Blitz — a minimal Vulkan renderer.
+//!
+//! # Architecture
+//!
+//! All Vulkan state lives in module-level globals ([`globals`]) so that subsystems
+//! (buffers, textures, descriptor pool, etc.) can reach each other without threading
+//! references through every call.  The public surface is intentionally small:
+//!
+//! - [`init`] — boots Vulkan and returns a [`Blitz`] handle.
+//! - [`Blitz::upload`] — uploads GPU resources (meshes, textures) via a [`Container`].
+//! - [`Blitz::start_render`] / [`Blitz::end_render`] — bracket each rendered frame.
+//! - `draw_*` methods — enqueue draw calls between those two calls.
+//!
+//! # Descriptor set layout
+//!
+//! All pipelines share the same three-set layout:
+//!
+//! | Set | Contents |
+//! |-----|----------|
+//! | 0   | [`CameraUbo`] — model / view / projection matrices |
+//! | 1   | Texture sampler (per draw call, sorted to minimise binds) |
+//! | 2   | [`LightingUbo`] — sun direction and other scene lighting |
+
 #![allow(dead_code, unsafe_op_in_unsafe_fn, unused_variables, clippy::too_many_arguments, clippy::unnecessary_wraps)]
 
 mod instance;
@@ -80,6 +103,12 @@ struct ArrayDrawCall {
     texture_array_id: TextureArrayId,
 }
 
+/// Main renderer handle.
+///
+/// Owns all Vulkan frame-level state: swapchain, render pass, pipelines, and
+/// synchronisation primitives.  A single instance per process is enforced by
+/// [`INITIALIZED`].  Dropping without calling [`Blitz::destroy`] leaks GPU
+/// resources.
 #[derive(Debug)]
 pub struct Blitz {
     camera: Camera,
@@ -97,10 +126,19 @@ pub struct Blitz {
 }
 
 impl Blitz {
-    /// Uploads meshes and texture in a closure by way of:
-    ///     container.alloc_mesh(&vertices, &indices)
-    ///     container.alloc_texture(path)
-    ///     container.free_mesh(mesh) // Free the resource in case you're re-using an object
+    /// Upload GPU resources inside a closure.
+    ///
+    /// The closure receives a [`Container`] whose `alloc_*` methods eagerly
+    /// reserve GPU buffer / image slots and return live IDs.  The actual DMA
+    /// transfers are batched and executed when the closure returns.
+    ///
+    /// ```rust,ignore
+    /// blitz.upload(|c| unsafe {
+    ///     my_mesh = c.alloc_mesh(&VERTICES, &INDICES);
+    ///     my_tex  = c.alloc_texture("path/to/image.png")?;
+    ///     Ok(())
+    /// })?;
+    /// ```
     pub unsafe fn upload<F: FnOnce(&mut Container) -> Result<()>>(&mut self, f: F) -> Result<()> {
         let mut container = Container::new()?;
         f(&mut container)?;
@@ -109,6 +147,7 @@ impl Blitz {
         Ok(())
     }
 
+    /// Set the RGBA clear color used at the start of each render pass.
     pub unsafe fn set_sky_color(&mut self, color: [f32; 4]) {
         self.sky_color = color;
     }
@@ -131,7 +170,9 @@ impl Blitz {
         self.sync.command_buffer.end_recording(&self.renderpass)
     }
 
-    /// Returns Ok(true) if the render started successfully, Ok(false) if swapchain needs rebuilding
+    /// Begin a frame.  Returns `Ok(false)` when the swapchain was out-of-date
+    /// and had to be rebuilt; the caller should skip draw calls for that frame.
+    /// Returns `Ok(true)` when the frame is ready to receive draw calls.
     pub unsafe fn start_render(&mut self, window: &Window) -> Result<bool> {
         globals::device().logical().wait_for_fences(&[self.sync.in_flight_fence()], true, u64::MAX)?;
 
@@ -198,22 +239,31 @@ impl Blitz {
         Ok(())
     }
 
+    /// Enqueue a draw call for a mesh with a fixed world transform (identity).
+    /// Batched draw calls are sorted by texture to minimise pipeline state changes.
     pub unsafe fn draw_static(&mut self, mesh: Mesh, texture_id: TextureId) {
         self.static_queue.push(StaticDrawCall { mesh, texture_id });
     }
 
+    /// Enqueue a draw call with a per-object transform uploaded via push constants.
     pub unsafe fn draw_dynamic(&mut self, mesh: Mesh, texture_id: TextureId, transform: cgmath::Matrix4<f32>) {
         self.dynamic_queue.push(DynamicDrawCall { mesh, texture_id, transform });
     }
 
+    /// Enqueue a draw call that samples from a `sampler2DArray` (e.g. chunk meshes
+    /// where each vertex carries a layer index into the tile atlas).
     pub unsafe fn draw_array(&mut self, mesh: Mesh, texture_array_id: TextureArrayId) {
         self.array_queue.push(ArrayDrawCall { mesh, texture_array_id });
     }
 
+    /// Write camera matrices for the current frame-in-flight slot.
+    /// Call this every frame before [`Blitz::start_render`].
     pub unsafe fn update_camera(&mut self, ubo: CameraUbo) {
         self.camera.update(self.sync.frame, ubo);
     }
 
+    /// Write lighting data for the current frame-in-flight slot.
+    /// Call this every frame before [`Blitz::start_render`].
     pub unsafe fn update_lighting(&mut self, ubo: LightingUbo) {
         self.lighting.update(self.sync.frame, ubo);
     }
@@ -280,6 +330,8 @@ impl Blitz {
         }
     }
 
+    /// Release all GPU resources.  Must be called before drop; the renderer has
+    /// no `Drop` impl because the destroy order matters and requires `device_wait_idle`.
     pub unsafe fn destroy(&mut self) {
         globals::device().logical().device_wait_idle().unwrap();
 
@@ -376,6 +428,11 @@ impl Blitz {
     }
 }
 
+/// Initialise Vulkan and return a [`Blitz`] renderer.
+///
+/// Can only be called once per process; returns an error on subsequent calls.
+/// Selects the first discrete GPU, enables validation layers in debug builds,
+/// and allocates all shared GPU buffers (vertex, index, uniform, staging).
 pub unsafe fn init(window: &Window) -> Result<Blitz> {
     if INITIALIZED.swap(true, Ordering::SeqCst) {
         return Err(anyhow!("Vulkan already initialized"));

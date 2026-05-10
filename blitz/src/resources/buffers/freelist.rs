@@ -1,5 +1,6 @@
 #![allow(dead_code, unsafe_op_in_unsafe_fn, unused_variables, clippy::too_many_arguments, clippy::unnecessary_wraps)]
 
+/// A contiguous region inside a GPU buffer described by byte offset and size.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Allocation { pub offset: usize, pub size: usize }
 type FreeBlock = Allocation;
@@ -8,6 +9,11 @@ fn align_up(x: usize, align: usize) -> usize {
     (x + align - 1) & !(align - 1)
 }
 
+/// First-fit free-list allocator for sub-allocating a single GPU buffer.
+///
+/// Maintains a sorted list of free blocks and merges adjacent blocks on every
+/// free (coalescing), keeping fragmentation low for the typical workload of
+/// uploading and occasionally freeing mesh data.
 #[derive(Debug)]
 pub struct Allocator {
     free_list: Vec<Allocation>,
@@ -25,7 +31,8 @@ impl Allocator {
         }
     }
 
-    /// Returns an option of type Allocation if allocation succeeded, None if not
+    /// Allocate `size` bytes, aligned to the buffer's hardware requirement.
+    /// Returns `None` when no contiguous free block is large enough.
     pub fn alloc(&mut self, size: usize) -> Option<Allocation> {
         for i in 0..self.free_list.len() {
             let block = self.free_list[i];
@@ -67,7 +74,7 @@ impl Allocator {
         None
     }
 
-    /// Free an Allocation
+    /// Return an allocation to the free list and coalesce any adjacent blocks.
     pub fn free(&mut self, allocation: Allocation) {
         let pos = self.free_list
             .iter()

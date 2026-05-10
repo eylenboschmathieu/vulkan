@@ -17,6 +17,10 @@ use crate::{
     }, resources::buffers::uniform_buffer::CameraUbo, sync::FRAMES_IN_FLIGHT
 };
 
+/// Manages the per-frame camera UBO and its descriptor sets (set 0).
+///
+/// Allocates one [`CameraUbo`] slot and one descriptor set per frame-in-flight
+/// so the GPU can read frame N while the CPU is writing frame N+1.
 #[derive(Debug)]
 pub(crate) struct Camera {
     descriptor_set_layout: vk::DescriptorSetLayout,

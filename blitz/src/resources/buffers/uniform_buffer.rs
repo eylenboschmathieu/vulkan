@@ -16,6 +16,8 @@ type Mat4 = cgmath::Matrix4<f32>;
 type Vec4 = cgmath::Vector4<f32>;
 pub type UniformBufferId = usize;
 
+/// Camera matrices uploaded to descriptor set 0, binding 0 every frame.
+/// `model` is typically identity; view and proj are computed by the camera.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct CameraUbo {
@@ -24,12 +26,20 @@ pub struct CameraUbo {
     pub proj:  Mat4,
 }
 
+/// Scene lighting data uploaded to descriptor set 2, binding 0 every frame.
+/// `sun_dir` is a world-space direction vector pointing *toward* the sun; w is unused.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct LightingUbo {
     pub sun_dir: Vec4,
 }
 
+/// Persistently-mapped HOST_VISIBLE | HOST_COHERENT buffer for all uniform data.
+///
+/// Uses the same freelist allocator as the vertex/index buffers so camera and
+/// lighting slots can have different sizes and be freed independently.  The
+/// buffer stays mapped for its lifetime; writes go via `memcpy` straight to the
+/// mapped pointer.
 #[derive(Debug)]
 pub struct UniformBuffer {
     buffer: Buffer,

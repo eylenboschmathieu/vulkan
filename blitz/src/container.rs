@@ -10,7 +10,7 @@ use crate::{
     commands::CommandBuffer,
     globals,
     mesh::Mesh,
-    resources::image::ImageMemoryBarrierQueueFamilyIndices,
+    resources::image::{Image, ImageMemoryBarrierQueueFamilyIndices},
     resources::vertices::Vertex_3D_Color_Texture,
 };
 
@@ -20,7 +20,12 @@ pub(crate) struct TextureData {
     pub height: u32,
 }
 
-// Eagerly loads meshes and textures
+/// Batches GPU resource uploads for a single [`Blitz::upload`] call.
+///
+/// IDs are allocated eagerly so callers can store them immediately, but the
+/// actual DMA transfers are deferred until [`Container::process`] runs at the
+/// end of the closure.  Meshes go through the transfer queue only; textures go
+/// transfer → graphics with an explicit queue-family ownership transfer.
 pub struct Container {
     meshes:         Vec<(Mesh, Vec<u8>, Vec<u16>)>,
     textures:       Vec<(TextureId, TextureData)>,
@@ -51,6 +56,7 @@ impl Container {
         mesh
     }
 
+    /// Return the vertex and index buffer slots back to the free-list.
     pub unsafe fn free_mesh(&self, mesh: Mesh) {
         globals::vertex_buffer_mut().free(mesh.vertices);
         globals::index_buffer_mut().free(mesh.indices);
@@ -81,6 +87,7 @@ impl Container {
         Ok(id)
     }
 
+    /// Create a texture from an already-decoded RGBA8 pixel buffer.
     pub unsafe fn alloc_texture_from_pixels(&mut self, pixels: Vec<u8>, width: u32, height: u32) -> Result<TextureId> {
         let tex_data = TextureData { pixels, width, height };
         let id = globals::textures_mut().new_texture(&tex_data)?;
@@ -88,6 +95,10 @@ impl Container {
         Ok(id)
     }
 
+    /// Build a `sampler2DArray` from a slice of PNG paths.
+    ///
+    /// All images must have the same dimensions; returns an error otherwise.
+    /// Supports RGBA8, RGB8, RGBA16, RGB16 and Grayscale8 PNG formats.
     pub unsafe fn alloc_texture_array(&mut self, paths: &[&str]) -> Result<TextureArrayId> {
         let mut tiles: Vec<TextureData> = Vec::with_capacity(paths.len());
         let mut base_width = 0u32;
@@ -151,9 +162,13 @@ impl Container {
 
             command_buffer.end_one_time_submit(globals::queue_manager().transfer(), Some(self.semaphore))?;
 
+            let images: Vec<Image> = self.textures.iter()
+                .map(|(id, _)| globals::textures()[*id].image.clone())
+                .chain(self.texture_arrays.iter().map(|(id, _)| globals::textures().texture_array(*id).image.clone()))
+                .collect();
+
             let command_buffer = globals::command_manager().begin_one_time_submit(vk::QueueFlags::GRAPHICS)?;
-            if !self.textures.is_empty() { self.ownership_transfer(&command_buffer)?; }
-            if !self.texture_arrays.is_empty() { self.array_ownership_transfer(&command_buffer)?; }
+            self.ownership_transfer(&command_buffer, &images)?;
             command_buffer.end_one_time_submit(globals::queue_manager().graphics(), Some(self.semaphore))?;
 
             if let Some(s_id) = tex_s_id { globals::staging_buffer_mut().free(s_id); }
@@ -245,10 +260,11 @@ impl Container {
         Ok(s_id)
     }
 
-    unsafe fn ownership_transfer(&self, command_buffer: &CommandBuffer) -> Result<()> {
+    /// Transfer ownership of `images` from the transfer queue to the graphics queue,
+    /// transitioning them to `SHADER_READ_ONLY_OPTIMAL` in the process.
+    unsafe fn ownership_transfer(&self, command_buffer: &CommandBuffer, images: &[Image]) -> Result<()> {
         let queue_family_indices = globals::device().queue_family_indices();
-        for (id, _) in &self.textures {
-            let image = globals::textures()[*id].image.clone();
+        for image in images {
             image.transition_image_layout(
                 command_buffer,
                 vk::Format::R8G8B8A8_SRGB,
@@ -305,23 +321,6 @@ impl Container {
         Ok(s_id)
     }
 
-    unsafe fn array_ownership_transfer(&self, command_buffer: &CommandBuffer) -> Result<()> {
-        let queue_family_indices = globals::device().queue_family_indices();
-        for (id, _) in &self.texture_arrays {
-            let image = globals::textures().texture_array(*id).image.clone();
-            image.transition_image_layout(
-                command_buffer,
-                vk::Format::R8G8B8A8_SRGB,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                Some(ImageMemoryBarrierQueueFamilyIndices {
-                    src_queue_family_index: queue_family_indices.transfer(),
-                    dst_queue_family_index: queue_family_indices.graphics(),
-                }),
-            )?;
-        }
-        Ok(())
-    }
 
     pub(crate) unsafe fn destroy(&self) {
         globals::device().logical().destroy_semaphore(self.semaphore, None);

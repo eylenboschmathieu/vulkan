@@ -8,16 +8,21 @@ use crate::{
     commands::CommandBuffer, globals, swapchain::Swapchain
 };
 
+/// Number of frames that can be in flight simultaneously (double-buffering).
 pub(crate) const FRAMES_IN_FLIGHT: usize = 2;
 
-// Structure containing per frame objects
+/// Per-frame-in-flight objects that must not be shared between concurrent frames.
 #[derive(Clone, Debug)]
 struct FrameSync {
     image_available_semaphore: vk::Semaphore,
     in_flight_fence: vk::Fence,
 }
 
-// Helper class to deal with synchronization
+/// Owns all Vulkan synchronisation primitives for the render loop.
+///
+/// `image_available` semaphores are per-frame-in-flight (signalled by `acquire`).
+/// `render_finished` semaphores are per-swapchain-image so the presentation
+/// engine can't re-signal a semaphore that we're still waiting on.
 #[derive(Clone, Debug)]
 pub(crate) struct Synchronization {
     frames: Vec<FrameSync>,

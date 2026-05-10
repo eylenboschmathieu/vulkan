@@ -12,6 +12,10 @@ use crate::{
     sync::FRAMES_IN_FLIGHT,
 };
 
+/// Manages the per-frame lighting UBO and its descriptor sets (set 2).
+///
+/// Mirrors [`Camera`] in structure; separate so lighting data can evolve
+/// independently from camera matrices without touching set 0.
 #[derive(Debug)]
 pub(crate) struct Lighting {
     descriptor_set_layout: vk::DescriptorSetLayout,

@@ -96,7 +96,7 @@ impl Renderpass {
         self.handle
     }
 
-    pub unsafe fn begin(&self, command_buffer: &CommandBuffer, frame_buffer: vk::Framebuffer, extent: vk::Extent2D) {
+    pub unsafe fn begin(&self, command_buffer: &CommandBuffer, frame_buffer: vk::Framebuffer, extent: vk::Extent2D, sky_color: [f32; 4]) {
         let render_area = vk::Rect2D::builder()
             .offset(vk::Offset2D::default())
             .extent(extent);
@@ -104,7 +104,7 @@ impl Renderpass {
         let clear_values = &[
             vk::ClearValue {
                 color: vk::ClearColorValue {
-                    float32: [0.0, 0.0, 0.0, 1.0],
+                    float32: sky_color,
                 }
             },
             vk::ClearValue {

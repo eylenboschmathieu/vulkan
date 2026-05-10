@@ -24,6 +24,7 @@ pub struct Image {
     memory: vk::DeviceMemory,
     width: u32,
     height: u32,
+    array_layers: u32,
     size: u64,
 }
 
@@ -36,45 +37,68 @@ impl Image {
         usage: vk::ImageUsageFlags,
         properties: vk::MemoryPropertyFlags,
     ) -> Result<Self> {
-        let handle = Image::build_image(width, height, format, tiling, usage)?;
+        let handle = Image::build_image(width, height, 1, format, tiling, usage)?;
         let memory = Image::build_memory(handle, properties)?;
         let size = (width * height * 4) as u64;
 
         globals::device().logical().bind_image_memory(handle, memory, 0)?;
 
-        Ok(Self { handle, memory, width, height, size })
+        Ok(Self { handle, memory, width, height, array_layers: 1, size })
     }
 
-    unsafe fn build_image(width: u32, height: u32, format: vk::Format, tiling: vk::ImageTiling, usage: vk::ImageUsageFlags) -> Result<vk::Image> {
-        // let queue_family_indices = &[globals::device().queue_family_indices().transfer(), globals::device().queue_family_indices().graphics()];
+    pub unsafe fn new_array(
+        width: u32,
+        height: u32,
+        array_layers: u32,
+        format: vk::Format,
+        tiling: vk::ImageTiling,
+        usage: vk::ImageUsageFlags,
+        properties: vk::MemoryPropertyFlags,
+    ) -> Result<Self> {
+        let handle = Image::build_image(width, height, array_layers, format, tiling, usage)?;
+        let memory = Image::build_memory(handle, properties)?;
+        let size = (width * height * 4 * array_layers) as u64;
 
+        globals::device().logical().bind_image_memory(handle, memory, 0)?;
+
+        Ok(Self { handle, memory, width, height, array_layers, size })
+    }
+
+    unsafe fn build_image(width: u32, height: u32, array_layers: u32, format: vk::Format, tiling: vk::ImageTiling, usage: vk::ImageUsageFlags) -> Result<vk::Image> {
         let create_info = vk::ImageCreateInfo::builder()
             .image_type(vk::ImageType::_2D)
             .extent(vk::Extent3D { width, height, depth: 1 })
             .mip_levels(1)
-            .array_layers(1)
+            .array_layers(array_layers)
             .format(format)
             .tiling(tiling)
             .initial_layout(vk::ImageLayout::UNDEFINED)
             .usage(usage)
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
-            // .queue_family_indices(queue_family_indices)  // Not needed if sharing_mode = SharingMode::EXCLUSIVE
             .samples(vk::SampleCountFlags::_1)
-            .flags(vk::ImageCreateFlags::empty());  // Optional
-
-        /*
-        The tiling field can have one of two values:
-            vk::ImageTiling::LINEAR – Texels are laid out in row-major order like our pixels array.
-            vk::ImageTiling::OPTIMAL – Texels are laid out in an implementation defined order for optimal access.
-        There are only two possible values for the initial_layout of an image:
-            vk::ImageLayout::UNDEFINED – Not usable by the GPU and the very first transition will discard the texels.
-            vk::ImageLayout::PREINITIALIZED – Not usable by the GPU, but the first transition will preserve the texels.
-        */
+            .flags(vk::ImageCreateFlags::empty());
 
         let handle = globals::device().logical().create_image(&create_info, None)?;
         info!("+ Handle");
 
         Ok(handle)
+    }
+
+    pub unsafe fn build_view_array(image: vk::Image, format: vk::Format, layer_count: u32) -> Result<vk::ImageView> {
+        let subresource_range = vk::ImageSubresourceRange::builder()
+            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .base_mip_level(0)
+            .level_count(1)
+            .base_array_layer(0)
+            .layer_count(layer_count);
+
+        let create_info = vk::ImageViewCreateInfo::builder()
+            .image(image)
+            .view_type(vk::ImageViewType::_2D_ARRAY)
+            .format(format)
+            .subresource_range(subresource_range);
+
+        Ok(globals::device().logical().create_image_view(&create_info, None)?)
     }
 
     unsafe fn build_memory(image: vk::Image, properties: vk::MemoryPropertyFlags) -> Result<vk::DeviceMemory> {
@@ -128,6 +152,10 @@ impl Image {
         self.height
     }
 
+    pub fn array_layers(&self) -> u32 {
+        self.array_layers
+    }
+
     pub fn size(&self) -> u64 {
         self.size
     }
@@ -174,7 +202,7 @@ impl Image {
             .base_mip_level(0)
             .level_count(1)
             .base_array_layer(0)
-            .layer_count(1);
+            .layer_count(self.array_layers);
 
         let barriers = &[
             vk::ImageMemoryBarrier2::builder()
@@ -189,9 +217,6 @@ impl Image {
                 .src_stage_mask(src_stage_mask)
                 .dst_stage_mask(dst_stage_mask)
         ];
-        // debug!("Transitioning layout: {:?} → {:?}", old_layout, new_layout);
-        // debug!("Access masks: {:?} → {:?}", src_access_mask, dst_access_mask);
-        // debug!("Stage masks: {:?} → {:?}", src_stage_mask, dst_stage_mask);
 
         let info = vk::DependencyInfo::builder()
             .image_memory_barriers(barriers);

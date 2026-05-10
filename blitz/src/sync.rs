@@ -5,8 +5,7 @@ use log::*;
 use vulkanalia::vk::{self, DeviceV1_0, Handle, HasBuilder};
 
 use crate::{
-    globals,
-    swapchain::Swapchain,
+    commands::CommandBuffer, globals, swapchain::Swapchain
 };
 
 pub(crate) const FRAMES_IN_FLIGHT: usize = 2;
@@ -15,7 +14,6 @@ pub(crate) const FRAMES_IN_FLIGHT: usize = 2;
 #[derive(Clone, Debug)]
 struct FrameSync {
     image_available_semaphore: vk::Semaphore,
-    render_finished_semaphore: vk::Semaphore,
     in_flight_fence: vk::Fence,
 }
 
@@ -23,9 +21,13 @@ struct FrameSync {
 #[derive(Clone, Debug)]
 pub(crate) struct Synchronization {
     frames: Vec<FrameSync>,
+    // One per swapchain image: when acquire returns an image, the presentation engine
+    // guarantees it has consumed this semaphore, making it safe to signal again.
+    render_finished_semaphores: Vec<vk::Semaphore>,
     images_in_flight_fences: Vec<vk::Fence>,
     pub frame: usize,
     pub image: usize,
+    pub command_buffer: CommandBuffer,
 }
 
 impl Synchronization {
@@ -41,25 +43,28 @@ impl Synchronization {
         for _ in 0..FRAMES_IN_FLIGHT {
             frames.push(FrameSync {
                 image_available_semaphore: globals::device().logical().create_semaphore(&semaphore_info, None)?,
-                render_finished_semaphore: globals::device().logical().create_semaphore(&semaphore_info, None)?,
                 in_flight_fence: globals::device().logical().create_fence(&fence_info, None)?,
             });
         }
 
-        let mut images_in_flight_fences = vec![];
+        let mut render_finished_semaphores = vec![];
         for _ in 0..swapchain_image_count {
-            images_in_flight_fences.push(vk::Fence::null());
+            render_finished_semaphores.push(globals::device().logical().create_semaphore(&semaphore_info, None)?);
         }
 
+        let images_in_flight_fences = vec![vk::Fence::null(); swapchain_image_count];
+
         info!("+ Synchronization");
-        Ok(Self { frames, images_in_flight_fences, frame: 0, image: 0 })
+        Ok(Self { frames, render_finished_semaphores, images_in_flight_fences, frame: 0, image: 0, command_buffer: CommandBuffer::default() })
     }
     
     pub unsafe fn destroy(&self) {
         for frame in &self.frames {
             globals::device().logical().destroy_fence(frame.in_flight_fence, None);
             globals::device().logical().destroy_semaphore(frame.image_available_semaphore, None);
-            globals::device().logical().destroy_semaphore(frame.render_finished_semaphore, None);
+        }
+        for semaphore in &self.render_finished_semaphores {
+            globals::device().logical().destroy_semaphore(*semaphore, None);
         }
         info!("~ Synchronization")
     }
@@ -69,7 +74,7 @@ impl Synchronization {
     }
 
     pub fn render_finished_semaphore(&self) -> vk::Semaphore {
-        self.frames[self.frame].render_finished_semaphore
+        self.render_finished_semaphores[self.image]
     }
 
     pub fn in_flight_fence(&self) -> vk::Fence {

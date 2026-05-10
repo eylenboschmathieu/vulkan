@@ -73,6 +73,11 @@ impl Device {
         self.swapchain_support.clone()
     }
 
+    pub unsafe fn refresh_swapchain_support(&mut self, instance: &Instance) -> Result<()> {
+        self.swapchain_support = SwapchainSupport::get(instance, self.physical_device)?;
+        Ok(())
+    }
+
     unsafe fn create_logical_device(entry: &Entry, instance: &Instance, physical_device: PhysicalDevice, indices: &QueueFamilyIndices) -> Result<LogicalDevice> {
         
         // Queues

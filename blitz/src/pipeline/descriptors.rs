@@ -178,4 +178,23 @@ impl DescriptorPool {
         );
         info!("Updated descriptor sets");
     }
+
+    pub unsafe fn update_image_sampler(&self, descriptor_set: vk::DescriptorSet, binding: u32, view: vk::ImageView, sampler: vk::Sampler) {
+        let image_info = vk::DescriptorImageInfo::builder()
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .image_view(view)
+            .sampler(sampler)
+            .build();
+
+        let write = vk::WriteDescriptorSet::builder()
+            .dst_set(descriptor_set)
+            .dst_binding(binding)
+            .dst_array_element(0)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .image_info(std::slice::from_ref(&image_info))
+            .build();
+
+        globals::device().logical().update_descriptor_sets(&[write], &[] as &[vk::CopyDescriptorSet]);
+        info!("Updated texture array descriptor set");
+    }
 }

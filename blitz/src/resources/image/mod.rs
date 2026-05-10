@@ -8,7 +8,8 @@ pub use image::{
 };
 
 pub use texture::{
-    TextureId
+    TextureId,
+    TextureArrayId,
 };
 
 pub(crate) use texture::{

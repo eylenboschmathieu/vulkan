@@ -76,9 +76,8 @@ impl StagingBuffer {
 
     /// Copies data into the staging buffer at offset
     pub unsafe fn copy_to_staging_at<T>(&self, id: StagingBufferId, data: &[T], offset: usize) -> Result<()> {
-        let size = (size_of::<T>() * data.len()) as usize;
         let offset = self.alloc_list[id].offset + offset;
-        memcpy(data.as_ptr(), self.mapped_ptr.add(offset).cast(), size as usize);
+        memcpy(data.as_ptr(), self.mapped_ptr.add(offset).cast(), data.len());
         Ok(())
     }
 
@@ -130,6 +129,31 @@ impl StagingBuffer {
         Ok(())
     }
 
+    pub unsafe fn copy_to_image_layer(&self, command_buffer: &CommandBuffer, id: StagingBufferId, dst_image: &Image, staging_offset: u64, layer: u32) -> Result<()> {
+        let subresource = vk::ImageSubresourceLayers::builder()
+            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .mip_level(0)
+            .base_array_layer(layer)
+            .layer_count(1);
+
+        let regions = vk::BufferImageCopy::builder()
+            .buffer_offset(self.alloc_list[id].offset as u64 + staging_offset)
+            .buffer_row_length(0)
+            .buffer_image_height(0)
+            .image_subresource(subresource)
+            .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+            .image_extent(vk::Extent3D { width: dst_image.width(), height: dst_image.height(), depth: 1 });
+
+        globals::device().logical().cmd_copy_buffer_to_image(
+            command_buffer.handle(),
+            self.handle(),
+            dst_image.handle(),
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            &[regions]
+        );
+        Ok(())
+    }
+    
     pub fn alloc(&mut self, size: usize) -> Result<StagingBufferId> {
         if let Some(allocation) = self.allocator.alloc(size) {
             if self.free_list.is_empty() {

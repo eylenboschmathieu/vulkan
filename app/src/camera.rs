@@ -1,11 +1,11 @@
 use std::collections::HashSet;
 
-use cgmath::{vec3, Deg, InnerSpace, Matrix4, Point3, Vector3};
+use cgmath::{vec3, vec4, Deg, InnerSpace, Matrix4, Point3, Vector3};
 use winit::keyboard::KeyCode;
 use blitz::UniformBufferObject;
 
-const MOVE_SPEED: f32 = 3.0;
-const MOUSE_SENSITIVITY: f32 = 0.1; // degrees per pixel
+const MOVE_SPEED: f32 = 6.0;
+const MOUSE_SENSITIVITY: f32 = 0.2; // degrees per pixel
 
 #[derive(Debug)]
 pub struct FpCamera {
@@ -19,13 +19,13 @@ impl FpCamera {
         Self { eye, yaw, pitch }
     }
 
-    fn forward(&self) -> Vector3<f32> {
+    pub fn forward(&self) -> Vector3<f32> {
         let (sy, cy) = Deg(self.yaw).0.to_radians().sin_cos();
         let (sp, cp) = Deg(self.pitch).0.to_radians().sin_cos();
         vec3(cy * cp, sy * cp, sp).normalize()
     }
 
-    fn right(&self) -> Vector3<f32> {
+    pub fn right(&self) -> Vector3<f32> {
         let (sy, cy) = Deg(self.yaw).0.to_radians().sin_cos();
         vec3(-sy, cy, 0.0).normalize()
     }
@@ -61,6 +61,6 @@ impl FpCamera {
         );
         let proj = fix * cgmath::perspective(Deg(90.0), aspect, 0.1, 100.0);
 
-        UniformBufferObject { model: Matrix4::from_scale(1.0), view, proj }
+        UniformBufferObject { model: Matrix4::from_scale(1.0), view, proj, sun_dir: vec4(0.0, 0.0, 1.0, 0.0) }
     }
 }

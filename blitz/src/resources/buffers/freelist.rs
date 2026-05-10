@@ -12,6 +12,7 @@ fn align_up(x: usize, align: usize) -> usize {
 pub struct Allocator {
     free_list: Vec<Allocation>,
     alignment: usize,
+    size: usize,
 }
 
 impl Allocator {
@@ -19,6 +20,7 @@ impl Allocator {
     pub fn new(size: usize, alignment: usize) -> Self {
         Self {
             free_list: vec![FreeBlock { offset: 0, size }],
+            size,
             alignment,
         }
     }
@@ -95,6 +97,11 @@ impl Allocator {
 
         merged.push(current);
         self.free_list = merged;
+    }
+
+    pub fn clear(&mut self) {
+        self.free_list.clear();
+        self.free_list.push(FreeBlock { offset: 0, size: self.size });
     }
 }
 

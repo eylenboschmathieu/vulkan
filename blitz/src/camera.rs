@@ -6,7 +6,7 @@ use std::{
 };
 
 use anyhow::Result;
-use cgmath::{vec3, point3, Deg, Matrix4};
+use cgmath::{vec3, vec4, point3, Deg, Matrix4};
 use vulkanalia::vk::{self, Handle};
 
 type Mat4 = Matrix4<f32>;
@@ -83,7 +83,7 @@ impl Camera {
             100.0,
         );
 
-        let ubo = UniformBufferObject { model, view, proj };
+        let ubo = UniformBufferObject { model, view, proj, sun_dir: vec4(0.0, 0.0, 1.0, 0.0) };
         for id in uniform_buffers {
             globals::uniform_buffer().update(id, ubo)?;
         }

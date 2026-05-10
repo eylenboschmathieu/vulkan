@@ -1,13 +1,13 @@
 #![allow(dead_code, unsafe_op_in_unsafe_fn, unused_variables, clippy::too_many_arguments, clippy::unnecessary_wraps)]
 
-use cgmath::{vec2, vec3, point3, Deg};
+use cgmath::{vec2, vec3, point3, Deg, Matrix4};
 use anyhow::Result;
 use std::{collections::HashSet, time::Instant};
 use log::*;
 use winit::{keyboard::KeyCode, window::Window};
 use blitz::*;
 
-use crate::camera::FpCamera;
+use crate::{camera::FpCamera, sun::Sun, world::World};
 
 pub const VERTICES: [blitz::Vertex_3D_Color_Texture; 8] = [
     Vertex_3D_Color_Texture::new(vec3(-0.5, -0.5, 0.0), vec3(1.0, 0.0, 0.0), vec2(1.0, 0.0)),
@@ -58,8 +58,12 @@ impl DynamicObject {
         Self { mesh: Mesh::default(), texture_id: 0, angle: 0.0, speed: 0.0 }
     }
 
-    pub unsafe fn upload(&mut self, container: &mut Container, vertices: &[Vertex_3D_Color_Texture], indices: &[u16]) {
-        self.mesh = container.load_mesh(vertices, indices);
+    pub unsafe fn alloc(&mut self, container: &mut Container, vertices: &[Vertex_3D_Color_Texture], indices: &[u16]) {
+        self.mesh = container.alloc_mesh(vertices, indices);
+    }
+
+    pub unsafe fn free(&self, container: &Container) {
+        container.free_mesh(self.mesh);
     }
 
     pub fn update(&mut self, dt: f32) -> cgmath::Matrix4<f32> {
@@ -90,11 +94,15 @@ impl StaticObject {
         Self { mesh: Mesh::default(), texture_id: 0 }
     }
 
-    pub unsafe fn upload(&mut self, container: &mut Container, vertices: &[Vertex_3D_Color_Texture], indices: &[u16]) {
-        self.mesh = container.load_mesh(vertices, indices);
+    pub unsafe fn alloc(&mut self, container: &mut Container, vertices: &[Vertex_3D_Color_Texture], indices: &[u16]) {
+        self.mesh = container.alloc_mesh(vertices, indices);
     }
 
-    pub unsafe fn draw(&self, blitz: &mut Blitz) {
+    pub unsafe fn free(&self, container: &Container) {
+        container.free_mesh(self.mesh);
+    }
+
+    pub unsafe fn draw_static(&self, blitz: &mut Blitz) {
         blitz.draw_static(self.mesh, self.texture_id);
     }
 }
@@ -102,12 +110,12 @@ impl StaticObject {
 // Our Vulkan app.
 #[derive(Debug)]
 pub struct App {
-    blitz: blitz::Blitz,
     delta: Instant,
-    o: DynamicObject,
-    o2: DynamicObject,
-    ground: StaticObject,
+    blitz: blitz::Blitz,
     camera: FpCamera,
+    world: World,
+    texture_array_id: blitz::TextureArrayId,
+    sun: Sun,
 }
 
 impl App {
@@ -115,31 +123,31 @@ impl App {
     pub unsafe fn new(window: &Window) -> Result<Self> {
         let mut blitz = blitz::init(window)?;
 
-        let mut o = DynamicObject::new();
-        let mut o2 = DynamicObject::new();
-        let mut ground = StaticObject::new();
-        let mut texture_id: TextureId = 0;
-        let mut grass_id: TextureId = 0;
+        let mut world = World::new();
+
+        // let mut o = DynamicObject::new();
+        // let mut o2 = DynamicObject::new();
+        // let mut ground = StaticObject::new();
+        let mut texture_array_id: blitz::TextureArrayId = 0;
+        let mut sun = Sun::new();
 
         blitz.upload(|container| unsafe {
-            texture_id = container.load_texture("/home/krozu/Documents/Code/Rust/vulkan/app/img/image.png")?;
-            grass_id = container.load_texture("/home/krozu/Documents/Code/Rust/vulkan/app/img/grass_256x256.png")?;
-            o.upload(container, &VERTICES, &INDICES);
-            o2.upload(container, &VERTICES2, &INDICES);
-            ground.upload(container, &GROUND_VERTICES, GROUND_INDICES);
+            texture_array_id = container.alloc_texture_array(&[
+                "app/img/tiles/grass.png",
+                "app/img/tiles/grass_side.png",
+                "app/img/tiles/dirt.png",
+                "app/img/tiles/cobble.png",
+            ])?;
+            world.alloc(container)?;
+            sun.alloc(container)?;
+
             Ok(())
         })?;
 
-        o.texture_id = texture_id;
-        o2.texture_id = texture_id;
-        ground.texture_id = grass_id;
-        o.speed = 20.0;
-        o2.speed = 10.0;
-
-        let camera = FpCamera::new(point3(3.0, 3.0, 3.0), 225.0, -35.0);
+        let camera = FpCamera::new(point3(0.0, -60.0, 20.0), 90.0, -20.0);
 
         info!("+ App");
-        Ok(Self { blitz, delta: Instant::now(), o, o2, ground, camera })
+        Ok(Self { blitz, delta: Instant::now(), camera, world, texture_array_id, sun })
     }
 
     pub fn input(&mut self, keys: &HashSet<KeyCode>, dt: f32) {
@@ -155,19 +163,24 @@ impl App {
         let dt = self.delta.elapsed().as_secs_f32();
         self.delta = Instant::now();
 
+        self.sun.update(dt);
+
         let size = window.inner_size();
         let aspect = size.width as f32 / size.height as f32;
-        self.blitz.update_camera(self.camera.ubo(aspect));
+
+        let mut ubo = self.camera.ubo(aspect);
+        ubo.sun_dir = self.sun.sun_dir();
+        self.blitz.update_camera(ubo);
+
+        let t = (self.sun.sun_dir().z).max(0.0);
+        let sky   = [0.22_f32, 0.48, 0.72, 1.0];
+        let night = [0.01_f32, 0.01, 0.05, 1.0];
+        let color = std::array::from_fn(|i| night[i] + (sky[i] - night[i]) * t);
+        self.blitz.set_sky_color(color);
 
         if self.blitz.start_render(window)? {
-            self.ground.draw(&mut self.blitz);
-
-            let transform = self.o.update(dt);
-            self.o.draw_dynamic(&mut self.blitz, transform);
-
-            let transform = self.o2.update(dt);
-            self.o2.draw_dynamic(&mut self.blitz, transform);
-
+            self.world.draw(&mut self.blitz, self.texture_array_id)?;
+            self.sun.draw(&mut self.blitz, &self.camera);
             self.blitz.end_render(window)?;
         }
 

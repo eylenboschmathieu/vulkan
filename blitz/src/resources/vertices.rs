@@ -10,6 +10,7 @@ pub enum VertexFormat {
     Vertex2D_Color,
     Vertex3D_Color,
     Vertex3D_Color_Texture,
+    Vertex3D_TextureArray,
 }
 
 impl VertexFormat {
@@ -18,6 +19,7 @@ impl VertexFormat {
             VertexFormat::Vertex2D_Color => Vertex_2D_Color::binding_description(binding),
             VertexFormat::Vertex3D_Color => Vertex_3D_Color::binding_description(binding),
             VertexFormat::Vertex3D_Color_Texture => Vertex_3D_Color_Texture::binding_description(binding),
+            VertexFormat::Vertex3D_TextureArray => Vertex_3D_TextureArray::binding_description(binding),
         }
     }
 
@@ -26,6 +28,7 @@ impl VertexFormat {
             VertexFormat::Vertex2D_Color => Vertex_2D_Color::attribute_description(binding).to_vec(),
             VertexFormat::Vertex3D_Color => Vertex_3D_Color::attribute_description(binding).to_vec(),
             VertexFormat::Vertex3D_Color_Texture => Vertex_3D_Color_Texture::attribute_description(binding).to_vec(),
+            VertexFormat::Vertex3D_TextureArray => Vertex_3D_TextureArray::attribute_description(binding).to_vec(),
         }
     }
 }
@@ -154,5 +157,61 @@ impl Vertex_3D_Color_Texture {
             .build();
 
         [pos, color, tex_coord]
+    }
+}
+
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct Vertex_3D_TextureArray {
+    pos:    Vec3,
+    uv:     Vec2,
+    layer:  u32,
+    normal: Vec3,
+}
+
+impl Vertex_3D_TextureArray {
+    pub const fn new(pos: Vec3, uv: Vec2, layer: u32, normal: Vec3) -> Self {
+        Self { pos, uv, layer, normal }
+    }
+
+    pub fn binding_description(binding: u32) -> vk::VertexInputBindingDescription {
+        vk::VertexInputBindingDescription::builder()
+            .binding(binding)
+            .stride(size_of::<Self>() as u32)
+            .input_rate(vk::VertexInputRate::VERTEX)
+            .build()
+    }
+
+    pub fn attribute_description(binding: u32) -> [vk::VertexInputAttributeDescription; 4] {
+        let pos = vk::VertexInputAttributeDescription::builder()
+            .binding(binding)
+            .location(0)
+            .format(vk::Format::R32G32B32_SFLOAT)
+            .offset(0)
+            .build();
+
+        let uv = vk::VertexInputAttributeDescription::builder()
+            .binding(binding)
+            .location(1)
+            .format(vk::Format::R32G32_SFLOAT)
+            .offset(size_of::<Vec3>() as u32)
+            .build();
+
+        let layer = vk::VertexInputAttributeDescription::builder()
+            .binding(binding)
+            .location(2)
+            .format(vk::Format::R32_UINT)
+            .offset((size_of::<Vec3>() + size_of::<Vec2>()) as u32)
+            .build();
+
+        let normal = vk::VertexInputAttributeDescription::builder()
+            .binding(binding)
+            .location(3)
+            .format(vk::Format::R32G32B32_SFLOAT)
+            .offset((size_of::<Vec3>() + size_of::<Vec2>() + size_of::<u32>()) as u32)
+            .build();
+
+        [pos, uv, layer, normal]
     }
 }

@@ -32,7 +32,7 @@ pub use crate::{
         PipelineDef,
     },
     resources::{
-        image::TextureId,
+        image::{TextureId, TextureArrayId},
         buffers::{
             index_buffer::IndexBufferId,
             vertex_buffer::VertexBufferId,
@@ -73,6 +73,12 @@ struct DynamicDrawCall {
 }
 
 #[derive(Debug)]
+struct ArrayDrawCall {
+    mesh: Mesh,
+    texture_array_id: TextureArrayId,
+}
+
+#[derive(Debug)]
 pub struct Blitz {
     camera: Camera,
     swapchain: Swapchain,
@@ -82,33 +88,16 @@ pub struct Blitz {
     renderpass: Renderpass,
     static_queue: Vec<StaticDrawCall>,
     dynamic_queue: Vec<DynamicDrawCall>,
+    array_queue: Vec<ArrayDrawCall>,
+    sky_color: [f32; 4],
     _entry: Entry, // must be last: dropped last, keeping libvulkan loaded while all other fields clean up
 }
 
 impl Blitz {
     /// Uploads meshes and texture in a closure by way of:
-    ///     container.upload_mesh(&vertices, &indices)
-    ///     container.upload_texture(path)
-    /// 
-    /// Eagerly returns their id's
-    /// 
-    /// # Example
-    /// ```rust
-    /// impl Obj {    /// 
-    ///    pub unsafe fn upload(&mut self, container: &mut Container, vertices: &[Vertex_3D_Color_Texture], indices: &[u16]) {
-    ///        self.mesh = container.load_mesh(vertices, indices);
-    ///    }                      // ^^^^^^^^^ Eagerly returns buffer id's
-    /// }
-    /// 
-    /// let obj0 = Obj::new()
-    /// let obj1 = Obj::new()
-    /// 
-    /// blitz.upload(|container| {  // Actual data uploads happens in blitz.upload
-    ///     obj0.upload(&container, &VERTICES0, &INDICES0);
-    ///     obj1.upload(&container, &VERTICES1, &INDICES1);
-    /// })?;
-    /// # };
-    /// ```
+    ///     container.alloc_mesh(&vertices, &indices)
+    ///     container.alloc_texture(path)
+    ///     container.free_mesh(mesh) // Free the resource in case you're re-using an object
     pub unsafe fn upload<F: FnOnce(&mut Container) -> Result<()>>(&mut self, f: F) -> Result<()> {
         let mut container = Container::new()?;
         f(&mut container)?;
@@ -117,23 +106,29 @@ impl Blitz {
         Ok(())
     }
 
+    pub unsafe fn set_sky_color(&mut self, color: [f32; 4]) {
+        self.sky_color = color;
+    }
+
     pub unsafe fn start_recording(&mut self) -> Result<()> {
         let command_buffer = &globals::command_manager().graphics()[self.sync.frame];
+        self.sync.command_buffer = *command_buffer;
+
         command_buffer.begin_recording(
             self.swapchain.extent(),
             &self.renderpass,
             self.swapchain[self.sync.image].framebuffer(),
+            self.sky_color,
         )?;
         Ok(())
     }
 
     pub unsafe fn end_recording(&mut self) -> Result<()> {
         self.flush_draw();
-
-        let command_buffer = &globals::command_manager().graphics()[self.sync.frame];
-        command_buffer.end_recording(&self.renderpass)
+        self.sync.command_buffer.end_recording(&self.renderpass)
     }
 
+    /// Returns Ok(true) if the render started successfully, Ok(false) if swapchain needs rebuilding
     pub unsafe fn start_render(&mut self, window: &Window) -> Result<bool> {
         globals::device().logical().wait_for_fences(&[self.sync.in_flight_fence()], true, u64::MAX)?;
 
@@ -169,7 +164,7 @@ impl Blitz {
 
         let wait_semaphores = &[self.sync.image_available_semaphore()];
         let wait_stages = &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-        let command_buffers = &[globals::command_manager().graphics()[self.sync.frame].handle()];
+        let command_buffers = &[self.sync.command_buffer.handle()];
         let signal_semaphores = &[self.sync.render_finished_semaphore()];
         let submit_info = vk::SubmitInfo::builder()
             .wait_semaphores(wait_semaphores)
@@ -208,55 +203,76 @@ impl Blitz {
         self.dynamic_queue.push(DynamicDrawCall { mesh, texture_id, transform });
     }
 
+    pub unsafe fn draw_array(&mut self, mesh: Mesh, texture_array_id: TextureArrayId) {
+        self.array_queue.push(ArrayDrawCall { mesh, texture_array_id });
+    }
+
     pub unsafe fn update_camera(&mut self, ubo: UniformBufferObject) {
         self.camera.update(self.sync.frame, ubo);
     }
 
     pub unsafe fn flush_draw(&mut self) {
-        let command_buffer = globals::command_manager().graphics()[self.sync.frame];
-
         if !self.static_queue.is_empty() {
-            self.pipelines[0].bind(&command_buffer);
-            self.pipelines[0].bind_sets(&command_buffer, &[self.camera[self.sync.frame]], 0);
+            self.pipelines[0].bind(&self.sync.command_buffer);
+            self.pipelines[0].bind_sets(&self.sync.command_buffer, &[self.camera[self.sync.frame]], 0);
             self.static_queue.sort_by_key(|d| d.texture_id);
             let mut current_texture = None;
             for draw in &self.static_queue {
                 if current_texture != Some(draw.texture_id) {
                     let descriptor_set = globals::textures()[draw.texture_id].descriptor_set;
-                    self.pipelines[0].bind_sets(&command_buffer, &[descriptor_set], 1);
+                    self.pipelines[0].bind_sets(&self.sync.command_buffer, &[descriptor_set], 1);
                     current_texture = Some(draw.texture_id);
                 }
-                globals::vertex_buffer().bind(&command_buffer, draw.mesh.vertices);
-                globals::index_buffer().bind(&command_buffer, draw.mesh.indices);
-                globals::index_buffer().draw(&command_buffer, draw.mesh.indices, 0);
+                globals::vertex_buffer().bind(&self.sync.command_buffer, draw.mesh.vertices);
+                globals::index_buffer().bind(&self.sync.command_buffer, draw.mesh.indices);
+                globals::index_buffer().draw(&self.sync.command_buffer, draw.mesh.indices, 0);
             }
             self.static_queue.clear();
         }
 
         if !self.dynamic_queue.is_empty() {
-            self.pipelines[1].bind(&command_buffer);
-            self.pipelines[1].bind_sets(&command_buffer, &[self.camera[self.sync.frame]], 0);
+            self.pipelines[1].bind(&self.sync.command_buffer);
+            self.pipelines[1].bind_sets(&self.sync.command_buffer, &[self.camera[self.sync.frame]], 0);
             self.dynamic_queue.sort_by_key(|d| d.texture_id);
             let mut current_texture = None;
             for draw in &self.dynamic_queue {
                 if current_texture != Some(draw.texture_id) {
                     let descriptor_set = globals::textures()[draw.texture_id].descriptor_set;
-                    self.pipelines[1].bind_sets(&command_buffer, &[descriptor_set], 1);
+                    self.pipelines[1].bind_sets(&self.sync.command_buffer, &[descriptor_set], 1);
                     current_texture = Some(draw.texture_id);
                 }
-                self.pipelines[1].push_constants(&command_buffer, &draw.transform);
-                globals::vertex_buffer().bind(&command_buffer, draw.mesh.vertices);
-                globals::index_buffer().bind(&command_buffer, draw.mesh.indices);
-                globals::index_buffer().draw(&command_buffer, draw.mesh.indices, 0);
+                self.pipelines[1].push_constants(&self.sync.command_buffer, &draw.transform);
+                globals::vertex_buffer().bind(&self.sync.command_buffer, draw.mesh.vertices);
+                globals::index_buffer().bind(&self.sync.command_buffer, draw.mesh.indices);
+                globals::index_buffer().draw(&self.sync.command_buffer, draw.mesh.indices, 0);
             }
             self.dynamic_queue.clear();
+        }
+
+        if !self.array_queue.is_empty() {
+            self.pipelines[2].bind(&self.sync.command_buffer);
+            self.pipelines[2].bind_sets(&self.sync.command_buffer, &[self.camera[self.sync.frame]], 0);
+            self.array_queue.sort_by_key(|d| d.texture_array_id);
+            let mut current_array = None;
+            for draw in &self.array_queue {
+                if current_array != Some(draw.texture_array_id) {
+                    let descriptor_set = globals::textures().texture_array(draw.texture_array_id).descriptor_set;
+                    self.pipelines[2].bind_sets(&self.sync.command_buffer, &[descriptor_set], 1);
+                    current_array = Some(draw.texture_array_id);
+                }
+                globals::vertex_buffer().bind(&self.sync.command_buffer, draw.mesh.vertices);
+                globals::index_buffer().bind(&self.sync.command_buffer, draw.mesh.indices);
+                globals::index_buffer().draw(&self.sync.command_buffer, draw.mesh.indices, 0);
+            }
+            self.array_queue.clear();
         }
     }
 
     pub unsafe fn destroy(&mut self) {
         globals::device().logical().device_wait_idle().unwrap();
-        self.renderpass.destroy();
+
         self.sync.destroy();
+        self.renderpass.destroy();
         self.depth_buffer.destroy();
         for pipeline in &mut self.pipelines { pipeline.destroy(); }
         self.swapchain.destroy();
@@ -275,6 +291,7 @@ impl Blitz {
     unsafe fn rebuild_swapchain(&mut self, window: &Window) -> Result<()> {
         info!("Rebuilding swapchain");
         globals::device().logical().device_wait_idle()?;
+        globals::device_mut().refresh_swapchain_support(globals::instance())?;
 
         // Cleanup
 
@@ -282,6 +299,7 @@ impl Blitz {
         self.renderpass.destroy();
         self.depth_buffer.destroy();
         for pipeline in &mut self.pipelines { pipeline.destroy(); }
+        self.pipelines.clear();
 
         // Rebuilding
 
@@ -298,6 +316,7 @@ impl Blitz {
     unsafe fn build_pipelines(&mut self) -> Result<()> {
         let layouts = &[self.camera.layout(), globals::textures().descriptor_set_layout];
 
+        // pipelines[0]: static meshes
         self.pipelines.push(Pipeline::new(
             &self.renderpass,
             self.swapchain.extent(),
@@ -311,6 +330,7 @@ impl Blitz {
             },
         )?);
 
+        // pipelines[1]: dynamic meshes (push constants)
         self.pipelines.push(Pipeline::new(
             &self.renderpass,
             self.swapchain.extent(),
@@ -321,6 +341,20 @@ impl Blitz {
                 vertex_shader: include_bytes!("../shaders/mesh_dynamic.vert.spv"),
                 fragment_shader: include_bytes!("../shaders/mesh_dynamic.frag.spv"),
                 push_constants: true,
+            },
+        )?);
+
+        // pipelines[2]: chunk meshes (texture array)
+        self.pipelines.push(Pipeline::new(
+            &self.renderpass,
+            self.swapchain.extent(),
+            self.swapchain.format(),
+            layouts,
+            &PipelineDef {
+                vertex_format: VertexFormat::Vertex3D_TextureArray,
+                vertex_shader: include_bytes!("../shaders/chunk.vert.spv"),
+                fragment_shader: include_bytes!("../shaders/chunk.frag.spv"),
+                push_constants: false,
             },
         )?);
 
@@ -350,13 +384,13 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
     let command_manager = commands::CommandManager::new(globals::instance())?;
     globals::init_command_manager(command_manager);
 
-    let staging_buffer = resources::buffers::staging_buffer::StagingBuffer::new(1024 * 1024 * 4)?;
+    let staging_buffer = resources::buffers::staging_buffer::StagingBuffer::new(1024 * 1024 * 16)?;
     globals::init_staging_buffer(staging_buffer);
 
-    let index_buffer = resources::buffers::index_buffer::IndexBuffer::new(1024)?;
+    let index_buffer = resources::buffers::index_buffer::IndexBuffer::new(1024 * 512)?;
     globals::init_index_buffer(index_buffer);
 
-    let vertex_buffer = resources::buffers::vertex_buffer::VertexBuffer::new(1024 * 1024 * 4)?;
+    let vertex_buffer = resources::buffers::vertex_buffer::VertexBuffer::new(1024 * 1024 * 8)?;
     globals::init_vertex_buffer(vertex_buffer);
 
     let uniform_buffer = resources::buffers::uniform_buffer::UniformBuffer::new(16)?;
@@ -389,6 +423,8 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
         renderpass,
         static_queue: vec![],
         dynamic_queue: vec![],
+        array_queue: vec![],
+        sky_color: [0.22, 0.48, 0.72, 1.0],
     };
 
     blitz.build_pipelines()?;

@@ -206,8 +206,6 @@ impl Instance {
                 Err(err) => warn!("Skipping physical device('{}'): {}", properties.device_name, err)
             }
         }
-        info!("pick_physical_device.end");
-        
         Err(anyhow!("Failed to find suitable physical device."))
     }
 

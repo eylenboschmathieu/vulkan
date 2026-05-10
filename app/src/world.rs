@@ -2,6 +2,7 @@
 
 use std::{collections::HashMap};
 use anyhow::Result;
+use blitz::{Blitz, Container, TextureArrayId};
 use cgmath::Vector3 as ChunkPos;
 
 use crate::{
@@ -9,35 +10,47 @@ use crate::{
     chunk::{CHUNK_SIZE, Chunk},
 };
 
+#[derive(Debug)]
 pub struct World {
     chunks: HashMap<ChunkPos<i32>, Chunk>,
 }
 
 impl World {
     pub fn new() -> Self {
-        // Read chunk data from file, or something...
+        let positions = [
+            ChunkPos{x: -32, y: -32, z: -32},
+            ChunkPos{x: -32, y:   0, z: -32},
+            ChunkPos{x:   0, y: -32, z: -32},
+            ChunkPos{x:   0, y:   0, z: -32},
+        ];
 
-        let chunks: HashMap<ChunkPos<i32>, Chunk> = HashMap::from([
-            (ChunkPos{x: 0, y: 0, z: 0}, Chunk::new()),
-            (ChunkPos{x: 0, y: 32, z: 0}, Chunk::new()),
-            (ChunkPos{x: 32, y: 0, z: 0}, Chunk::new()),
-            (ChunkPos{x: 32, y: 32, z: 0}, Chunk::new()),
-        ]);
+        let chunks: HashMap<ChunkPos<i32>, Chunk> = positions.into_iter()
+            .map(|pos| {
+                let mut chunk = Chunk::new();
+                chunk.generate(pos.x, pos.y, pos.z);
+                (pos, chunk)
+            })
+            .collect();
 
         Self { chunks }
     }
 
-    pub fn render(&self) -> Result<()> {
-        // Tell vulkan to start the render
+    pub unsafe fn alloc(&mut self, container: &mut Container) -> Result<()> {
+        self.chunks
+            .iter_mut()
+            .for_each(|(pos, chunk)| {
+                chunk.recalc([None; 6], container, (pos.x, pos.y, pos.z));
+            });
+        Ok(())
+    }
 
-        let mut  mesh_indices = vec![];
+    pub unsafe fn draw(&self, blitz: &mut Blitz, texture_array_id: TextureArrayId) -> Result<()> {
         self.chunks
             .iter()
-            .for_each(|chunk| {
-                mesh_indices.push(chunk.1.mesh());
+            .for_each(|(_, chunk)| {
+                chunk.draw(blitz, texture_array_id);
             });
 
-        // Send mesh_indices to vulkan for recording
         Ok(())
     }
 

@@ -19,6 +19,7 @@ use crate::{
 };
 
 pub type TextureId = usize;
+pub type TextureArrayId = usize;
 
 #[derive(Debug)]
 pub(crate) struct Texture {
@@ -102,9 +103,50 @@ impl Deref for Texture {
 }
 
 #[derive(Debug)]
+pub(crate) struct TextureArray {
+    pub(crate) image: Image,
+    pub(crate) view: vk::ImageView,
+    pub(crate) sampler: vk::Sampler,
+    pub(crate) descriptor_set: vk::DescriptorSet,
+}
+
+impl TextureArray {
+    pub unsafe fn new(layout: vk::DescriptorSetLayout, layer_count: u32, width: u32, height: u32) -> Result<Self> {
+        let image = Image::new_array(
+            width, height, layer_count,
+            vk::Format::R8G8B8A8_SRGB,
+            vk::ImageTiling::OPTIMAL,
+            vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST,
+            vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        )?;
+        let view = Image::build_view_array(image.handle(), vk::Format::R8G8B8A8_SRGB, layer_count)?;
+        let sampler = Texture::build_sampler()?;
+        let descriptor_set = globals::descriptor_pool_mut().alloc(layout, 1)?[0];
+        Ok(Self { image, view, sampler, descriptor_set })
+    }
+
+    pub unsafe fn destroy(&self) {
+        globals::device().logical().destroy_sampler(self.sampler, None);
+        globals::device().logical().destroy_image_view(self.view, None);
+        self.image.destroy();
+        info!("~ TextureArray");
+    }
+}
+
+impl Deref for TextureArray {
+    type Target = Image;
+
+    fn deref(&self) -> &Self::Target {
+        &self.image
+    }
+}
+
+#[derive(Debug)]
 pub(crate) struct Textures {
     textures: Vec<Texture>,
     free_ids: Vec<usize>,
+    texture_arrays: Vec<TextureArray>,
+    free_array_ids: Vec<usize>,
     pub descriptor_set_layout: vk::DescriptorSetLayout,
 }
 
@@ -120,14 +162,15 @@ impl Textures {
         Ok(Self {
             textures: vec![],
             free_ids: vec![],
+            texture_arrays: vec![],
+            free_array_ids: vec![],
             descriptor_set_layout,
         })
     }
 
     pub unsafe fn destroy(&mut self) {
-        for texture in &self.textures {
-            texture.destroy();
-        }
+        for texture in &self.textures { texture.destroy(); }
+        for array in &self.texture_arrays { array.destroy(); }
         DescriptorSetLayout::free(self.descriptor_set_layout);
         self.descriptor_set_layout = vk::DescriptorSetLayout::null();
     }
@@ -138,9 +181,22 @@ impl Textures {
             self.textures[id] = texture;
             return Ok(id);
         }
-
         self.textures.push(texture);
         Ok(self.textures.len() - 1)
+    }
+
+    pub unsafe fn new_texture_array(&mut self, layer_count: u32, width: u32, height: u32) -> Result<TextureArrayId> {
+        let array = TextureArray::new(self.descriptor_set_layout, layer_count, width, height)?;
+        if let Some(id) = self.free_array_ids.pop() {
+            self.texture_arrays[id] = array;
+            return Ok(id);
+        }
+        self.texture_arrays.push(array);
+        Ok(self.texture_arrays.len() - 1)
+    }
+
+    pub fn texture_array(&self, id: TextureArrayId) -> &TextureArray {
+        &self.texture_arrays[id]
     }
 
     pub(crate) unsafe fn delete_texture(&mut self, id: TextureId) {

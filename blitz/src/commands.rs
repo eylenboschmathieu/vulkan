@@ -173,12 +173,17 @@ impl CommandManager {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct CommandBuffer {
     handle: vk::CommandBuffer,
-    pool: vk::CommandPool,
+}
+
+impl Default for CommandBuffer {
+    fn default() -> Self {
+        Self { handle: vk::CommandBuffer::null() }
+    }
 }
 
 impl CommandBuffer {
     pub unsafe fn new(handle: vk::CommandBuffer, pool: vk::CommandPool) -> Self {
-        Self { handle, pool }
+        Self { handle }
     }
 
     pub fn handle(&self) -> vk::CommandBuffer {
@@ -194,14 +199,14 @@ impl CommandBuffer {
         Ok(())
     }
 
-    pub unsafe fn begin_recording(&self, extent: Extent2D, renderpass: &Renderpass, framebuffer: Framebuffer) -> Result<()> {
+    pub unsafe fn begin_recording(&self, extent: Extent2D, renderpass: &Renderpass, framebuffer: Framebuffer, sky_color: [f32; 4]) -> Result<()> {
         let inheritance_info = vk::CommandBufferInheritanceInfo::builder();
         let info = vk::CommandBufferBeginInfo::builder()
             .flags(vk::CommandBufferUsageFlags::empty())
             .inheritance_info(&inheritance_info);
 
         globals::device().logical().begin_command_buffer(self.handle, &info)?;
-        renderpass.begin(&self, framebuffer, extent);
+        renderpass.begin(&self, framebuffer, extent, sky_color);
 
         Ok(())
     }

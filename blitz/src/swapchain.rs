@@ -96,10 +96,13 @@ impl Swapchain {
     }
 
     pub unsafe fn rebuild(&mut self, window: &Window) -> Result<()> {
-        // Destroy old swapchain
         self.free_images();
 
         self.handle = Swapchain::build(window, Some(self.handle))?;
+
+        let support = globals::device().swapchain_support();
+        self.format = support.get_surface_format().format;
+        self.extent = support.get_extent(window);
 
         self.get_images();
 

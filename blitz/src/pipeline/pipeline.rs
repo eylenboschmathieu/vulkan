@@ -137,7 +137,7 @@ impl Pipeline {
             .depth_bounds_test_enable(false)
             .min_depth_bounds(0.0)
             .max_depth_bounds(1.0)
-            .stencil_test_enable(true);
+            .stencil_test_enable(false);
             //.front(vk::StencilOpState::default()) // Optional
             //.back(vk::StencilOpState::default()); // Optional
 

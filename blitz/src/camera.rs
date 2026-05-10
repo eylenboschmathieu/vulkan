@@ -6,7 +6,7 @@ use std::{
 };
 
 use anyhow::Result;
-use cgmath::{vec3, vec4, point3, Deg, Matrix4};
+use cgmath::{vec3, point3, Deg, Matrix4};
 use vulkanalia::vk::{self, Handle};
 
 type Mat4 = Matrix4<f32>;
@@ -14,7 +14,7 @@ type Mat4 = Matrix4<f32>;
 use crate::{
     DescriptorSetUpdateInfo, UniformBufferId, globals, pipeline::descriptor_set_layout::{
         DescriptorSetLayout, DescriptorSetLayoutBuildInfo,
-    }, resources::buffers::uniform_buffer::UniformBufferObject, sync::FRAMES_IN_FLIGHT
+    }, resources::buffers::uniform_buffer::CameraUbo, sync::FRAMES_IN_FLIGHT
 };
 
 #[derive(Debug)]
@@ -43,7 +43,7 @@ impl Camera {
             .unwrap_or_else(|_| panic!("Expected vector of size {}", FRAMES_IN_FLIGHT));
 
         let uniform_buffers: [UniformBufferId; FRAMES_IN_FLIGHT] = std::array::from_fn(|_| {
-            globals::uniform_buffer_mut().alloc().expect("Failed to allocate uniform buffer")
+            globals::uniform_buffer_mut().alloc(size_of::<CameraUbo>()).expect("Failed to allocate uniform buffer")
         });
 
         let updates: Vec<DescriptorSetUpdateInfo> = zip(descriptor_sets, uniform_buffers)
@@ -83,7 +83,7 @@ impl Camera {
             100.0,
         );
 
-        let ubo = UniformBufferObject { model, view, proj, sun_dir: vec4(0.0, 0.0, 1.0, 0.0) };
+        let ubo = CameraUbo { model, view, proj };
         for id in uniform_buffers {
             globals::uniform_buffer().update(id, ubo)?;
         }
@@ -104,7 +104,7 @@ impl Camera {
         self.descriptor_set_layout
     }
 
-    pub unsafe fn update(&mut self, frame: usize, ubo: UniformBufferObject) {
+    pub unsafe fn update(&mut self, frame: usize, ubo: CameraUbo) {
         globals::uniform_buffer().update(self.uniform_buffers[frame], ubo).unwrap();
     }
 }

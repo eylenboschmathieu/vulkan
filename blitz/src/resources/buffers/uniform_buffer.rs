@@ -18,10 +18,15 @@ pub type UniformBufferId = usize;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-pub struct UniformBufferObject {
-    pub model:   Mat4,
-    pub view:    Mat4,
-    pub proj:    Mat4,
+pub struct CameraUbo {
+    pub model: Mat4,
+    pub view:  Mat4,
+    pub proj:  Mat4,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct LightingUbo {
     pub sun_dir: Vec4,
 }
 
@@ -36,7 +41,7 @@ pub struct UniformBuffer {
 
 impl UniformBuffer {
     pub unsafe fn new(count: usize) -> Result<Self> {
-        let size = (size_of::<UniformBufferObject>() * count) as u64;
+        let size = (size_of::<CameraUbo>() * count) as u64;
 
         // Buffer
 
@@ -79,46 +84,15 @@ impl UniformBuffer {
         self.buffer.destroy();
     }
 
-    pub unsafe fn update(&self, id: UniformBufferId, ubo: UniformBufferObject) -> Result<()> {
-        /*let dt = delta.elapsed().as_secs_f32();
-
-        let model = Mat4::from_axis_angle(
-            vec3(0.0, 0.0, 1.0),
-            Deg(90.0) * dt
-        );
-
-        let view = Mat4::look_at_rh(
-            point3(4.0, 4.0, 4.0),
-            point3(0.0, 0.0, 0.0),
-            vec3(0.0, 0.0, 1.0),
-        );
-
-        let fix = Mat4::new(
-            1.0, 0.0, 0.0, 0.0,
-            0.0, -1.0, 0.0, 0.0,
-            0.0, 0.0, 1.0 / 2.0, 0.0,
-            0.0, 0.0, 1.0 / 2.0, 1.0,
-        );
-
-        let proj = fix * cgmath::perspective(
-            Deg(45.0),
-            extent.width as f32 / extent.height as f32,
-            0.1,
-            10.0,
-        );
-
-        let ubo = UniformBufferObject { model, view, proj };*/
-
+    pub unsafe fn update<T: Copy>(&self, id: UniformBufferId, data: T) -> Result<()> {
         let offset = self.alloc_list[id].offset;
-
-        memcpy(&ubo, self.mapped_ptr.add(offset).cast() , 1);
-
+        memcpy(&data, self.mapped_ptr.add(offset).cast(), 1);
         Ok(())
     }
 
 
-    pub fn alloc(&mut self) -> Result<UniformBufferId> {
-        if let Some(allocation) = self.allocator.alloc(size_of::<UniformBufferObject>()) {
+    pub fn alloc(&mut self, size: usize) -> Result<UniformBufferId> {
+        if let Some(allocation) = self.allocator.alloc(size) {
             if self.free_list.is_empty() {
                 self.alloc_list.push(allocation);
                 return Ok(self.alloc_list.len() - 1);

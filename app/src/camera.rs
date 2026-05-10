@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 
-use cgmath::{vec3, vec4, Deg, InnerSpace, Matrix4, Point3, Vector3};
+use cgmath::{vec3, Deg, InnerSpace, Matrix4, Point3, Vector3};
 use winit::keyboard::KeyCode;
-use blitz::UniformBufferObject;
+use blitz::CameraUbo;
 
 const MOVE_SPEED: f32 = 6.0;
 const MOUSE_SENSITIVITY: f32 = 0.2; // degrees per pixel
@@ -48,7 +48,7 @@ impl FpCamera {
         self.pitch  = (self.pitch - dy * MOUSE_SENSITIVITY).clamp(-89.0, 89.0);
     }
 
-    pub fn ubo(&self, aspect: f32) -> UniformBufferObject {
+    pub fn ubo(&self, aspect: f32) -> CameraUbo {
         let target = self.eye + self.forward();
 
         let view = Matrix4::look_at_rh(self.eye, target, vec3(0.0, 0.0, 1.0));
@@ -61,6 +61,6 @@ impl FpCamera {
         );
         let proj = fix * cgmath::perspective(Deg(90.0), aspect, 0.1, 100.0);
 
-        UniformBufferObject { model: Matrix4::from_scale(1.0), view, proj, sun_dir: vec4(0.0, 0.0, 1.0, 0.0) }
+        CameraUbo { model: Matrix4::from_scale(1.0), view, proj }
     }
 }

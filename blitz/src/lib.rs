@@ -11,9 +11,11 @@ mod resources;
 mod container;
 mod mesh;
 mod camera;
+mod lighting;
 mod globals;
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use lighting::Lighting;
 
 use log::*;
 use anyhow::{anyhow, Result};
@@ -36,7 +38,7 @@ pub use crate::{
         buffers::{
             index_buffer::IndexBufferId,
             vertex_buffer::VertexBufferId,
-            uniform_buffer::{UniformBufferId, UniformBufferObject},
+            uniform_buffer::{UniformBufferId, CameraUbo, LightingUbo},
         },
         vertices::*,
     },
@@ -81,6 +83,7 @@ struct ArrayDrawCall {
 #[derive(Debug)]
 pub struct Blitz {
     camera: Camera,
+    lighting: Lighting,
     swapchain: Swapchain,
     pipelines: Vec<Pipeline>,
     sync: Synchronization,
@@ -207,14 +210,21 @@ impl Blitz {
         self.array_queue.push(ArrayDrawCall { mesh, texture_array_id });
     }
 
-    pub unsafe fn update_camera(&mut self, ubo: UniformBufferObject) {
+    pub unsafe fn update_camera(&mut self, ubo: CameraUbo) {
         self.camera.update(self.sync.frame, ubo);
     }
 
+    pub unsafe fn update_lighting(&mut self, ubo: LightingUbo) {
+        self.lighting.update(self.sync.frame, ubo);
+    }
+
     pub unsafe fn flush_draw(&mut self) {
+        let lighting_set = self.lighting[self.sync.frame];
+
         if !self.static_queue.is_empty() {
             self.pipelines[0].bind(&self.sync.command_buffer);
             self.pipelines[0].bind_sets(&self.sync.command_buffer, &[self.camera[self.sync.frame]], 0);
+            self.pipelines[0].bind_sets(&self.sync.command_buffer, &[lighting_set], 2);
             self.static_queue.sort_by_key(|d| d.texture_id);
             let mut current_texture = None;
             for draw in &self.static_queue {
@@ -233,6 +243,7 @@ impl Blitz {
         if !self.dynamic_queue.is_empty() {
             self.pipelines[1].bind(&self.sync.command_buffer);
             self.pipelines[1].bind_sets(&self.sync.command_buffer, &[self.camera[self.sync.frame]], 0);
+            self.pipelines[1].bind_sets(&self.sync.command_buffer, &[lighting_set], 2);
             self.dynamic_queue.sort_by_key(|d| d.texture_id);
             let mut current_texture = None;
             for draw in &self.dynamic_queue {
@@ -252,6 +263,7 @@ impl Blitz {
         if !self.array_queue.is_empty() {
             self.pipelines[2].bind(&self.sync.command_buffer);
             self.pipelines[2].bind_sets(&self.sync.command_buffer, &[self.camera[self.sync.frame]], 0);
+            self.pipelines[2].bind_sets(&self.sync.command_buffer, &[lighting_set], 2);
             self.array_queue.sort_by_key(|d| d.texture_array_id);
             let mut current_array = None;
             for draw in &self.array_queue {
@@ -272,6 +284,8 @@ impl Blitz {
         globals::device().logical().device_wait_idle().unwrap();
 
         self.sync.destroy();
+        self.camera.destroy();
+        self.lighting.destroy();
         self.renderpass.destroy();
         self.depth_buffer.destroy();
         for pipeline in &mut self.pipelines { pipeline.destroy(); }
@@ -314,7 +328,7 @@ impl Blitz {
     }
 
     unsafe fn build_pipelines(&mut self) -> Result<()> {
-        let layouts = &[self.camera.layout(), globals::textures().descriptor_set_layout];
+        let layouts = &[self.camera.layout(), globals::textures().descriptor_set_layout, self.lighting.layout()];
 
         // pipelines[0]: static meshes
         self.pipelines.push(Pipeline::new(
@@ -406,6 +420,7 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
     globals::command_manager_mut().allocate_graphics_buffers(FRAMES_IN_FLIGHT)?;
 
     let camera = Camera::new(swapchain.extent())?;
+    let lighting = Lighting::new()?;
 
     let depth_buffer = DepthBuffer::new(swapchain.extent().width, swapchain.extent().height)?;
     let renderpass = Renderpass::new(swapchain.format())?;
@@ -416,6 +431,7 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
     let mut blitz = Blitz {
         _entry: entry,
         camera,
+        lighting,
         swapchain,
         pipelines: vec![],
         sync,

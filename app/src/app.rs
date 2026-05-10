@@ -1,6 +1,6 @@
 #![allow(dead_code, unsafe_op_in_unsafe_fn, unused_variables, clippy::too_many_arguments, clippy::unnecessary_wraps)]
 
-use cgmath::{vec2, vec3, point3, Deg, Matrix4};
+use cgmath::{vec2, vec3, point3, Deg};
 use anyhow::Result;
 use std::{collections::HashSet, time::Instant};
 use log::*;
@@ -8,42 +8,6 @@ use winit::{keyboard::KeyCode, window::Window};
 use blitz::*;
 
 use crate::{camera::FpCamera, sun::Sun, world::World};
-
-pub const VERTICES: [blitz::Vertex_3D_Color_Texture; 8] = [
-    Vertex_3D_Color_Texture::new(vec3(-0.5, -0.5, 0.0), vec3(1.0, 0.0, 0.0), vec2(1.0, 0.0)),
-    Vertex_3D_Color_Texture::new(vec3(0.5, -0.5, 0.0), vec3(0.0, 1.0, 0.0), vec2(0.0, 0.0)),
-    Vertex_3D_Color_Texture::new(vec3(0.5, 0.5, 0.0), vec3(0.0, 0.0, 1.0), vec2(0.0, 1.0)),
-    Vertex_3D_Color_Texture::new(vec3(-0.5, 0.5, 0.0), vec3(1.0, 1.0, 1.0), vec2(1.0, 1.0)),
-    Vertex_3D_Color_Texture::new(vec3(-0.5, -0.5, -0.5), vec3(1.0, 0.0, 0.0), vec2(1.0, 0.0)),
-    Vertex_3D_Color_Texture::new(vec3(0.5, -0.5, -0.5), vec3(0.0, 1.0, 0.0), vec2(0.0, 0.0)),
-    Vertex_3D_Color_Texture::new(vec3(0.5, 0.5, -0.5), vec3(0.0, 0.0, 1.0), vec2(0.0, 1.0)),
-    Vertex_3D_Color_Texture::new(vec3(-0.5, 0.5, -0.5), vec3(1.0, 1.0, 1.0), vec2(1.0, 1.0)),
-];
-
-pub const VERTICES2: [blitz::Vertex_3D_Color_Texture; 8] = [
-    Vertex_3D_Color_Texture::new(vec3(-0.5, -0.5, -1.0), vec3(1.0, 0.0, 0.0), vec2(1.0, 0.0)),
-    Vertex_3D_Color_Texture::new(vec3(0.5, -0.5, -1.0), vec3(0.0, 1.0, 0.0), vec2(0.0, 0.0)),
-    Vertex_3D_Color_Texture::new(vec3(0.5, 0.5, -1.0), vec3(0.0, 0.0, 1.0), vec2(0.0, 1.0)),
-    Vertex_3D_Color_Texture::new(vec3(-0.5, 0.5, -1.0), vec3(1.0, 1.0, 1.0), vec2(1.0, 1.0)),
-    Vertex_3D_Color_Texture::new(vec3(-2.0, -2.0, -1.5), vec3(1.0, 0.0, 0.0), vec2(1.0, 0.0)),
-    Vertex_3D_Color_Texture::new(vec3(2.0, -2.0, -1.5), vec3(0.0, 1.0, 0.0), vec2(0.0, 0.0)),
-    Vertex_3D_Color_Texture::new(vec3(2.0, 2.0, -1.5), vec3(0.0, 0.0, 1.0), vec2(0.0, 1.0)),
-    Vertex_3D_Color_Texture::new(vec3(-2.0, 2.0, -1.5), vec3(1.0, 1.0, 1.0), vec2(1.0, 1.0)),
-];
-
-pub const INDICES: &[u16] = &[
-    0, 1, 2, 2, 3, 0,
-    4, 5, 6, 6, 7, 4,
-];
-
-pub const GROUND_VERTICES: [blitz::Vertex_3D_Color_Texture; 4] = [
-    Vertex_3D_Color_Texture::new(vec3(-5.0, -5.0, -2.0), vec3(1.0, 1.0, 1.0), vec2(5.0, 0.0)),
-    Vertex_3D_Color_Texture::new(vec3( 5.0, -5.0, -2.0), vec3(1.0, 1.0, 1.0), vec2(0.0, 0.0)),
-    Vertex_3D_Color_Texture::new(vec3( 5.0,  5.0, -2.0), vec3(1.0, 1.0, 1.0), vec2(0.0, 5.0)),
-    Vertex_3D_Color_Texture::new(vec3(-5.0,  5.0, -2.0), vec3(1.0, 1.0, 1.0), vec2(5.0, 5.0)),
-];
-
-pub const GROUND_INDICES: &[u16] = &[0, 1, 2, 2, 3, 0];
 
 #[derive(Debug)]
 struct DynamicObject {
@@ -125,9 +89,6 @@ impl App {
 
         let mut world = World::new();
 
-        // let mut o = DynamicObject::new();
-        // let mut o2 = DynamicObject::new();
-        // let mut ground = StaticObject::new();
         let mut texture_array_id: blitz::TextureArrayId = 0;
         let mut sun = Sun::new();
 
@@ -168,9 +129,8 @@ impl App {
         let size = window.inner_size();
         let aspect = size.width as f32 / size.height as f32;
 
-        let mut ubo = self.camera.ubo(aspect);
-        ubo.sun_dir = self.sun.sun_dir();
-        self.blitz.update_camera(ubo);
+        self.blitz.update_camera(self.camera.ubo(aspect));
+        self.blitz.update_lighting(blitz::LightingUbo { sun_dir: self.sun.sun_dir() });
 
         let t = (self.sun.sun_dir().z).max(0.0);
         let sky   = [0.22_f32, 0.48, 0.72, 1.0];

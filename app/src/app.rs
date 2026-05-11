@@ -1,10 +1,10 @@
 #![allow(dead_code, unsafe_op_in_unsafe_fn, unused_variables, clippy::too_many_arguments, clippy::unnecessary_wraps)]
 
-use cgmath::{vec2, vec3, point3, Deg};
+use cgmath::{point3, Deg};
 use anyhow::Result;
 use std::{collections::HashSet, time::Instant};
 use log::*;
-use winit::{keyboard::KeyCode, window::Window};
+use winit::{keyboard::KeyCode, event::MouseButton, window::Window};
 use blitz::*;
 
 use crate::{camera::FpCamera, sun::Sun, world::World};
@@ -111,8 +111,12 @@ impl App {
         Ok(Self { blitz, delta: Instant::now(), camera, world, texture_array_id, sun })
     }
 
-    pub fn input(&mut self, keys: &HashSet<KeyCode>, dt: f32) {
+    pub fn input(&mut self, keys: &HashSet<KeyCode>, mouse: &HashSet<MouseButton>, dt: f32) {
         self.camera.input(keys, dt);
+
+        // Handle clicks
+        if mouse.contains(&MouseButton::Left)  { println!("LeftClick"); }
+        if mouse.contains(&MouseButton::Right) { println!("RightClick"); }
     }
 
     pub fn mouse_move(&mut self, dx: f32, dy: f32) {

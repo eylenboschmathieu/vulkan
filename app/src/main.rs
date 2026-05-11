@@ -46,6 +46,7 @@ fn main() -> Result<()> {
     let mut minimized: bool = false;
     let mut tick = Instant::now();
     let mut keys: HashSet<KeyCode> = HashSet::new();
+    let mut mouse: HashSet<winit::event::MouseButton> = HashSet::new();
 
     event_loop.run(move |event, elwt| {
         match event {
@@ -54,6 +55,14 @@ fn main() -> Result<()> {
             },
             Event::AboutToWait => window.request_redraw(),
             Event::WindowEvent { event, .. } => match event {
+                WindowEvent::MouseInput { device_id, state, button } => {
+                    println!("{:?}", device_id);
+                    if state.is_pressed() {
+                        mouse.insert(button);
+                    } else {
+                        mouse.remove(&button);
+                    }
+                },
                 WindowEvent::KeyboardInput { event, .. } => {
                     if let PhysicalKey::Code(code) = event.physical_key {
                         if code == KeyCode::Escape && event.state.is_pressed() {
@@ -75,7 +84,7 @@ fn main() -> Result<()> {
                     let now = Instant::now();
                     if now.duration_since(tick).as_millis() > TICK_RATE {
                         let dt = now.duration_since(tick).as_secs_f32();
-                        app.input(&keys, dt);
+                        app.input(&keys, &mouse,  dt);
                         app.render(&window).expect("Failed to render.");
                         tick = now;
                     }

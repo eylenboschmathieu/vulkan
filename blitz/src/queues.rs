@@ -13,13 +13,13 @@ use crate::{
 };
 
 #[derive(Debug)]
-pub struct QueueManager {
+pub struct Queues {
     graphics: GraphicsQueue,
     transfer: TransferQueue,
     present: PresentQueue,
 }
 
-impl QueueManager {
+impl Queues {
     pub unsafe fn new() -> Result<Self> {
         Ok(Self {
             graphics: GraphicsQueue::new()?,

@@ -1,7 +1,5 @@
 #![allow(dead_code, unsafe_op_in_unsafe_fn, unused_variables, clippy::too_many_arguments, clippy::unnecessary_wraps)]
 
-use std::process::Command;
-
 use cgmath::Matrix4;
 use log::*;
 use anyhow::Result;

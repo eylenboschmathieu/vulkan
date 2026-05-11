@@ -153,7 +153,6 @@ impl App {
 
     /// Destroys our Vulkan app.
     pub unsafe fn destroy(&mut self) {
-        self.blitz.destroy();
         info!("~ App");
     }
 }

@@ -104,7 +104,7 @@ impl<'a> IntoIterator for &'a CommandPool {
 
 // Essentially a wrapper to collect command pools
 #[derive(Debug)]
-pub(crate) struct CommandManager {
+pub(crate) struct Commands {
     /*
     === Graphics Pool ===
         Creating 1 command buffer for each swapchain image for render operations
@@ -117,14 +117,14 @@ pub(crate) struct CommandManager {
     transfer_pool: CommandPool,  // Used for transfer operations
 }
 
-impl CommandManager {
+impl Commands {
     pub unsafe fn new(instance: &Instance) -> Result<Self> {
         let queue_family_indices = globals::device().queue_family_indices();
         let create_flags = vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER;
         let graphics_pool = CommandPool::new(instance, queue_family_indices.graphics(), Some(create_flags))?;
         let transfer_pool = CommandPool::new(instance, queue_family_indices.transfer(), None)?;
 
-        info!("+ CommandManager");
+        info!("+ Commands");
 
         Ok(Self {
             graphics_pool, transfer_pool
@@ -166,7 +166,7 @@ impl CommandManager {
         self.graphics_pool.destroy();
         self.transfer_pool.destroy();
 
-        info!("~ CommandManager")
+        info!("~ Commands")
     }
 }
 

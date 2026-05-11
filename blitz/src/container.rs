@@ -142,15 +142,15 @@ impl Container {
 
     pub(crate) unsafe fn process(&mut self) -> Result<()> {
         if !self.meshes.is_empty() {
-            let command_buffer = globals::command_manager().begin_one_time_submit(vk::QueueFlags::TRANSFER)?;
+            let command_buffer = globals::commands().begin_one_time_submit(vk::QueueFlags::TRANSFER)?;
             let s_id = self.upload_meshes(&command_buffer)?;
-            command_buffer.end_one_time_submit(globals::queue_manager().transfer(), None)?;
+            command_buffer.end_one_time_submit(globals::queues().transfer(), None)?;
             globals::staging_buffer_mut().free(s_id);
         }
 
         let has_images = !self.textures.is_empty() || !self.texture_arrays.is_empty();
         if has_images {
-            let command_buffer = globals::command_manager().begin_one_time_submit(vk::QueueFlags::TRANSFER)?;
+            let command_buffer = globals::commands().begin_one_time_submit(vk::QueueFlags::TRANSFER)?;
 
             let tex_s_id = if !self.textures.is_empty() {
                 Some(self.upload_textures(&command_buffer)?)
@@ -160,16 +160,16 @@ impl Container {
                 Some(self.upload_texture_arrays(&command_buffer)?)
             } else { None };
 
-            command_buffer.end_one_time_submit(globals::queue_manager().transfer(), Some(self.semaphore))?;
+            command_buffer.end_one_time_submit(globals::queues().transfer(), Some(self.semaphore))?;
 
             let images: Vec<Image> = self.textures.iter()
                 .map(|(id, _)| globals::textures()[*id].image.clone())
                 .chain(self.texture_arrays.iter().map(|(id, _)| globals::textures().texture_array(*id).image.clone()))
                 .collect();
 
-            let command_buffer = globals::command_manager().begin_one_time_submit(vk::QueueFlags::GRAPHICS)?;
+            let command_buffer = globals::commands().begin_one_time_submit(vk::QueueFlags::GRAPHICS)?;
             self.ownership_transfer(&command_buffer, &images)?;
-            command_buffer.end_one_time_submit(globals::queue_manager().graphics(), Some(self.semaphore))?;
+            command_buffer.end_one_time_submit(globals::queues().graphics(), Some(self.semaphore))?;
 
             if let Some(s_id) = tex_s_id { globals::staging_buffer_mut().free(s_id); }
             if let Some(s_id) = arr_s_id { globals::staging_buffer_mut().free(s_id); }

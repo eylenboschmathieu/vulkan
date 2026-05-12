@@ -124,7 +124,13 @@ impl App {
             }
         }
         if mouse_pressed.contains(&MouseButton::Right) {
-            println!("RightClick");
+            if let Some((pos, face)) = self.world.raycast(self.camera.eye, self.camera.forward(), 50.0) {
+                unsafe {
+                    self.blitz.upload(|container|
+                        Ok(self.world.remove_block(container, pos))
+                    ).expect("Failed to remove block");
+                }
+            }
         }
 
         mouse_pressed.clear();

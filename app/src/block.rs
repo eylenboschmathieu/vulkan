@@ -15,12 +15,26 @@ pub enum BlockType {
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Face {
-    TOP = 0,
-    BOTTOM = 1,
-    EAST = 2,
-    WEST = 3,
-    SOUTH = 4,
-    NORTH = 5,
+    EAST   = 0, // +X
+    WEST   = 1, // -X
+    TOP    = 2, // +Y
+    BOTTOM = 3, // -Y
+    SOUTH  = 4, // +Z
+    NORTH  = 5, // -Z
+}
+
+impl From<usize> for Face {
+    fn from(idx: usize) -> Self {
+        match idx {
+            0 => Face::EAST,
+            1 => Face::WEST,
+            2 => Face::TOP,
+            3 => Face::BOTTOM,
+            4 => Face::SOUTH,
+            5 => Face::NORTH,
+            _ => panic!("Invalid face index: {idx}"),
+        }
+    }
 }
 
 impl Display for BlockType {
@@ -31,7 +45,7 @@ impl Display for BlockType {
 
 impl Default for BlockType {
     fn default() -> Self {
-        BlockType::Dirt
+        BlockType::Air
     }
 }
 
@@ -45,17 +59,16 @@ impl Block {
         matches!(self.kind, BlockType::Air)
     }
 
-    // Face indices: 0=+X(East), 1=-X(West), 2=+Y(top), 3=-Y(bottom), 4=+Z(South), 5=-Z(North)
-    pub fn layer_for_face(self, face: usize) -> u32 {
+    pub fn layer_for_face(self, face: Face) -> u32 {
         match self.kind {
             BlockType::Air   => 0,
             BlockType::Dirt  => 2,
             BlockType::Stone => 3,
             BlockType::Sand  => 3,
             BlockType::Grass => match face {
-                2 => 0, // +Y top: grass.png
-                3 => 2, // -Y bottom: dirt.png
-                _ => 1, // sides: grass_side.png
+                Face::TOP    => 0,
+                Face::BOTTOM => 2,
+                _            => 1,
             },
         }
     }

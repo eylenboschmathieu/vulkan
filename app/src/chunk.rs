@@ -3,7 +3,7 @@
 use cgmath::{vec2, vec3};
 use blitz::{Blitz, Container, Mesh, Vertex_3D_TextureArray, TextureArrayId};
 
-use crate::block::{Block, BlockType};
+use crate::block::{Block, BlockType, Face};
 
 pub const CHUNK_SIZE: usize = 32;
 
@@ -29,7 +29,7 @@ const FACE_DESCS: [FaceDesc; 6] = [
 
 #[derive(Debug)]
 pub struct Chunk {
-    dirty: bool,
+    pub dirty: bool,
     blocks: Blocks,
     mesh: ChunkMesh,
 }
@@ -45,6 +45,10 @@ impl Chunk {
 
     pub fn blocks(&self) -> &Blocks {
         &self.blocks
+    }
+
+    pub fn update_block(&mut self, x: usize, y: usize, z: usize, kind: BlockType) {
+        self.blocks[x][y][z].kind = kind;
     }
 
     pub fn generate(&mut self, chunk_x: i32, chunk_y: i32, chunk_z: i32) {
@@ -190,7 +194,7 @@ impl ChunkMesh {
                         }
 
                         // Emit quad
-                        let layer  = Block { kind: block_type }.layer_for_face(face_idx);
+                        let layer  = Block { kind: block_type }.layer_for_face(Face::from(face_idx));
                         let normal = {
                             let mut n = [0.0f32; 3];
                             n[desc.normal_axis] = if desc.positive { 1.0 } else { -1.0 };

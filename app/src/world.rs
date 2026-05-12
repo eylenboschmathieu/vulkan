@@ -4,7 +4,6 @@ use std::{collections::HashMap};
 use anyhow::Result;
 use blitz::{Blitz, Container, TextureArrayId};
 use cgmath::{Point3, Vector3};
-
 use crate::{
     block::{Block, BlockType, Face},
     chunk::{CHUNK_SIZE, Chunk},
@@ -54,7 +53,7 @@ impl World {
         Ok(())
     }
 
-    pub fn block_at(&self, x: i32, y: i32, z: i32) -> Option<Block> {
+    pub fn block_at(&self, x: i32, y: i32, z: i32) -> Option<&Block> {
         let cs = CHUNK_SIZE as i32;
         let chunk_pos = Vector3 {
             x: x.div_euclid(cs) * cs,
@@ -66,7 +65,30 @@ impl World {
         let ly = y.rem_euclid(cs) as usize;
         let lz = z.rem_euclid(cs) as usize;
 
-        self.chunks.get(&chunk_pos).map(|c| c.blocks()[lx][ly][lz])
+        if let Some(chunk) = self.chunks.get(&chunk_pos) {
+            return Some(&chunk.blocks()[lx][ly][lz]);
+        }
+
+        None
+    }
+
+    pub unsafe fn remove_block(&mut self, container: &mut Container, position: Vector3<i32>) {
+        let cs = CHUNK_SIZE as i32;
+        let chunk_pos = Vector3 {
+            x: position.x.div_euclid(cs) * cs,
+            y: position.y.div_euclid(cs) * cs,
+            z: position.z.div_euclid(cs) * cs,
+        };
+        let lx = position.x.rem_euclid(cs) as usize;
+        let ly = position.y.rem_euclid(cs) as usize;
+        let lz = position.z.rem_euclid(cs) as usize;
+
+        if let Some(chunk) = self.chunks.get_mut(&chunk_pos) {
+            if chunk.blocks()[lx][ly][lz].is_air() { return; }
+            chunk.update_block(lx, ly, lz, BlockType::Air);
+            chunk.dirty = true;
+            chunk.recalc([None; 6], container, (chunk_pos.x, chunk_pos.y, chunk_pos.z));
+        }
     }
 
     pub fn raycast(&self, origin: Point3<f32>, direction: Vector3<f32>, max_distance: f32) -> Option<(Vector3<i32>, Face)> {

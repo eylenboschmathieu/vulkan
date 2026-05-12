@@ -38,11 +38,11 @@ impl Sun {
     }
 
     pub fn sun_dir(&self) -> Vector4<f32> {
-        vec4(0.0, self.angle.cos(), self.angle.sin(), 0.0)
+        vec4(0.0, self.angle.sin(), self.angle.cos(), 0.0)
     }
 
     pub unsafe fn draw(&self, blitz: &mut Blitz, camera: &FpCamera) {
-        let sun_dir_v = vec3(0.0, self.angle.cos(), self.angle.sin());
+        let sun_dir_v = vec3(0.0, self.angle.sin(), self.angle.cos());
         let fwd       = camera.forward();
         let cam_right = camera.right();
         let look      = -fwd;

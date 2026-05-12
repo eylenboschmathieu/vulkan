@@ -95,14 +95,14 @@ impl Vertex_3D_Color {
 
     pub fn attribute_description(binding: u32) -> [vk::VertexInputAttributeDescription; 2] {
         let pos = vk::VertexInputAttributeDescription::builder()
-            .binding(0)
+            .binding(binding)
             .location(0)
             .format(vk::Format::R32G32B32_SFLOAT)
             .offset(0)
             .build();
 
         let color = vk::VertexInputAttributeDescription::builder()
-            .binding(0)
+            .binding(binding)
             .location(1)
             .format(vk::Format::R32G32B32_SFLOAT)
             .offset(size_of::<Vec3>() as u32)

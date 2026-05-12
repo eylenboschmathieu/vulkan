@@ -17,14 +17,14 @@ struct FaceDesc {
     u_flip:      bool,
 }
 
-// Order matches NEIGHBOR_OFFSETS: +X, -X, +Y, -Y, +Z, -Z
+// Y is up. Order: +X(East), -X(West), +Y(top), -Y(bottom), +Z(South), -Z(North)
 const FACE_DESCS: [FaceDesc; 6] = [
-    FaceDesc { normal_axis: 0, positive: true,  u_axis: 1, v_axis: 2, u_flip: false }, // +X
-    FaceDesc { normal_axis: 0, positive: false, u_axis: 1, v_axis: 2, u_flip: true  }, // -X
-    FaceDesc { normal_axis: 1, positive: true,  u_axis: 0, v_axis: 2, u_flip: true  }, // +Y
-    FaceDesc { normal_axis: 1, positive: false, u_axis: 0, v_axis: 2, u_flip: false }, // -Y
-    FaceDesc { normal_axis: 2, positive: true,  u_axis: 0, v_axis: 1, u_flip: false }, // +Z (top)
-    FaceDesc { normal_axis: 2, positive: false, u_axis: 0, v_axis: 1, u_flip: true  }, // -Z (bottom)
+    FaceDesc { normal_axis: 0, positive: true,  u_axis: 2, v_axis: 1, u_flip: false }, // +X (East)
+    FaceDesc { normal_axis: 0, positive: false, u_axis: 2, v_axis: 1, u_flip: true  }, // -X (West)
+    FaceDesc { normal_axis: 1, positive: true,  u_axis: 0, v_axis: 2, u_flip: false }, // +Y (top)
+    FaceDesc { normal_axis: 1, positive: false, u_axis: 0, v_axis: 2, u_flip: true  }, // -Y (bottom)
+    FaceDesc { normal_axis: 2, positive: true,  u_axis: 0, v_axis: 1, u_flip: true  }, // +Z (South)
+    FaceDesc { normal_axis: 2, positive: false, u_axis: 0, v_axis: 1, u_flip: false }, // -Z (North)
 ];
 
 #[derive(Debug)]
@@ -49,16 +49,16 @@ impl Chunk {
 
     pub fn generate(&mut self, chunk_x: i32, chunk_y: i32, chunk_z: i32) {
         for x in 0..CHUNK_SIZE {
-            for y in 0..CHUNK_SIZE {
-                let surface = surface_z(chunk_x + x as i32, chunk_y + y as i32);
-                for z in 0..CHUNK_SIZE {
-                    let wz = chunk_z + z as i32;
+            for z in 0..CHUNK_SIZE {
+                let surface = surface_y(chunk_x + x as i32, chunk_z + z as i32);
+                for y in 0..CHUNK_SIZE {
+                    let wy = chunk_y + y as i32;
                     self.blocks[x][y][z] = Block {
-                        type_: if wz > surface {
+                        kind: if wy > surface {
                             BlockType::Air
-                        } else if wz == surface {
+                        } else if wy == surface {
                             BlockType::Grass
-                        } else if wz >= surface - 3 {
+                        } else if wy >= surface - 3 {
                             BlockType::Dirt
                         } else {
                             BlockType::Stone
@@ -146,7 +146,7 @@ impl ChunkMesh {
                         };
 
                         if neighbor_is_air {
-                            mask[u][v] = Some(block.type_);
+                            mask[u][v] = Some(block.kind);
                         }
                     }
                 }
@@ -190,7 +190,7 @@ impl ChunkMesh {
                         }
 
                         // Emit quad
-                        let layer  = Block { type_: block_type }.layer_for_face(face_idx);
+                        let layer  = Block { kind: block_type }.layer_for_face(face_idx);
                         let normal = {
                             let mut n = [0.0f32; 3];
                             n[desc.normal_axis] = if desc.positive { 1.0 } else { -1.0 };
@@ -208,7 +208,7 @@ impl ChunkMesh {
                         let uv_pairs = [(u0, v0), (u1, v0), (u1, v1), (u0, v1)];
 
                         // UVs tile proportionally; side faces flip v so texture reads top-down
-                        let tex_uvs: [(f32, f32); 4] = if face_idx < 4 {
+                        let tex_uvs: [(f32, f32); 4] = if face_idx != 2 && face_idx != 3 {
                             [(0.0, h as f32), (w as f32, h as f32), (w as f32, 0.0), (0.0, 0.0)]
                         } else {
                             [(0.0, 0.0), (w as f32, 0.0), (w as f32, h as f32), (0.0, h as f32)]
@@ -240,12 +240,12 @@ impl ChunkMesh {
     }
 }
 
-fn surface_z(wx: i32, wy: i32) -> i32 {
+fn surface_y(wx: i32, wz: i32) -> i32 {
     let fx = wx as f32;
-    let fy = wy as f32;
+    let fz = wz as f32;
     let h = (fx * 0.08).sin() * 6.0
-          + (fy * 0.08).sin() * 6.0
-          + (fx * 0.13 + fy * 0.09).sin() * 3.0
-          + (fx * 0.05 - fy * 0.11).cos() * 2.0;
+          + (fz * 0.08).sin() * 6.0
+          + (fx * 0.13 + fz * 0.09).sin() * 3.0
+          + (fx * 0.05 - fz * 0.11).cos() * 2.0;
     (-13 + h as i32).clamp(-30, -2)
 }

@@ -44,9 +44,11 @@ fn main() -> Result<()> {
     window.set_cursor_visible(false);
 
     let mut minimized: bool = false;
+    let mut captured: bool = true;
     let mut tick = Instant::now();
     let mut keys: HashSet<KeyCode> = HashSet::new();
-    let mut mouse: HashSet<winit::event::MouseButton> = HashSet::new();
+    let mut mouse_pressed: HashSet<winit::event::MouseButton> = HashSet::new();
+    let mut mouse_released: HashSet<winit::event::MouseButton> = HashSet::new();
 
     event_loop.run(move |event, elwt| {
         match event {
@@ -56,24 +58,38 @@ fn main() -> Result<()> {
             Event::AboutToWait => window.request_redraw(),
             Event::WindowEvent { event, .. } => match event {
                 WindowEvent::MouseInput { device_id, state, button } => {
-                    println!("{:?}", device_id);
                     if state.is_pressed() {
-                        mouse.insert(button);
+                        mouse_pressed.insert(button);
                     } else {
-                        mouse.remove(&button);
+                        mouse_released.remove(&button);
                     }
                 },
                 WindowEvent::KeyboardInput { event, .. } => {
                     if let PhysicalKey::Code(code) = event.physical_key {
-                        if code == KeyCode::Escape && event.state.is_pressed() {
-                            let _ = window.set_cursor_grab(CursorGrabMode::None);
-                            window.set_cursor_visible(true);
-                            elwt.exit();
-                            unsafe { app.destroy() }
-                            return;
-                        }
-
                         if event.state.is_pressed() {
+                            if code == KeyCode::Escape {
+                                let _ = window.set_cursor_grab(CursorGrabMode::None);
+                                window.set_cursor_visible(true);
+                                elwt.exit();
+                                unsafe { app.destroy() }
+                                return;
+                            }
+
+                            if code == KeyCode::KeyC {
+                                if captured {
+                                    window.set_cursor_grab(CursorGrabMode::None)
+                                        .expect("Failed to free cursor");
+                                    window.set_cursor_visible(true);
+                                    captured = false;
+                                } else {
+                                    window.set_cursor_grab(CursorGrabMode::Locked)
+                                        .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined))
+                                        .expect("Failed to grab cursor");
+                                    window.set_cursor_visible(false);
+                                    captured = true;
+                                }
+                            }
+
                             keys.insert(code);
                         } else {
                             keys.remove(&code);
@@ -84,7 +100,7 @@ fn main() -> Result<()> {
                     let now = Instant::now();
                     if now.duration_since(tick).as_millis() > TICK_RATE {
                         let dt = now.duration_since(tick).as_secs_f32();
-                        app.input(&keys, &mouse,  dt);
+                        app.input(&keys, &mut mouse_pressed,  dt);
                         app.render(&window).expect("Failed to render.");
                         tick = now;
                     }

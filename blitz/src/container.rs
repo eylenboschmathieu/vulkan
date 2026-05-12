@@ -11,7 +11,6 @@ use crate::{
     globals,
     mesh::Mesh,
     resources::image::{Image, ImageMemoryBarrierQueueFamilyIndices},
-    resources::vertices::Vertex_3D_Color_Texture,
 };
 
 pub(crate) struct TextureData {

@@ -105,18 +105,29 @@ impl App {
             Ok(())
         })?;
 
-        let camera = FpCamera::new(point3(0.0, -60.0, 20.0), 90.0, -20.0);
+        let camera = FpCamera::new(point3(0.0, 20.0, -60.0), 90.0, -20.0);
 
         info!("+ App");
         Ok(Self { blitz, delta: Instant::now(), camera, world, texture_array_id, sun })
     }
 
-    pub fn input(&mut self, keys: &HashSet<KeyCode>, mouse: &HashSet<MouseButton>, dt: f32) {
+    pub fn input(&mut self, keys: &HashSet<KeyCode>, mouse_pressed: &mut HashSet<MouseButton>, dt: f32) {
         self.camera.input(keys, dt);
 
         // Handle clicks
-        if mouse.contains(&MouseButton::Left)  { println!("LeftClick"); }
-        if mouse.contains(&MouseButton::Right) { println!("RightClick"); }
+        if mouse_pressed.contains(&MouseButton::Left)  {
+            if let Some((pos, face)) = self.world.raycast(self.camera.eye, self.camera.forward(), 50.0) {
+                let block = self.world.block_at(pos.x, pos.y, pos.z).unwrap();
+                println!("Selected {:?} of {} block at {:?}", face, block, pos)
+            } else {
+                println!("No block selected")
+            }
+        }
+        if mouse_pressed.contains(&MouseButton::Right) {
+            println!("RightClick");
+        }
+
+        mouse_pressed.clear();
     }
 
     pub fn mouse_move(&mut self, dx: f32, dy: f32) {
@@ -136,7 +147,7 @@ impl App {
         self.blitz.update_camera(self.camera.ubo(aspect));
         self.blitz.update_lighting(blitz::LightingUbo { sun_dir: self.sun.sun_dir() });
 
-        let t = (self.sun.sun_dir().z).max(0.0);
+        let t = (self.sun.sun_dir().y).max(0.0);
         let sky   = [0.22_f32, 0.48, 0.72, 1.0];
         let night = [0.01_f32, 0.01, 0.05, 1.0];
         let color = std::array::from_fn(|i| night[i] + (sky[i] - night[i]) * t);

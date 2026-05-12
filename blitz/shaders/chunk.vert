@@ -23,7 +23,7 @@ void main() {
     gl_Position = camera.proj * camera.view * vec4(inPosition, 1.0);
     fragTexCoord = inTexCoord;
     fragLayer = inLayer;
-    float t = max(lighting.sun_dir.z, 0.0);
+    float t = max(lighting.sun_dir.y, 0.0);
     float ambient = mix(0.02, 0.3, t);
     float diffuse = max(dot(inNormal, lighting.sun_dir.xyz), 0.0);
     fragBrightness = ambient + (1.0 - ambient) * diffuse * t;

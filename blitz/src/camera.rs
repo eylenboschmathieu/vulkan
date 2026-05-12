@@ -70,7 +70,7 @@ impl Camera {
         let view = Mat4::look_at_rh(
             point3(3.0, 3.0, 3.0),
             point3(0.0, 0.0, 0.0),
-            vec3(0.0, 0.0, 1.0),
+            vec3(0.0, 1.0, 0.0),
         );
 
         let fix = Mat4::new(

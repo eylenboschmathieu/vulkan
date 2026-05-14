@@ -95,9 +95,23 @@ struct DynamicDrawCall {
 }
 
 #[derive(Debug)]
+struct ColorDrawCall {
+    mesh: Mesh,
+    transform: cgmath::Matrix4<f32>,
+}
+
+#[derive(Debug)]
 struct ArrayDrawCall {
     mesh: Mesh,
     texture_array_id: TextureArrayId,
+}
+
+pub const MAX_UI_QUADS: usize = 1024;
+
+#[derive(Debug)]
+struct UiDrawCall {
+    first_quad: usize,
+    quad_count: usize,
 }
 
 /// Main renderer handle.
@@ -115,7 +129,10 @@ pub struct Blitz {
     renderpass: Renderpass,
     static_queue: Vec<StaticDrawCall>,
     dynamic_queue: Vec<DynamicDrawCall>,
+    color_queue: Vec<ColorDrawCall>,
     array_queue: Vec<ArrayDrawCall>,
+    ui_mesh: Mesh,
+    ui_queue: Vec<UiDrawCall>,
     sky_color: [f32; 4],
     _entry: Entry, // must be last: dropped last, keeping libvulkan loaded while all other fields clean up
 }
@@ -245,10 +262,28 @@ impl Blitz {
         self.dynamic_queue.push(DynamicDrawCall { mesh, texture_id, transform });
     }
 
+    /// Enqueue a vertex-colored draw call with a per-object transform. No texture needed.
+    pub unsafe fn draw_dynamic_color(&mut self, mesh: Mesh, transform: cgmath::Matrix4<f32>) {
+        self.color_queue.push(ColorDrawCall { mesh, transform });
+    }
+
     /// Enqueue a draw call that samples from a `sampler2DArray` (e.g. chunk meshes
     /// where each vertex carries a layer index into the tile atlas).
     pub unsafe fn draw_array(&mut self, mesh: Mesh, texture_array_id: TextureArrayId) {
         self.array_queue.push(ArrayDrawCall { mesh, texture_array_id });
+    }
+
+    /// Enqueue a 2D UI draw call for a range of quads in the shared UI mesh.
+    /// `first_quad` and `quad_count` index into the buffer updated by `update_ui_vertices`.
+    /// Drawn after all 3D geometry with depth testing off and alpha blending on.
+    pub unsafe fn draw_ui_quads(&mut self, first_quad: usize, quad_count: usize) {
+        self.ui_queue.push(UiDrawCall { first_quad, quad_count });
+    }
+
+    /// Re-upload vertex data for the shared UI quad buffer.
+    /// Call via `blitz.upload(|c| { c.stage_vertex_update(blitz.ui_vertex_id(), &verts); Ok(()) })`.
+    pub fn ui_vertex_id(&self) -> resources::buffers::vertex_buffer::VertexBufferId {
+        self.ui_mesh.vertices
     }
 
     /// Write camera matrices for the current frame-in-flight slot.
@@ -308,6 +343,18 @@ impl Blitz {
             self.dynamic_queue.clear();
         }
 
+        if !self.color_queue.is_empty() {
+            p.mesh_color.bind(cb);
+            p.mesh_color.bind_sets(cb, &[camera_set], 0);
+            for draw in &self.color_queue {
+                p.mesh_color.push_constants(cb, &draw.transform);
+                globals::vertex_buffer().bind(cb, draw.mesh.vertices);
+                globals::index_buffer().bind(cb, draw.mesh.indices);
+                globals::index_buffer().draw(cb, draw.mesh.indices, 0);
+            }
+            self.color_queue.clear();
+        }
+
         if !self.array_queue.is_empty() {
             p.chunk.bind(cb);
             p.chunk.bind_sets(cb, &[camera_set], 0);
@@ -325,6 +372,32 @@ impl Blitz {
                 globals::index_buffer().draw(cb, draw.mesh.indices, 0);
             }
             self.array_queue.clear();
+        }
+
+        if !self.ui_queue.is_empty() {
+            let extent = self.swapchain.extent();
+            let w = extent.width as f32;
+            let h = extent.height as f32;
+            // Orthographic matrix: pixel coords (0=top-left) → Vulkan NDC
+            let ortho = cgmath::Matrix4::new(
+                2.0/w,  0.0,    0.0, 0.0,
+                0.0,    2.0/h,  0.0, 0.0,
+                0.0,    0.0,    1.0, 0.0,
+               -1.0,   -1.0,   0.0, 1.0,
+            );
+            p.ui.bind(cb);
+            p.ui.push_constants(cb, &ortho);
+            globals::vertex_buffer().bind(cb, self.ui_mesh.vertices);
+            globals::index_buffer().bind(cb, self.ui_mesh.indices);
+            for draw in &self.ui_queue {
+                globals::index_buffer().draw_range(
+                    cb,
+                    self.ui_mesh.indices,
+                    (draw.first_quad * 6) as u32,
+                    (draw.quad_count * 6) as u32,
+                );
+            }
+            self.ui_queue.clear();
         }
     }
 
@@ -437,6 +510,24 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
     let pipelines = pipeline::Pipelines::new(&renderpass, swapchain.extent(), swapchain.format(), layouts)?;
     globals::init_pipelines(pipelines);
 
+    // Pre-allocate a single mesh for all UI quads. Indices are baked once; vertices are updated as needed.
+    let ui_mesh = {
+        let zeroed_verts = vec![resources::vertices::Vertex_2D_UV::new(
+            cgmath::vec2(0.0, 0.0), cgmath::vec2(0.0, 0.0),
+        ); MAX_UI_QUADS * 4];
+        let indices: Vec<u16> = (0..MAX_UI_QUADS as u16)
+            .flat_map(|q| {
+                let b = q * 4;
+                [b, b+1, b+2, b+2, b+3, b]
+            })
+            .collect();
+        let mut container = Container::new()?;
+        let mesh = container.alloc_mesh(&zeroed_verts, &indices);
+        container.process()?;
+        container.destroy();
+        mesh
+    };
+
     let blitz = Blitz {
         _entry: entry,
         camera,
@@ -447,7 +538,10 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
         renderpass,
         static_queue: vec![],
         dynamic_queue: vec![],
+        color_queue: vec![],
         array_queue: vec![],
+        ui_mesh,
+        ui_queue: vec![],
         sky_color: [0.22, 0.48, 0.72, 1.0],
     };
 

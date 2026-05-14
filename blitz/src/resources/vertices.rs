@@ -8,6 +8,7 @@ type Vec3 = cgmath::Vector3<f32>;
 #[derive(Debug, Clone)]
 pub enum VertexFormat {
     Vertex2D_Color,
+    Vertex2D_UV,
     Vertex3D_Color,
     Vertex3D_Color_Texture,
     Vertex3D_TextureArray,
@@ -16,8 +17,9 @@ pub enum VertexFormat {
 impl VertexFormat {
     pub fn binding_description(&self, binding: u32) -> vk::VertexInputBindingDescription {
         match self {
-            VertexFormat::Vertex2D_Color => Vertex_2D_Color::binding_description(binding),
-            VertexFormat::Vertex3D_Color => Vertex_3D_Color::binding_description(binding),
+            VertexFormat::Vertex2D_Color        => Vertex_2D_Color::binding_description(binding),
+            VertexFormat::Vertex2D_UV           => Vertex_2D_UV::binding_description(binding),
+            VertexFormat::Vertex3D_Color        => Vertex_3D_Color::binding_description(binding),
             VertexFormat::Vertex3D_Color_Texture => Vertex_3D_Color_Texture::binding_description(binding),
             VertexFormat::Vertex3D_TextureArray => Vertex_3D_TextureArray::binding_description(binding),
         }
@@ -25,13 +27,54 @@ impl VertexFormat {
 
     pub fn attribute_description(&self, binding: u32) -> Vec<vk::VertexInputAttributeDescription> {
         match self {
-            VertexFormat::Vertex2D_Color => Vertex_2D_Color::attribute_description(binding).to_vec(),
-            VertexFormat::Vertex3D_Color => Vertex_3D_Color::attribute_description(binding).to_vec(),
+            VertexFormat::Vertex2D_Color        => Vertex_2D_Color::attribute_description(binding).to_vec(),
+            VertexFormat::Vertex2D_UV           => Vertex_2D_UV::attribute_description(binding).to_vec(),
+            VertexFormat::Vertex3D_Color        => Vertex_3D_Color::attribute_description(binding).to_vec(),
             VertexFormat::Vertex3D_Color_Texture => Vertex_3D_Color_Texture::attribute_description(binding).to_vec(),
             VertexFormat::Vertex3D_TextureArray => Vertex_3D_TextureArray::attribute_description(binding).to_vec(),
         }
     }
 }
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct Vertex_2D_UV {
+    pos: Vec2,
+    uv:  Vec2,
+}
+
+impl Vertex_2D_UV {
+    pub const fn new(pos: Vec2, uv: Vec2) -> Self {
+        Self { pos, uv }
+    }
+
+    pub fn binding_description(binding: u32) -> vk::VertexInputBindingDescription {
+        vk::VertexInputBindingDescription::builder()
+            .binding(binding)
+            .stride(size_of::<Self>() as u32)
+            .input_rate(vk::VertexInputRate::VERTEX)
+            .build()
+    }
+
+    pub fn attribute_description(binding: u32) -> [vk::VertexInputAttributeDescription; 2] {
+        let pos = vk::VertexInputAttributeDescription::builder()
+            .binding(binding)
+            .location(0)
+            .format(vk::Format::R32G32_SFLOAT)
+            .offset(0)
+            .build();
+
+        let uv = vk::VertexInputAttributeDescription::builder()
+            .binding(binding)
+            .location(1)
+            .format(vk::Format::R32G32_SFLOAT)
+            .offset(size_of::<Vec2>() as u32)
+            .build();
+
+        [pos, uv]
+    }
+}
+
 
 #[repr(C)]
 #[derive(Debug, Clone)]
@@ -65,7 +108,7 @@ impl Vertex_2D_Color {
             .binding(binding)
             .location(1)
             .format(vk::Format::R32G32B32_SFLOAT)
-            .offset(size_of::<Vec3>() as u32)
+            .offset(size_of::<Vec2>() as u32)
             .build();
 
         [pos, color]

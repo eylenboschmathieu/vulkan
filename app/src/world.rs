@@ -2,36 +2,52 @@
 
 use std::{collections::HashMap};
 use anyhow::Result;
-use blitz::{Blitz, Container, TextureArrayId};
+use blitz::{Blitz, Container, LightingUbo, TextureArrayId};
 use cgmath::{Point3, Vector3};
 use crate::{
     block::{Block, BlockType, Face},
+    camera::FpCamera,
     chunk::{CHUNK_SIZE, Chunk},
+    sun::Sun,
 };
 
 #[derive(Debug)]
 pub struct World {
     chunks: HashMap<Vector3<i32>, Chunk>,
+    dirty_chunks: Vec<Vector3<i32>>,
+    sun: Sun,
+    texture_array_id: blitz::TextureArrayId,
 }
 
+const WORLD_Y_MIN: i32 = -64;
+const WORLD_Y_MAX: i32 = 63;
+
 impl World {
-    pub fn new() -> Self {
-        let positions = [
-            Vector3{x: -32, y: -32, z: -32},
-            Vector3{x: -32, y: -32, z:   0},
-            Vector3{x:   0, y: -32, z: -32},
-            Vector3{x:   0, y: -32, z:   0},
-        ];
+    pub fn new(blitz: &mut Blitz) -> Result<Self> {
+        let cs = CHUNK_SIZE as i32;
+        let chunks = (-1..=0).flat_map(|cx| (-1..=0).map(move |cz| {
+            let pos = Vector3 { x: cx * cs, y: -cs, z: cz * cs };
+            let mut chunk = Chunk::new();
+            chunk.generate(pos.x, pos.y, pos.z);
+            (pos, chunk)
+        })).collect();
 
-        let chunks: HashMap<Vector3<i32>, Chunk> = positions.into_iter()
-            .map(|pos| {
-                let mut chunk = Chunk::new();
-                chunk.generate(pos.x, pos.y, pos.z);
-                (pos, chunk)
-            })
-            .collect();
+        let mut this = Self { chunks, dirty_chunks: Vec::new(), sun: Sun::new(), texture_array_id: 0 };
 
-        Self { chunks }
+        unsafe {
+            blitz.upload(|container| {
+                this.texture_array_id = container.alloc_texture_array(&[
+                    "app/img/tiles/grass.png",
+                    "app/img/tiles/grass_side.png",
+                    "app/img/tiles/dirt.png",
+                    "app/img/tiles/cobble.png",
+                ])?;
+                this.alloc(container)?;
+                Ok(())
+            })?;
+        }
+
+        Ok(this)
     }
 
     pub unsafe fn alloc(&mut self, container: &mut Container) -> Result<()> {
@@ -40,16 +56,25 @@ impl World {
             .for_each(|(pos, chunk)| {
                 chunk.recalc([None; 6], container, (pos.x, pos.y, pos.z));
             });
+        self.sun.alloc(container)?;
         Ok(())
     }
 
-    pub unsafe fn draw(&self, blitz: &mut Blitz, texture_array_id: TextureArrayId) -> Result<()> {
+    pub fn update(&mut self, dt: f32) {
+        self.sun.update(dt);
+    }
+
+    pub fn lighting_ubo(&self) -> LightingUbo {
+        LightingUbo { sun_dir: self.sun.sun_dir() }
+    }
+
+    pub unsafe fn draw(&self, blitz: &mut Blitz, camera: &FpCamera) -> Result<()> {
         self.chunks
             .iter()
             .for_each(|(_, chunk)| {
-                chunk.draw(blitz, texture_array_id);
+                chunk.draw(blitz, self.texture_array_id);
             });
-
+        self.sun.draw(blitz, camera);
         Ok(())
     }
 
@@ -72,7 +97,47 @@ impl World {
         None
     }
 
-    pub unsafe fn remove_block(&mut self, container: &mut Container, position: Vector3<i32>) {
+    pub fn add_block(&mut self, mut position: Vector3<i32>, face: Face) {
+        let cs = CHUNK_SIZE as i32;
+        match face {
+            Face::EAST => position.x += 1,
+            Face::WEST => position.x -=1,
+            Face::TOP => position.y += 1,
+            Face::BOTTOM => position.y -= 1,
+            Face::SOUTH => position.z += 1,
+            Face::NORTH => position.z -= 1,
+        }
+
+        if position.y < WORLD_Y_MIN || position.y > WORLD_Y_MAX {
+            println!("Reached world floor/ceiling");
+            return;
+        }
+
+        let chunk_pos = Vector3 {
+            x: position.x.div_euclid(cs) * cs,
+            y: position.y.div_euclid(cs) * cs,
+            z: position.z.div_euclid(cs) * cs,
+        };
+        let lx = position.x.rem_euclid(cs) as usize;
+        let ly = position.y.rem_euclid(cs) as usize;
+        let lz = position.z.rem_euclid(cs) as usize;
+
+        if let Some(chunk) = self.chunks.get_mut(&chunk_pos) {
+            if !chunk.blocks()[lx][ly][lz].is_air() { return; }
+            chunk.update_block(lx, ly, lz, BlockType::Dirt);
+        } else {
+            let mut chunk = Chunk::new();
+            chunk.update_block(lx, ly, lz, BlockType::Dirt);
+            self.chunks.insert(chunk_pos, chunk);
+        }
+
+        if !self.dirty_chunks.contains(&chunk_pos) {
+            self.dirty_chunks.push(chunk_pos)
+        }
+
+    }
+
+    pub fn remove_block(&mut self, position: Vector3<i32>) {
         let cs = CHUNK_SIZE as i32;
         let chunk_pos = Vector3 {
             x: position.x.div_euclid(cs) * cs,
@@ -86,8 +151,21 @@ impl World {
         if let Some(chunk) = self.chunks.get_mut(&chunk_pos) {
             if chunk.blocks()[lx][ly][lz].is_air() { return; }
             chunk.update_block(lx, ly, lz, BlockType::Air);
-            chunk.dirty = true;
-            chunk.recalc([None; 6], container, (chunk_pos.x, chunk_pos.y, chunk_pos.z));
+            if !self.dirty_chunks.contains(&chunk_pos) {
+                self.dirty_chunks.push(chunk_pos);
+            }
+        }
+    }
+
+    pub fn has_dirty_chunks(&self) -> bool {
+        !self.dirty_chunks.is_empty()
+    }
+
+    pub unsafe fn flush_dirty(&mut self, container: &mut Container) {
+        for chunk_pos in self.dirty_chunks.drain(..) {
+            if let Some(chunk) = self.chunks.get_mut(&chunk_pos) {
+                chunk.recalc([None; 6], container, (chunk_pos.x, chunk_pos.y, chunk_pos.z));
+            }
         }
     }
 

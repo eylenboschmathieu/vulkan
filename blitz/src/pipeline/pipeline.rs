@@ -16,6 +16,8 @@ pub struct PipelineDef {
     pub vertex_shader: &'static [u8],
     pub fragment_shader: &'static [u8],
     pub push_constants: bool,
+    pub depth_test: bool,
+    pub alpha_blend: bool,
 }
 
 #[derive(Debug)]
@@ -129,28 +131,37 @@ impl Pipeline {
 
         // Depth and stencil
         let depth_stencil_state = vk::PipelineDepthStencilStateCreateInfo::builder()
-            .depth_test_enable(true)
-            .depth_write_enable(true)
+            .depth_test_enable(pipeline_def.depth_test)
+            .depth_write_enable(pipeline_def.depth_test)
             .depth_compare_op(vk::CompareOp::LESS)
             .depth_bounds_test_enable(false)
             .min_depth_bounds(0.0)
             .max_depth_bounds(1.0)
             .stencil_test_enable(false);
-            //.front(vk::StencilOpState::default()) // Optional
-            //.back(vk::StencilOpState::default()); // Optional
 
         // Color blending
 
-        let attachments = vec![vk::PipelineColorBlendAttachmentState::builder()
-            .color_write_mask(vk::ColorComponentFlags::all())
-            .blend_enable(false)
-            .src_color_blend_factor(vk::BlendFactor::ONE)   // Optional
-            .dst_color_blend_factor(vk::BlendFactor::ZERO)  // Optional
-            .color_blend_op(vk::BlendOp::ADD) // Optional
-            .src_alpha_blend_factor(vk::BlendFactor::ONE) // Optional
-            .dst_alpha_blend_factor(vk::BlendFactor::ZERO) // Optional
-            .alpha_blend_op(vk::BlendOp::ADD) // Optional
-        ];
+        let attachments = vec![if pipeline_def.alpha_blend {
+            vk::PipelineColorBlendAttachmentState::builder()
+                .color_write_mask(vk::ColorComponentFlags::all())
+                .blend_enable(true)
+                .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
+                .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+                .color_blend_op(vk::BlendOp::ADD)
+                .src_alpha_blend_factor(vk::BlendFactor::ONE)
+                .dst_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+                .alpha_blend_op(vk::BlendOp::ADD)
+        } else {
+            vk::PipelineColorBlendAttachmentState::builder()
+                .color_write_mask(vk::ColorComponentFlags::all())
+                .blend_enable(false)
+                .src_color_blend_factor(vk::BlendFactor::ONE)
+                .dst_color_blend_factor(vk::BlendFactor::ZERO)
+                .color_blend_op(vk::BlendOp::ADD)
+                .src_alpha_blend_factor(vk::BlendFactor::ONE)
+                .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
+                .alpha_blend_op(vk::BlendOp::ADD)
+        }];
         let color_blend_state = vk::PipelineColorBlendStateCreateInfo::builder()
             .logic_op_enable(false)
             .logic_op(vk::LogicOp::COPY)

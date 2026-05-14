@@ -102,6 +102,16 @@ impl IndexBuffer {
             0);
     }
 
+    pub unsafe fn draw_range(&self, command_buffer: &CommandBuffer, id: IndexBufferId, first_index: u32, count: u32) {
+        globals::device().logical().cmd_draw_indexed(
+            command_buffer.handle(),
+            count,
+            1,
+            first_index,
+            0,
+            0);
+    }
+
     pub fn count(&self, id: IndexBufferId) -> usize {
         self.buffer_list[id].count
     }

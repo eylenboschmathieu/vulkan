@@ -1,32 +1,30 @@
 #![allow(dead_code, unsafe_op_in_unsafe_fn)]
 
-use cgmath::{vec2, vec3, vec4, InnerSpace, Matrix4, Vector4};
+use cgmath::{vec3, vec4, InnerSpace, Matrix4, Vector4};
 use anyhow::Result;
-use blitz::{Blitz, Container, Mesh, TextureId, Vertex_3D_Color_Texture};
+use blitz::{Blitz, Container, Mesh, Vertex_3D_Color};
 
 use crate::camera::FpCamera;
 
 #[derive(Debug)]
 pub struct Sun {
-    angle:      f32,
-    mesh:       Mesh,
-    texture_id: TextureId,
+    angle: f32,
+    mesh:  Mesh,
 }
 
 impl Sun {
     pub fn new() -> Self {
-        Self { angle: 0.3, mesh: Mesh::default(), texture_id: 0 }
+        Self { angle: 0.3, mesh: Mesh::default() }
     }
 
     pub unsafe fn alloc(&mut self, container: &mut Container) -> Result<()> {
-        let pixels: Vec<u8> = (0..16).flat_map(|_| [255u8, 215, 0, 255]).collect();
-        self.texture_id = container.alloc_texture_from_pixels(pixels, 4, 4)?;
+        let gold = vec3(1.0, 0.84, 0.0);
         self.mesh = container.alloc_mesh(
             &[
-                Vertex_3D_Color_Texture::new(vec3(-0.5, -0.5, 0.0), vec3(1.0, 1.0, 1.0), vec2(0.0, 0.0)),
-                Vertex_3D_Color_Texture::new(vec3( 0.5, -0.5, 0.0), vec3(1.0, 1.0, 1.0), vec2(1.0, 0.0)),
-                Vertex_3D_Color_Texture::new(vec3( 0.5,  0.5, 0.0), vec3(1.0, 1.0, 1.0), vec2(1.0, 1.0)),
-                Vertex_3D_Color_Texture::new(vec3(-0.5,  0.5, 0.0), vec3(1.0, 1.0, 1.0), vec2(0.0, 1.0)),
+                Vertex_3D_Color::new(vec3(-0.5, -0.5, 0.0), gold),
+                Vertex_3D_Color::new(vec3( 0.5, -0.5, 0.0), gold),
+                Vertex_3D_Color::new(vec3( 0.5,  0.5, 0.0), gold),
+                Vertex_3D_Color::new(vec3(-0.5,  0.5, 0.0), gold),
             ],
             &[0u16, 1, 2, 2, 3, 0],
         );
@@ -55,6 +53,6 @@ impl Sun {
             look.extend(0.0),
             sun_pos.extend(1.0),
         );
-        blitz.draw_dynamic(self.mesh, self.texture_id, model);
+        blitz.draw_dynamic_color(self.mesh, model);
     }
 }

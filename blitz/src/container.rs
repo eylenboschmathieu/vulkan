@@ -10,7 +10,10 @@ use crate::{
     commands::CommandBuffer,
     globals,
     mesh::Mesh,
-    resources::image::{Image, ImageMemoryBarrierQueueFamilyIndices},
+    resources::{
+        buffers::vertex_buffer::VertexBufferId,
+        image::{Image, ImageMemoryBarrierQueueFamilyIndices},
+    },
 };
 
 pub(crate) struct TextureData {
@@ -26,17 +29,18 @@ pub(crate) struct TextureData {
 /// end of the closure.  Meshes go through the transfer queue only; textures go
 /// transfer → graphics with an explicit queue-family ownership transfer.
 pub struct Container {
-    meshes:         Vec<(Mesh, Vec<u8>, Vec<u16>)>,
-    textures:       Vec<(TextureId, TextureData)>,
-    texture_arrays: Vec<(TextureArrayId, Vec<TextureData>)>,
-    semaphore:      vk::Semaphore,
+    meshes:          Vec<(Mesh, Vec<u8>, Vec<u16>)>,
+    vertex_updates:  Vec<(VertexBufferId, Vec<u8>)>,
+    textures:        Vec<(TextureId, TextureData)>,
+    texture_arrays:  Vec<(TextureArrayId, Vec<TextureData>)>,
+    semaphore:       vk::Semaphore,
 }
 
 impl Container {
     pub(crate) unsafe fn new() -> Result<Self> {
         let semaphore_info = vk::SemaphoreCreateInfo::builder();
         let semaphore = globals::device().logical().create_semaphore(&semaphore_info, None)?;
-        Ok(Self { meshes: vec![], textures: vec![], texture_arrays: vec![], semaphore })
+        Ok(Self { meshes: vec![], vertex_updates: vec![], textures: vec![], texture_arrays: vec![], semaphore })
     }
 
     /// Eagerly allocates GPU buffer slots and returns the live Mesh immediately.
@@ -53,6 +57,14 @@ impl Container {
         let raw = std::slice::from_raw_parts(vertices.as_ptr() as *const u8, byte_len).to_vec();
         self.meshes.push((mesh, raw, indices.to_vec()));
         mesh
+    }
+
+    /// Stage new vertex data into an existing vertex buffer allocation.
+    /// Used to update pre-allocated geometry (e.g. the UI quad buffer) without re-allocating.
+    pub unsafe fn stage_vertex_update<V>(&mut self, id: VertexBufferId, vertices: &[V]) {
+        let byte_len = vertices.len() * size_of::<V>();
+        let raw = std::slice::from_raw_parts(vertices.as_ptr() as *const u8, byte_len).to_vec();
+        self.vertex_updates.push((id, raw));
     }
 
     /// Return the vertex and index buffer slots back to the free-list.
@@ -140,11 +152,13 @@ impl Container {
     }
 
     pub(crate) unsafe fn process(&mut self) -> Result<()> {
-        if !self.meshes.is_empty() {
+        if !self.meshes.is_empty() || !self.vertex_updates.is_empty() {
             let command_buffer = globals::commands().begin_one_time_submit(vk::QueueFlags::TRANSFER)?;
-            let s_id = self.upload_meshes(&command_buffer)?;
+            let mesh_s_id    = if !self.meshes.is_empty()          { Some(self.upload_meshes(&command_buffer)?) }         else { None };
+            let update_s_id  = if !self.vertex_updates.is_empty()  { Some(self.apply_vertex_updates(&command_buffer)?) }  else { None };
             command_buffer.end_one_time_submit(globals::queues().transfer(), None)?;
-            globals::staging_buffer_mut().free(s_id);
+            if let Some(s_id) = mesh_s_id   { globals::staging_buffer_mut().free(s_id); }
+            if let Some(s_id) = update_s_id { globals::staging_buffer_mut().free(s_id); }
         }
 
         let has_images = !self.textures.is_empty() || !self.texture_arrays.is_empty();
@@ -320,6 +334,23 @@ impl Container {
         Ok(s_id)
     }
 
+
+    unsafe fn apply_vertex_updates(&self, command_buffer: &CommandBuffer) -> Result<usize> {
+        let sb = globals::staging_buffer_mut();
+        let vb = globals::vertex_buffer_mut();
+
+        let size: usize = self.vertex_updates.iter().map(|(_, b)| b.len()).sum();
+        let s_id = sb.alloc(size)?;
+
+        let mut offset = 0;
+        for (id, bytes) in &self.vertex_updates {
+            sb.copy_to_staging_at(s_id, bytes.as_slice(), offset)?;
+            sb.copy_to_buffer(command_buffer, vb, vb.alloc_info(*id), offset as u64)?;
+            offset += bytes.len();
+        }
+
+        Ok(s_id)
+    }
 
     pub(crate) unsafe fn destroy(&self) {
         globals::device().logical().destroy_semaphore(self.semaphore, None);

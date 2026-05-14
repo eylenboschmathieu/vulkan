@@ -29,7 +29,6 @@ const FACE_DESCS: [FaceDesc; 6] = [
 
 #[derive(Debug)]
 pub struct Chunk {
-    pub dirty: bool,
     blocks: Blocks,
     mesh: ChunkMesh,
 }
@@ -37,7 +36,6 @@ pub struct Chunk {
 impl Chunk {
     pub fn new() -> Self {
         Self {
-            dirty: false,
             blocks: [[[Block::default(); CHUNK_SIZE]; CHUNK_SIZE]; CHUNK_SIZE],
             mesh: ChunkMesh::new(),
         }

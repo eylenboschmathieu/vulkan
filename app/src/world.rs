@@ -30,7 +30,7 @@ impl Sun {
                 Vertex_3D_Color::new(vec3( 0.5,  0.5, 0.0), gold),
                 Vertex_3D_Color::new(vec3(-0.5,  0.5, 0.0), gold),
             ],
-            &[0u16, 1, 2, 2, 3, 0],
+            &[2u16, 1, 0, 0, 3, 2],
         );
         Ok(())
     }

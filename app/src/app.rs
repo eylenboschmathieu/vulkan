@@ -1,13 +1,13 @@
 #![allow(dead_code, unsafe_op_in_unsafe_fn, unused_variables, clippy::too_many_arguments, clippy::unnecessary_wraps)]
 
-use cgmath::{point3, vec2, vec3, Deg};
+use cgmath::{point3, Deg};
 use anyhow::Result;
 use std::{collections::HashSet, time::Instant};
 use log::*;
 use winit::{keyboard::KeyCode, event::MouseButton, window::Window};
 use blitz::*;
 
-use crate::{camera::FpCamera, world::World};
+use crate::{camera::FpCamera, ui::Ui, world::World};
 
 #[derive(Debug)]
 struct DynamicObject {
@@ -71,11 +71,6 @@ impl StaticObject {
     }
 }
 
-const HOTBAR_SLOTS: usize = 10;
-const SLOT_SIZE: f32 = 48.0;
-const SLOT_GAP: f32 = 4.0;
-const SLOT_MARGIN_BOTTOM: f32 = 20.0;
-
 // Our Vulkan app.
 #[derive(Debug)]
 pub struct App {
@@ -83,7 +78,7 @@ pub struct App {
     blitz: blitz::Blitz,
     camera: FpCamera,
     world: World,
-    hotbar_size: (u32, u32),
+    ui: Ui,
 }
 
 impl App {
@@ -92,11 +87,12 @@ impl App {
         let mut blitz = blitz::init(window)?;
 
         let world = World::new(&mut blitz)?;
+        let ui = Ui::new(&blitz);
 
         let camera = FpCamera::new(point3(0.0, 2.0, 0.0), 0.0, 0.0);
 
         info!("+ App");
-        Ok(Self { blitz, delta: Instant::now(), camera, world, hotbar_size: (0, 0) })
+        Ok(Self { blitz, delta: Instant::now(), camera, world, ui })
     }
 
     pub fn input(&mut self, keys: &HashSet<KeyCode>, mouse_pressed: &mut HashSet<MouseButton>, dt: f32) {
@@ -119,22 +115,6 @@ impl App {
         }
 
         mouse_pressed.clear();
-    }
-
-    fn hotbar_verts(sw: u32, sh: u32) -> Vec<Vertex_2D_Color> {
-        let total_w = HOTBAR_SLOTS as f32 * SLOT_SIZE + (HOTBAR_SLOTS - 1) as f32 * SLOT_GAP;
-        let x0 = (sw as f32 - total_w) / 2.0;
-        let y0 = sh as f32 - SLOT_SIZE - SLOT_MARGIN_BOTTOM;
-        let color = vec3(0.25, 0.25, 0.25);
-        let mut verts = Vec::with_capacity(HOTBAR_SLOTS * 4);
-        for i in 0..HOTBAR_SLOTS {
-            let x = x0 + i as f32 * (SLOT_SIZE + SLOT_GAP);
-            verts.push(Vertex_2D_Color::new(vec2(x,             y0),             color));
-            verts.push(Vertex_2D_Color::new(vec2(x + SLOT_SIZE, y0),             color));
-            verts.push(Vertex_2D_Color::new(vec2(x + SLOT_SIZE, y0 + SLOT_SIZE), color));
-            verts.push(Vertex_2D_Color::new(vec2(x,             y0 + SLOT_SIZE), color));
-        }
-        verts
     }
 
     pub fn mouse_move(&mut self, dx: f32, dy: f32) {
@@ -161,28 +141,19 @@ impl App {
         self.blitz.set_sky_color(color);
 
         let current_size = (size.width, size.height);
-        let needs_upload = self.world.has_dirty_chunks() || current_size != self.hotbar_size;
+        let needs_upload = self.world.has_dirty_chunks() || self.ui.is_dirty(current_size);
 
         if needs_upload {
-            let hotbar_verts = if current_size != self.hotbar_size {
-                self.hotbar_size = current_size;
-                Some(Self::hotbar_verts(size.width, size.height))
-            } else {
-                None
-            };
-            let ui_vid = self.blitz.ui_vertex_id();
             self.blitz.upload(|container| unsafe {
                 self.world.flush_dirty(container);
-                if let Some(verts) = &hotbar_verts {
-                    container.stage_vertex_update(ui_vid, verts);
-                }
+                self.ui.flush(container, current_size);
                 Ok(())
             })?;
         }
 
         if self.blitz.start_render(window)? {
             self.world.draw(&mut self.blitz, &self.camera)?;
-            self.blitz.draw_ui_quads(0, HOTBAR_SLOTS);
+            self.ui.draw(&mut self.blitz);
             self.blitz.end_render(window)?;
         }
 

@@ -2,7 +2,7 @@
 
 mod app;
 mod camera;
-mod sun;
+mod ui;
 mod world;
 mod chunk;
 mod block;

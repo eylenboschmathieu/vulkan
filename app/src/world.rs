@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use anyhow::Result;
-use blitz::{Blitz, Container, LightingUbo, Mesh, TextureArrayId, Vertex_3D_Color};
+use blitz::{Blitz, Container, LightingUbo, Mesh, Vertex_3D_Color};
 use cgmath::{vec3, vec4, InnerSpace, Matrix4, Point3, Vector3, Vector4};
 use crate::{
     block::{Block, BlockType, Face},
@@ -118,6 +118,13 @@ impl World {
         LightingUbo { sun_dir: self.sun.sun_dir() }
     }
 
+    pub fn sky_color(&self) -> [f32; 4] {
+        let t     = self.sun.sun_dir().y.max(0.0);
+        let day   = [0.22_f32, 0.48, 0.72, 1.0];
+        let night = [0.01_f32, 0.01, 0.05, 1.0];
+        std::array::from_fn(|i| night[i] + (day[i] - night[i]) * t)
+    }
+
     pub unsafe fn draw(&self, blitz: &mut Blitz, camera: &FpCamera) -> Result<()> {
         self.chunks
             .iter()
@@ -219,6 +226,7 @@ impl World {
         }
     }
 
+    // Amanatides & Woo fast voxel traversal (1987).
     pub fn raycast(&self, origin: Point3<f32>, direction: Vector3<f32>, max_distance: f32) -> Option<(Vector3<i32>, Face)> {
         const VOXEL_SIZE: f32 = 1.0;
         let mut block_pos = Vector3::new(

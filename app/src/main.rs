@@ -1,6 +1,7 @@
 #![allow(dead_code, unsafe_op_in_unsafe_fn, unused_variables, clippy::too_many_arguments, clippy::unnecessary_wraps)]
 
 mod app;
+mod input;
 mod camera;
 mod ui;
 mod world;
@@ -55,7 +56,18 @@ fn main() -> Result<()> {
             Event::DeviceEvent { event: DeviceEvent::MouseMotion { delta }, .. } => {
                 app.mouse_move(delta.0 as f32, delta.1 as f32);
             },
-            Event::AboutToWait => window.request_redraw(),
+            Event::AboutToWait => {
+                let now = Instant::now();
+                if now.duration_since(tick).as_millis() >= TICK_RATE {
+                    let dt = now.duration_since(tick).as_secs_f32();
+                    unsafe {
+                        app.input(&keys, &mut mouse_pressed, dt);
+                        app.update(&window);
+                    }
+                    tick = now;
+                    window.request_redraw();
+                }
+            },
             Event::WindowEvent { event, .. } => match event {
                 WindowEvent::MouseInput { device_id, state, button } => {
                     if state.is_pressed() {
@@ -97,13 +109,7 @@ fn main() -> Result<()> {
                     }
                 },
                 WindowEvent::RedrawRequested if !elwt.exiting() && !minimized => unsafe {
-                    let now = Instant::now();
-                    if now.duration_since(tick).as_millis() > TICK_RATE {
-                        let dt = now.duration_since(tick).as_secs_f32();
-                        app.input(&keys, &mut mouse_pressed,  dt);
-                        app.render(&window).expect("Failed to render.");
-                        tick = now;
-                    }
+                    app.render(&window).expect("Failed to render.");
                 },
                 WindowEvent::Resized(size) => {
                     info!("WindowEvent::Resized");

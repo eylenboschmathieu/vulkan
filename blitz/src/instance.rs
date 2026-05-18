@@ -357,12 +357,16 @@ impl SwapchainSupport {
             }).unwrap_or_else(|| self.formats[0])
     }
 
-    pub unsafe fn get_present_mode(&self) -> vk::PresentModeKHR {
-        self.present_modes
-            .iter()
-            .cloned()
-            .find(|m| *m == vk::PresentModeKHR::MAILBOX)
-            .unwrap_or(vk::PresentModeKHR::FIFO)
+    pub unsafe fn get_present_mode(&self, vsync: bool) -> vk::PresentModeKHR {
+        if vsync {
+            vk::PresentModeKHR::FIFO
+        } else {
+            self.present_modes
+                .iter()
+                .cloned()
+                .find(|m| *m == vk::PresentModeKHR::MAILBOX)
+                .unwrap_or(vk::PresentModeKHR::FIFO)
+        }
     }
 
     pub unsafe fn get_extent(&self, window: &Window) -> vk::Extent2D {

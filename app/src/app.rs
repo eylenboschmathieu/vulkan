@@ -121,8 +121,7 @@ impl App {
         self.camera.mouse_move(dx, dy);
     }
 
-    /// Renders a frame for our Vulkan app.
-    pub unsafe fn render(&mut self, window: &Window) -> Result<()> {
+    pub unsafe fn update(&mut self, window: &Window) {
         let dt = self.delta.elapsed().as_secs_f32();
         self.delta = Instant::now();
 
@@ -130,16 +129,13 @@ impl App {
 
         let size = window.inner_size();
         let aspect = size.width as f32 / size.height as f32;
-
         self.blitz.update_camera(self.camera.ubo(aspect));
         self.blitz.update_lighting(self.world.lighting_ubo());
+        self.blitz.set_sky_color(self.world.sky_color());
+    }
 
-        let t = self.world.lighting_ubo().sun_dir.y.max(0.0);
-        let sky   = [0.22_f32, 0.48, 0.72, 1.0];
-        let night = [0.01_f32, 0.01, 0.05, 1.0];
-        let color = std::array::from_fn(|i| night[i] + (sky[i] - night[i]) * t);
-        self.blitz.set_sky_color(color);
-
+    pub unsafe fn render(&mut self, window: &Window) -> Result<()> {
+        let size = window.inner_size();
         let current_size = (size.width, size.height);
         let needs_upload = self.world.has_dirty_chunks() || self.ui.is_dirty(current_size);
 

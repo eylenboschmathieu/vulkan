@@ -26,13 +26,13 @@ pub struct Swapchain {
 }
 
 impl Swapchain {
-    pub unsafe fn new(window: &Window) -> Result<Self> {
+    pub unsafe fn new(window: &Window, vsync: bool) -> Result<Self> {
         let swapchain_support = globals::device().swapchain_support();
 
         let format = swapchain_support.get_surface_format().format;
         let extent = swapchain_support.get_extent(window);
 
-        let handle = Swapchain::build(window, None)?;
+        let handle = Swapchain::build(window, None, vsync)?;
 
         let mut this = Self { handle, images: vec![], format, extent };
         this.get_images();
@@ -47,7 +47,7 @@ impl Swapchain {
         info!("~ Handle");
     }
 
-    unsafe fn build(window: &Window, old_swapchain: Option<vk::SwapchainKHR>) -> Result<vk::SwapchainKHR> {
+    unsafe fn build(window: &Window, old_swapchain: Option<vk::SwapchainKHR>, vsync: bool) -> Result<vk::SwapchainKHR> {
         let indices = globals::device().queue_family_indices();
         let swapchain_support = globals::device().swapchain_support();
 
@@ -77,7 +77,7 @@ impl Swapchain {
             .queue_family_indices(&queue_family_indices)
             .pre_transform(swapchain_support.capabilities().current_transform)
             .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
-            .present_mode(swapchain_support.get_present_mode())
+            .present_mode(swapchain_support.get_present_mode(vsync))
             .clipped(true)
             .old_swapchain(old_swapchain.unwrap_or(vk::SwapchainKHR::null()));
 
@@ -95,10 +95,10 @@ impl Swapchain {
         }
     }
 
-    pub unsafe fn rebuild(&mut self, window: &Window) -> Result<()> {
+    pub unsafe fn rebuild(&mut self, window: &Window, vsync: bool) -> Result<()> {
         self.free_images();
 
-        self.handle = Swapchain::build(window, Some(self.handle))?;
+        self.handle = Swapchain::build(window, Some(self.handle), vsync)?;
 
         let support = globals::device().swapchain_support();
         self.format = support.get_surface_format().format;

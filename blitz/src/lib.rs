@@ -38,6 +38,7 @@ mod lighting;
 mod globals;
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 use lighting::Lighting;
 
 use log::*;
@@ -134,6 +135,10 @@ pub struct Blitz {
     ui_mesh: Mesh,
     ui_queue: Vec<UiDrawCall>,
     sky_color: [f32; 4],
+    vsync: bool,
+    vsync_dirty: bool,
+    fps_limit: Option<Duration>,
+    frame_start: Instant,
     _entry: Entry, // must be last: dropped last, keeping libvulkan loaded while all other fields clean up
 }
 
@@ -185,7 +190,39 @@ impl Blitz {
     /// Begin a frame.  Returns `Ok(false)` when the swapchain was out-of-date
     /// and had to be rebuilt; the caller should skip draw calls for that frame.
     /// Returns `Ok(true)` when the frame is ready to receive draw calls.
+    pub fn set_vsync(&mut self, vsync: bool) {
+        if self.vsync != vsync {
+            self.vsync = vsync;
+            self.vsync_dirty = true;
+        }
+        if vsync {
+            self.fps_limit = None;
+        }
+    }
+
+    pub fn set_fps_limit(&mut self, fps: Option<u32>) {
+        self.fps_limit = fps.map(|f| Duration::from_secs_f64(1.0 / f as f64));
+        if fps.is_some() && self.vsync {
+            self.vsync = false;
+            self.vsync_dirty = true;
+        }
+    }
+
     pub unsafe fn start_render(&mut self, window: &Window) -> Result<bool> {
+        if let Some(limit) = self.fps_limit {
+            let elapsed = self.frame_start.elapsed();
+            if elapsed < limit {
+                std::thread::sleep(limit - elapsed);
+            }
+        }
+        self.frame_start = Instant::now();
+
+        if self.vsync_dirty {
+            self.vsync_dirty = false;
+            self.rebuild_swapchain(window)?;
+            return Ok(false);
+        }
+
         globals::device().logical().wait_for_fences(&[self.sync.in_flight_fence()], true, u64::MAX)?;
 
         let result = globals::device().logical()
@@ -411,7 +448,7 @@ impl Blitz {
         self.depth_buffer.destroy();
         globals::pipelines_mut().destroy();
 
-        self.swapchain.rebuild(window)?;
+        self.swapchain.rebuild(window, self.vsync)?;
         self.depth_buffer = DepthBuffer::new(self.swapchain.extent().width, self.swapchain.extent().height)?;
         self.renderpass.rebuild(self.swapchain.format())?;
         self.swapchain.create_framebuffers(&self.renderpass, &self.depth_buffer);
@@ -494,7 +531,7 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
     let textures = resources::image::Textures::new()?;
     globals::init_textures(textures);
 
-    let mut swapchain = Swapchain::new(window)?;
+    let mut swapchain = Swapchain::new(window, false)?;
     globals::commands_mut().allocate_graphics_buffers(FRAMES_IN_FLIGHT)?;
 
     let camera = Camera::new(swapchain.extent())?;
@@ -543,6 +580,10 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
         ui_mesh,
         ui_queue: vec![],
         sky_color: [0.22, 0.48, 0.72, 1.0],
+        vsync: false,
+        vsync_dirty: false,
+        fps_limit: None,
+        frame_start: Instant::now(),
     };
 
     Ok(blitz)

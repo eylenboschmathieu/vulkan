@@ -43,6 +43,19 @@ impl FpCamera {
         if keys.contains(&KeyCode::Numpad2)    { self.eye -= up    * MOVE_SPEED * dt; }
     }
 
+    pub fn input_v2(&mut self, code: KeyCode, delta: f32) {
+        let fwd   = self.forward();
+        let right = self.right();
+        let up    = vec3(0.0_f32, 1.0, 0.0);
+
+        if code == KeyCode::ArrowUp    { self.eye += fwd   * MOVE_SPEED * delta; }
+        if code == KeyCode::ArrowDown  { self.eye -= fwd   * MOVE_SPEED * delta; }
+        if code == KeyCode::ArrowLeft  { self.eye -= right * MOVE_SPEED * delta; }
+        if code == KeyCode::ArrowRight { self.eye += right * MOVE_SPEED * delta; }
+        if code == KeyCode::Numpad1    { self.eye += up    * MOVE_SPEED * delta; }
+        if code == KeyCode::Numpad2    { self.eye -= up    * MOVE_SPEED * delta; }
+    }
+
     pub fn mouse_move(&mut self, dx: f32, dy: f32) {
         self.yaw   += dx * MOUSE_SENSITIVITY;
         self.pitch  = (self.pitch - dy * MOUSE_SENSITIVITY).clamp(-89.0, 89.0);

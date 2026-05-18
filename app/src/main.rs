@@ -8,14 +8,14 @@ mod world;
 mod chunk;
 mod block;
 
-use std::{collections::HashSet, time::Instant};
+use std::{collections::HashSet, time::{Duration, Instant}};
 
 use anyhow::Result;
 use log::*;
 use winit::{
     dpi::LogicalSize,
     event::{DeviceEvent, Event, WindowEvent},
-    event_loop::EventLoop,
+    event_loop::{ControlFlow, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
     window::{CursorGrabMode, Window, WindowBuilder},
 };
@@ -45,67 +45,41 @@ fn main() -> Result<()> {
     window.set_cursor_visible(false);
 
     let mut minimized: bool = false;
-    let mut captured: bool = true;
     let mut tick = Instant::now();
-    let mut keys: HashSet<KeyCode> = HashSet::new();
-    let mut mouse_pressed: HashSet<winit::event::MouseButton> = HashSet::new();
-    let mut mouse_released: HashSet<winit::event::MouseButton> = HashSet::new();
 
     event_loop.run(move |event, elwt| {
         match event {
             Event::DeviceEvent { event: DeviceEvent::MouseMotion { delta }, .. } => {
-                app.mouse_move(delta.0 as f32, delta.1 as f32);
+                app.mouse_cursor_update(delta);
             },
             Event::AboutToWait => {
                 let now = Instant::now();
                 if now.duration_since(tick).as_millis() >= TICK_RATE {
                     let dt = now.duration_since(tick).as_secs_f32();
                     unsafe {
-                        app.input(&keys, &mut mouse_pressed, dt);
+                        app.handle_input(&window, dt);
+                        app.update_camera(dt);
                         app.update(&window);
                     }
                     tick = now;
                     window.request_redraw();
                 }
+                elwt.set_control_flow(ControlFlow::WaitUntil(tick + Duration::from_millis(TICK_RATE as u64)));
             },
             Event::WindowEvent { event, .. } => match event {
                 WindowEvent::MouseInput { device_id, state, button } => {
-                    if state.is_pressed() {
-                        mouse_pressed.insert(button);
-                    } else {
-                        mouse_released.remove(&button);
-                    }
+                    app.mouse_button_update(button, state);
                 },
                 WindowEvent::KeyboardInput { event, .. } => {
                     if let PhysicalKey::Code(code) = event.physical_key {
-                        if event.state.is_pressed() {
-                            if code == KeyCode::Escape {
-                                let _ = window.set_cursor_grab(CursorGrabMode::None);
-                                window.set_cursor_visible(true);
-                                elwt.exit();
-                                unsafe { app.destroy() }
-                                return;
-                            }
-
-                            if code == KeyCode::KeyC {
-                                if captured {
-                                    window.set_cursor_grab(CursorGrabMode::None)
-                                        .expect("Failed to free cursor");
-                                    window.set_cursor_visible(true);
-                                    captured = false;
-                                } else {
-                                    window.set_cursor_grab(CursorGrabMode::Locked)
-                                        .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined))
-                                        .expect("Failed to grab cursor");
-                                    window.set_cursor_visible(false);
-                                    captured = true;
-                                }
-                            }
-
-                            keys.insert(code);
-                        } else {
-                            keys.remove(&code);
+                        if event.state.is_pressed() && code == KeyCode::Escape {
+                            let _ = window.set_cursor_grab(CursorGrabMode::None);
+                            window.set_cursor_visible(true);
+                            elwt.exit();
+                            unsafe { app.destroy() }
+                            return;
                         }
+                        app.keyboard_update(code, event.state);
                     }
                 },
                 WindowEvent::RedrawRequested if !elwt.exiting() && !minimized => unsafe {

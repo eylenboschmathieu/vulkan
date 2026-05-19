@@ -30,6 +30,14 @@ pub enum Input {
     Mouse(MouseButton),
 }
 
+impl From<KeyCode> for Input {
+    fn from(k: KeyCode) -> Self { Input::Keyboard(k) }
+}
+
+impl From<MouseButton> for Input {
+    fn from(b: MouseButton) -> Self { Input::Mouse(b) }
+}
+
 #[derive(Debug)]
 pub struct Binding {
     pub first: Option<Input>,
@@ -151,14 +159,8 @@ impl InputManager {
         }
     }
 
-    pub fn keyboard_update(&mut self, button: KeyCode, state: ElementState) {
-        if let Some(&action) = self.bindings.reverse.get(&Input::Keyboard(button)) {
-            self.state.update(action, state);
-        }
-    }
-
-    pub fn mouse_update(&mut self, button: MouseButton, state: ElementState) {
-        if let Some(&action) = self.bindings.reverse.get(&Input::Mouse(button)) {
+    pub fn update<T: Into<Input>>(&mut self, button: T, state: ElementState) {
+        if let Some(&action) = self.bindings.reverse.get(&button.into()) {
             self.state.update(action, state);
         }
     }

@@ -100,11 +100,11 @@ impl App {
     }
 
     pub fn keyboard_update(&mut self, button: KeyCode, state: ElementState) {
-        self.input.keyboard_update(button, state);
+        self.input.update(button, state);
     }
 
     pub fn mouse_button_update(&mut self, button: MouseButton, state: ElementState) {
-        self.input.mouse_update(button, state);
+        self.input.update(button, state);
     }
 
     pub fn mouse_cursor_update(&mut self, delta: (f64, f64)) {

@@ -345,7 +345,8 @@ impl Container {
         let mut offset = 0;
         for (id, bytes) in &self.vertex_updates {
             sb.copy_to_staging_at(s_id, bytes.as_slice(), offset)?;
-            sb.copy_to_buffer(command_buffer, vb, vb.alloc_info(*id), offset as u64)?;
+            let dst_offset = vb.alloc_info(*id).offset as u64;
+            sb.copy_to_buffer_sized(command_buffer, vb, dst_offset, offset as u64, bytes.len() as u64)?;
             offset += bytes.len();
         }
 

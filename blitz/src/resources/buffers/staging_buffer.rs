@@ -81,13 +81,17 @@ impl StagingBuffer {
         Ok(())
     }
 
-    // dst_buffer should be the buffer, and the alloc info
     pub unsafe fn copy_to_buffer<T>(&self, command_buffer: &CommandBuffer, dst_buffer: &T, allocation: Allocation, src_offset: u64) -> Result<()>
     where T: TransferDst + Deref<Target = Buffer> {
+        self.copy_to_buffer_sized(command_buffer, dst_buffer, allocation.offset as u64, src_offset, allocation.size as u64)
+    }
+
+    pub unsafe fn copy_to_buffer_sized<T>(&self, command_buffer: &CommandBuffer, dst_buffer: &T, dst_offset: u64, src_offset: u64, size: u64) -> Result<()>
+    where T: TransferDst + Deref<Target = Buffer> {
         let regions = vk::BufferCopy::builder()
-            .size(allocation.size as u64)
+            .size(size)
             .src_offset(src_offset)
-            .dst_offset(allocation.offset as u64);
+            .dst_offset(dst_offset);
 
         globals::device().logical().cmd_copy_buffer(
             command_buffer.handle(),

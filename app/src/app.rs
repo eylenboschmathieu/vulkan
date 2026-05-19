@@ -22,7 +22,7 @@ impl DynamicObject {
         Self { mesh: Mesh::default(), texture_id: 0, angle: 0.0, speed: 0.0 }
     }
 
-    pub unsafe fn alloc(&mut self, container: &mut Container, vertices: &[Vertex_3D_Color_Texture], indices: &[u16]) {
+    pub unsafe fn alloc(&mut self, container: &mut Container, vertices: &[Vertex_3D_RGBA_TEXTURE], indices: &[u16]) {
         self.mesh = container.alloc_mesh(vertices, indices);
     }
 
@@ -58,7 +58,7 @@ impl StaticObject {
         Self { mesh: Mesh::default(), texture_id: 0 }
     }
 
-    pub unsafe fn alloc(&mut self, container: &mut Container, vertices: &[Vertex_3D_Color_Texture], indices: &[u16]) {
+    pub unsafe fn alloc(&mut self, container: &mut Container, vertices: &[Vertex_3D_RGBA_TEXTURE], indices: &[u16]) {
         self.mesh = container.alloc_mesh(vertices, indices);
     }
 

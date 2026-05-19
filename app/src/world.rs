@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use anyhow::Result;
-use blitz::{Blitz, Container, LightingUbo, Mesh, Vertex_3D_Color};
+use blitz::{Blitz, Container, LightingUbo, Mesh, Vertex_3D_RGBA};
 use cgmath::{vec3, vec4, InnerSpace, Matrix4, Point3, Vector3, Vector4};
 use crate::{
     block::{Block, BlockType, Face},
@@ -22,13 +22,13 @@ impl Sun {
     }
 
     unsafe fn alloc(&mut self, container: &mut Container) -> Result<()> {
-        let gold = vec3(1.0, 0.84, 0.0);
+        let gold = vec4(1.0, 0.84, 0.0, 1.0);
         self.mesh = container.alloc_mesh(
             &[
-                Vertex_3D_Color::new(vec3(-0.5, -0.5, 0.0), gold),
-                Vertex_3D_Color::new(vec3( 0.5, -0.5, 0.0), gold),
-                Vertex_3D_Color::new(vec3( 0.5,  0.5, 0.0), gold),
-                Vertex_3D_Color::new(vec3(-0.5,  0.5, 0.0), gold),
+                Vertex_3D_RGBA::new(vec3(-0.5, -0.5, 0.0), gold),
+                Vertex_3D_RGBA::new(vec3( 0.5, -0.5, 0.0), gold),
+                Vertex_3D_RGBA::new(vec3( 0.5,  0.5, 0.0), gold),
+                Vertex_3D_RGBA::new(vec3(-0.5,  0.5, 0.0), gold),
             ],
             &[2u16, 1, 0, 0, 3, 2],
         );

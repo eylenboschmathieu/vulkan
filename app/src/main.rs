@@ -8,7 +8,7 @@ mod world;
 mod chunk;
 mod block;
 
-use std::{collections::HashSet, time::{Duration, Instant}};
+use std::{time::{Duration, Instant}};
 
 use anyhow::Result;
 use log::*;
@@ -31,7 +31,7 @@ fn main() -> Result<()> {
 
     let event_loop: EventLoop<()> = EventLoop::new()?;
     let window: Window = WindowBuilder::new()
-        .with_title("Vulkan Tutorial (Rust)")
+        .with_title("Playground")
         .with_inner_size(LogicalSize::new(1024, 768))
         .build(&event_loop)?;
 

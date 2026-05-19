@@ -31,81 +31,99 @@ pub enum Input {
 }
 
 #[derive(Debug)]
-struct Binding {
+pub struct Binding {
     pub first: Option<Input>,
     pub second: Option<Input>,
 }
 
 #[derive(Debug)]
 pub struct InputBindings {
-    bindings: HashMap<Action, Binding>
+    bindings: HashMap<Action, Binding>,
+    reverse:  HashMap<Input, Action>,
 }
 
 impl InputBindings {
     pub fn default() -> Self {
-        let mut bindings = HashMap::new();
+        let mut s = Self { bindings: HashMap::new(), reverse: HashMap::new() };
 
-        bindings.insert(Action::MoveForward,        Binding{ first: Some(Input::Keyboard(KeyCode::ArrowUp)), second: None});
-        bindings.insert(Action::MoveBackward,       Binding{ first: Some(Input::Keyboard(KeyCode::ArrowDown)), second: None});
-        bindings.insert(Action::MoveLeft,           Binding{ first: Some(Input::Keyboard(KeyCode::ArrowLeft)), second: None});
-        bindings.insert(Action::MoveRight,          Binding{ first: Some(Input::Keyboard(KeyCode::ArrowRight)), second: None});
-        bindings.insert(Action::Jump,               Binding{ first: Some(Input::Keyboard(KeyCode::Numpad1)), second: None});
-        bindings.insert(Action::Crouch,             Binding{ first: Some(Input::Keyboard(KeyCode::Numpad2)), second: None});
-        bindings.insert(Action::Prone,              Binding{ first: Some(Input::Keyboard(KeyCode::Numpad3)), second: None});
-        bindings.insert(Action::AddBlock,           Binding{ first: Some(Input::Mouse(MouseButton::Left)), second: None});
-        bindings.insert(Action::RemoveBlock,        Binding{ first: Some(Input::Mouse(MouseButton::Right)), second: None});
-        bindings.insert(Action::ToggleMouseLock,    Binding{ first: Some(Input::Keyboard(KeyCode::KeyC)), second: Some(Input::Keyboard(KeyCode::KeyL))});
+        s.bind(Action::MoveForward,     Binding { first: Some(Input::Keyboard(KeyCode::ArrowUp)),    second: None });
+        s.bind(Action::MoveBackward,    Binding { first: Some(Input::Keyboard(KeyCode::ArrowDown)),  second: None });
+        s.bind(Action::MoveLeft,        Binding { first: Some(Input::Keyboard(KeyCode::ArrowLeft)),  second: None });
+        s.bind(Action::MoveRight,       Binding { first: Some(Input::Keyboard(KeyCode::ArrowRight)), second: None });
+        s.bind(Action::Jump,            Binding { first: Some(Input::Keyboard(KeyCode::Numpad1)),    second: None });
+        s.bind(Action::Crouch,          Binding { first: Some(Input::Keyboard(KeyCode::Numpad2)),    second: None });
+        s.bind(Action::Prone,           Binding { first: Some(Input::Keyboard(KeyCode::Numpad3)),    second: None });
+        s.bind(Action::AddBlock,        Binding { first: Some(Input::Mouse(MouseButton::Left)),      second: None });
+        s.bind(Action::RemoveBlock,     Binding { first: Some(Input::Mouse(MouseButton::Right)),     second: None });
+        s.bind(Action::ToggleMouseLock, Binding { first: Some(Input::Keyboard(KeyCode::KeyC)),       second: Some(Input::Keyboard(KeyCode::KeyL)) });
 
-        Self { bindings }
+        s
     }
-    
+
     // TODO
     pub fn from_file(file: File) -> Self {
-        Self {
-            bindings: HashMap::new(),
-        }
+        Self { bindings: HashMap::new(), reverse: HashMap::new() }
     }
 
-    pub fn bind(&mut self, action: Action, binding: Binding) {
+    // Applies the binding, stealing any conflicting inputs from their current actions.
+    // Returns false if a conflict was encountered (and resolved), true if clean.
+    pub fn bind(&mut self, action: Action, binding: Binding) -> bool {
+        let inputs: Vec<Input> = [binding.first, binding.second]
+            .into_iter().flatten().collect();
+
+        let mut had_conflict = false;
+
+        for &input in &inputs {
+            if let Some(&owner) = self.reverse.get(&input) {
+                if owner != action {
+                    had_conflict = true;
+                    if let Some(b) = self.bindings.get_mut(&owner) {
+                        if b.first  == Some(input) { b.first  = None; }
+                        if b.second == Some(input) { b.second = None; }
+                    }
+                    self.reverse.remove(&input);
+                }
+            }
+        }
+
+        if let Some(old) = self.bindings.get(&action) {
+            if let Some(i) = old.first  { if !inputs.contains(&i) { self.reverse.remove(&i); } }
+            if let Some(i) = old.second { if !inputs.contains(&i) { self.reverse.remove(&i); } }
+        }
+
+        for &input in &inputs {
+            self.reverse.insert(input, action);
+        }
+
         self.bindings.entry(action).insert_entry(binding);
+        !had_conflict
     }
 
     pub fn unbind(&mut self, action: Action) {
-        self.bindings.remove(&action);
+        if let Some(binding) = self.bindings.remove(&action) {
+            if let Some(i) = binding.first  { self.reverse.remove(&i); }
+            if let Some(i) = binding.second { self.reverse.remove(&i); }
+        }
     }
 }
 
 #[derive(Debug)]
 pub struct InputState {
-    held: HashSet<Input>,
-    pressed: HashSet<Input>,
-    released: HashSet<Input>,
+    held:     HashSet<Action>,
+    pressed:  HashSet<Action>,
+    released: HashSet<Action>,
 }
 
 impl InputState {
-    pub fn update_key(&mut self, button: KeyCode, state: ElementState) {
-        let input = Input::Keyboard(button);
+    fn update(&mut self, action: Action, state: ElementState) {
         if state.is_pressed() {
-            if !self.held.contains(&input) {
-                self.pressed.insert(input.clone());
+            if !self.held.contains(&action) {
+                self.pressed.insert(action);
             }
-            self.held.insert(input);
+            self.held.insert(action);
         } else {
-            self.held.remove(&input);
-            self.released.insert(input);
-        }
-    }
-
-    pub fn update_mouse(&mut self, button: MouseButton, state: ElementState) {
-        let input = Input::Mouse(button);
-        if state.is_pressed() {
-            if !self.held.contains(&input) {
-                self.pressed.insert(input.clone());
-            }
-            self.held.insert(input);
-        } else {
-            self.held.remove(&input);
-            self.released.insert(input);
+            self.held.remove(&action);
+            self.released.insert(action);
         }
     }
 
@@ -118,7 +136,7 @@ impl InputState {
 #[derive(Debug)]
 pub struct InputManager {
     pub bindings: InputBindings,
-    pub state: InputState,
+    pub state:    InputState,
 }
 
 impl InputManager {
@@ -133,30 +151,27 @@ impl InputManager {
         }
     }
 
+    pub fn keyboard_update(&mut self, button: KeyCode, state: ElementState) {
+        if let Some(&action) = self.bindings.reverse.get(&Input::Keyboard(button)) {
+            self.state.update(action, state);
+        }
+    }
+
+    pub fn mouse_update(&mut self, button: MouseButton, state: ElementState) {
+        if let Some(&action) = self.bindings.reverse.get(&Input::Mouse(button)) {
+            self.state.update(action, state);
+        }
+    }
+
     pub fn is_held(&self, action: Action) -> bool {
-        self.bindings.bindings
-            .get(&action)
-            .map(|binding| {
-                binding.first.map_or(false,  |b| self.state.held.contains(&b))
-                || binding.second.map_or(false, |b| self.state.held.contains(&b))
-            }).unwrap_or(false)
+        self.state.held.contains(&action)
     }
 
     pub fn is_pressed(&self, action: Action) -> bool {
-        self.bindings.bindings
-            .get(&action)
-            .map(|binding| {
-                binding.first.map_or(false,  |b| self.state.pressed.contains(&b))
-                || binding.second.map_or(false, |b| self.state.pressed.contains(&b))
-            }).unwrap_or(false)
+        self.state.pressed.contains(&action)
     }
 
     pub fn is_released(&self, action: Action) -> bool {
-        self.bindings.bindings
-            .get(&action)
-            .map(|binding| {
-                binding.first.map_or(false,  |b| self.state.released.contains(&b))
-                || binding.second.map_or(false, |b| self.state.released.contains(&b))
-            }).unwrap_or(false)
+        self.state.released.contains(&action)
     }
 }

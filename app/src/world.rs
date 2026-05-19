@@ -7,7 +7,7 @@ use cgmath::{vec3, vec4, InnerSpace, Matrix4, Point3, Vector3, Vector4};
 use crate::{
     block::{Block, BlockType, Face},
     camera::FpCamera,
-    chunk::{CHUNK_SIZE, Chunk},
+    chunk::{Blocks, CHUNK_SIZE, Chunk},
 };
 
 #[derive(Debug)]
@@ -72,6 +72,16 @@ pub struct World {
 const WORLD_Y_MIN: i32 = -64;
 const WORLD_Y_MAX: i32 = 63;
 
+const CHUNK_SIZE_I: i32 = CHUNK_SIZE as i32;
+const NEIGHBOR_OFFSETS: [Vector3<i32>; 6] = [
+    Vector3 { x:  CHUNK_SIZE_I, y: 0,            z: 0            }, // +X East
+    Vector3 { x: -CHUNK_SIZE_I, y: 0,            z: 0            }, // -X West
+    Vector3 { x: 0,             y:  CHUNK_SIZE_I, z: 0            }, // +Y top
+    Vector3 { x: 0,             y: -CHUNK_SIZE_I, z: 0            }, // -Y bottom
+    Vector3 { x: 0,             y: 0,            z:  CHUNK_SIZE_I }, // +Z South
+    Vector3 { x: 0,             y: 0,            z: -CHUNK_SIZE_I }, // -Z North
+];
+
 impl World {
     pub fn new(blitz: &mut Blitz) -> Result<Self> {
         let cs = CHUNK_SIZE as i32;
@@ -101,11 +111,17 @@ impl World {
     }
 
     pub unsafe fn alloc(&mut self, container: &mut Container) -> Result<()> {
-        self.chunks
-            .iter_mut()
-            .for_each(|(pos, chunk)| {
-                chunk.recalc([None; 6], container, (pos.x, pos.y, pos.z));
+        let positions: Vec<Vector3<i32>> = self.chunks.keys().copied().collect();
+        for pos in positions {
+            let chunk_ptr = match self.chunks.get_mut(&pos) {
+                Some(c) => c as *mut Chunk,
+                None => continue,
+            };
+            let neighbors: [Option<&Blocks>; 6] = std::array::from_fn(|i| {
+                self.chunks.get(&(pos + NEIGHBOR_OFFSETS[i])).map(|c| c.blocks())
             });
+            (*chunk_ptr).recalc(neighbors, container, (pos.x, pos.y, pos.z));
+        }
         self.sun.alloc(container)?;
         Ok(())
     }
@@ -220,9 +236,17 @@ impl World {
 
     pub unsafe fn flush_dirty(&mut self, container: &mut Container) {
         for chunk_pos in self.dirty_chunks.drain(..) {
-            if let Some(chunk) = self.chunks.get_mut(&chunk_pos) {
-                chunk.recalc([None; 6], container, (chunk_pos.x, chunk_pos.y, chunk_pos.z));
-            }
+            let chunk_ptr = match self.chunks.get_mut(&chunk_pos) {
+                Some(c) => c as *mut Chunk,
+                None => continue,
+            };
+
+            // Safe: neighbors are distinct entries in the map; no insert/remove occurs.
+            let neighbors: [Option<&Blocks>; 6] = std::array::from_fn(|i| {
+                self.chunks.get(&(chunk_pos + NEIGHBOR_OFFSETS[i])).map(|c| c.blocks())
+            });
+
+            (*chunk_ptr).recalc(neighbors, container, (chunk_pos.x, chunk_pos.y, chunk_pos.z));
         }
     }
 

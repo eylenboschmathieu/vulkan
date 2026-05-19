@@ -7,7 +7,7 @@ use crate::block::{Block, BlockType, Face};
 
 pub const CHUNK_SIZE: usize = 32;
 
-type Blocks = [[[Block; CHUNK_SIZE]; CHUNK_SIZE]; CHUNK_SIZE];
+pub type Blocks = [[[Block; CHUNK_SIZE]; CHUNK_SIZE]; CHUNK_SIZE];
 
 struct FaceDesc {
     normal_axis: usize,

@@ -55,11 +55,10 @@ fn main() -> Result<()> {
             Event::AboutToWait => {
                 let now = Instant::now();
                 if now.duration_since(tick).as_millis() >= TICK_RATE {
-                    let dt = now.duration_since(tick).as_secs_f32();
+                    let delta = now.duration_since(tick).as_secs_f32();
                     unsafe {
-                        app.handle_input(&window, dt);
-                        app.update_camera(dt);
-                        app.update(&window);
+                        app.handle_input(&window, delta);
+                        app.update(&window, delta);
                     }
                     tick = now;
                     window.request_redraw();

@@ -146,7 +146,7 @@ impl App {
         self.input.state.clear();
     }
 
-    pub fn update_camera(&mut self, delta: f32) {
+    fn update_camera(&mut self, delta: f32) {
         let fwd   = self.camera.forward();
         let right = self.camera.right();
         let up    = vec3(0.0_f32, 1.0, 0.0);
@@ -160,11 +160,9 @@ impl App {
         if self.input.is_held(Action::Crouch)       { self.camera.eye -= up    * SPEED * delta; }
     }
 
-    pub unsafe fn update(&mut self, window: &Window) {
-        let dt = self.delta.elapsed().as_secs_f32();
-        self.delta = Instant::now();
-
-        self.world.update(dt);
+    pub unsafe fn update(&mut self, window: &Window, delta: f32) {
+        self.world.update(delta);
+        self.update_camera(delta);
 
         let size = window.inner_size();
         let aspect = size.width as f32 / size.height as f32;

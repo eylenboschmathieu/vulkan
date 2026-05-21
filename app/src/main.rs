@@ -66,9 +66,9 @@ fn main() -> Result<()> {
                         app.update(dt);
                     }
                     tick = now;
-                    window.request_redraw();
                 }
-                elwt.set_control_flow(ControlFlow::WaitUntil(tick + Duration::from_millis(TICK_RATE as u64)));
+                window.request_redraw();
+                elwt.set_control_flow(ControlFlow::Poll);
             },
             Event::WindowEvent { event, .. } => match event {
                 WindowEvent::CursorMoved { position, .. } => {

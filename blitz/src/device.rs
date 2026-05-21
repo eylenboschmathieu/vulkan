@@ -79,6 +79,10 @@ impl Device {
     }
 
     unsafe fn create_logical_device(entry: &Entry, instance: &Instance, physical_device: PhysicalDevice, indices: &QueueFamilyIndices) -> Result<LogicalDevice> {
+        let optional = instance.supported_optional_extensions(physical_device)?;
+        for ext in &optional {
+            info!("Enabling optional extension: {:?}", ext);
+        }
         
         // Queues
 
@@ -109,6 +113,7 @@ impl Device {
 
         let mut extensions = DEVICE_EXTENSIONS
             .iter()
+            .chain(optional.iter())
             .map(|n| n.as_ptr())
             .collect::<Vec<_>>();
 
@@ -127,13 +132,21 @@ impl Device {
             .features(core_features)
             .push_next(&mut vulkan13_features);
 
+        let has_fifo_latest_ready = optional.contains(&vk::KHR_PRESENT_MODE_FIFO_LATEST_READY_EXTENSION.name);
+        let mut fifo_latest_ready_features = vk::PhysicalDevicePresentModeFifoLatestReadyFeaturesKHR::builder()
+            .present_mode_fifo_latest_ready(true);
+
         // Create
 
-        let info= vk::DeviceCreateInfo::builder()
+        let mut info = vk::DeviceCreateInfo::builder()
             .queue_create_infos(&queue_infos)
             .enabled_layer_names(&layers)
             .enabled_extension_names(&extensions)
             .push_next(&mut features);
+
+        if has_fifo_latest_ready {
+            info = info.push_next(&mut fifo_latest_ready_features);
+        }
 
         let logical_device = instance.handle().create_device(physical_device, &info, None)?;
         info!("+ Handle");

@@ -88,6 +88,11 @@ impl App {
     /// Create our Vulkan app.
     pub unsafe fn new(window: &Window) -> Result<Self> {
         let mut blitz = blitz::init(window)?;
+        if blitz.set_fps_limit(Some(120)) {
+            println!("Frame rate was set");
+        } else {
+            println!("Setting frame rate was ignored")
+        }
 
         let input = InputManager::new(window);
 

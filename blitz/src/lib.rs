@@ -137,6 +137,7 @@ pub struct Blitz {
     sky_color: [f32; 4],
     vsync: bool,
     vsync_dirty: bool,
+    window_refresh_rate: u32,  // Physical refresh rate of the monitor
     fps_limit: Option<Duration>,
     frame_start: Instant,
     _entry: Entry, // must be last: dropped last, keeping libvulkan loaded while all other fields clean up
@@ -200,11 +201,22 @@ impl Blitz {
         }
     }
 
-    pub fn set_fps_limit(&mut self, fps: Option<u32>) {
-        self.fps_limit = fps.map(|f| Duration::from_secs_f64(1.0 / f as f64));
-        if fps.is_some() && self.vsync {
-            self.vsync = false;
-            self.vsync_dirty = true;
+    /// Set a software frame rate cap. Returns `false` if the cap was ignored.
+    ///
+    /// With `FIFO` the driver already blocks at vblank, so a software cap is redundant.
+    /// With `FIFO_LATEST_READY` the cap is always pinned to the monitor refresh rate —
+    /// any value passed in is ignored, since frames rendered faster than that are discarded anyway.
+    pub fn set_fps_limit(&mut self, fps: Option<u32>) -> bool {
+        match self.swapchain.present_mode() {
+            vk::PresentModeKHR::FIFO => false,
+            vk::PresentModeKHR::FIFO_LATEST_READY => {
+                self.fps_limit = Some(Duration::from_secs_f64(1.0 / self.window_refresh_rate as f64));
+                false
+            },
+            _ => {
+                self.fps_limit = fps.map(|f| Duration::from_secs_f64(1.0 / f.clamp(1, 999) as f64));
+                true
+            }
         }
     }
 
@@ -507,6 +519,12 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
     let device = Device::new(&entry, window, globals::instance())?;
     globals::init_device(device);
 
+    let window_refresh_rate = window
+        .current_monitor()
+        .and_then(|m| m.refresh_rate_millihertz())
+        .map(|mhz| mhz / 1000)
+        .unwrap_or(60);
+
     let queues = queues::Queues::new()?;
     globals::init_queues(queues);
 
@@ -565,7 +583,7 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
         mesh
     };
 
-    let blitz = Blitz {
+    let mut blitz = Blitz {
         _entry: entry,
         camera,
         lighting,
@@ -582,9 +600,12 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
         sky_color: [0.22, 0.48, 0.72, 1.0],
         vsync: false,
         vsync_dirty: false,
+        window_refresh_rate,
         fps_limit: None,
         frame_start: Instant::now(),
     };
+
+    blitz.set_fps_limit(Some(60));
 
     Ok(blitz)
 }

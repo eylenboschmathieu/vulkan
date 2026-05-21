@@ -23,6 +23,7 @@ pub struct Swapchain {
     images: Vec<SwapchainImage>,
     format: vk::Format,
     extent: vk::Extent2D,
+    present_mode: vk::PresentModeKHR,
 }
 
 impl Swapchain {
@@ -32,9 +33,9 @@ impl Swapchain {
         let format = swapchain_support.get_surface_format().format;
         let extent = swapchain_support.get_extent(window);
 
-        let handle = Swapchain::build(window, None, vsync)?;
+        let (handle, present_mode) = Swapchain::build(window, None, vsync)?;
 
-        let mut this = Self { handle, images: vec![], format, extent };
+        let mut this = Self { handle, images: vec![], format, extent, present_mode };
         this.get_images();
 
         Ok(this)
@@ -47,7 +48,7 @@ impl Swapchain {
         info!("~ Handle");
     }
 
-    unsafe fn build(window: &Window, old_swapchain: Option<vk::SwapchainKHR>, vsync: bool) -> Result<vk::SwapchainKHR> {
+    unsafe fn build(window: &Window, old_swapchain: Option<vk::SwapchainKHR>, vsync: bool) -> Result<(vk::SwapchainKHR, vk::PresentModeKHR)> {
         let indices = globals::device().queue_family_indices();
         let swapchain_support = globals::device().swapchain_support();
 
@@ -65,6 +66,8 @@ impl Swapchain {
             vk::SharingMode::EXCLUSIVE
         };  
 
+        let present_mode = swapchain_support.get_present_mode(vsync);
+
         let info = vk::SwapchainCreateInfoKHR::builder()
             .surface(globals::instance().surface())
             .min_image_count(image_count)
@@ -77,7 +80,7 @@ impl Swapchain {
             .queue_family_indices(&queue_family_indices)
             .pre_transform(swapchain_support.capabilities().current_transform)
             .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
-            .present_mode(swapchain_support.get_present_mode(vsync))
+            .present_mode(present_mode)
             .clipped(true)
             .old_swapchain(old_swapchain.unwrap_or(vk::SwapchainKHR::null()));
 
@@ -90,7 +93,7 @@ impl Swapchain {
         info!("+ Handle");
 
         match result {
-            Ok(handle) => Ok(handle),
+            Ok(handle) => Ok((handle, present_mode)),
             Err(err) => return Err(anyhow!(err))
         }
     }
@@ -98,7 +101,7 @@ impl Swapchain {
     pub unsafe fn rebuild(&mut self, window: &Window, vsync: bool) -> Result<()> {
         self.free_images();
 
-        self.handle = Swapchain::build(window, Some(self.handle), vsync)?;
+        (self.handle, self.present_mode) = Swapchain::build(window, Some(self.handle), vsync)?;
 
         let support = globals::device().swapchain_support();
         self.format = support.get_surface_format().format;
@@ -117,12 +120,16 @@ impl Swapchain {
         self.images.len()
     }
 
-    pub unsafe fn format(&self) -> vk::Format {
+    pub fn format(&self) -> vk::Format {
         self.format
     }
 
-    pub unsafe fn extent(&self) -> vk::Extent2D {
+    pub fn extent(&self) -> vk::Extent2D {
         self.extent
+    }
+
+    pub fn present_mode(&self) -> vk::PresentModeKHR {
+        self.present_mode
     }
 
     /// Get the image handles and views from the swapchain

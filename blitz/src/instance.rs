@@ -35,6 +35,10 @@ pub const DEVICE_EXTENSIONS: &[vk::ExtensionName] = &[
     // vk::KHR_SYNCHRONIZATION2_EXTENSION.name, // Promoted to core in 1.3 (which we're using)
 ];
 
+pub const OPTIONAL_DEVICE_EXTENSIONS: &[vk::ExtensionName] = &[
+    vk::KHR_PRESENT_MODE_FIFO_LATEST_READY_EXTENSION.name,
+];
+
 extern "system" fn debug_callback(
     severity: vk::DebugUtilsMessageSeverityFlagsEXT,
     type_: vk::DebugUtilsMessageTypeFlagsEXT,
@@ -111,6 +115,7 @@ impl Instance {
             .iter()
             .map(|e| e.as_ptr())
             .collect::<Vec<_>>();
+
 
         if VALIDATION_ENABLED {
             extensions.push(vk::EXT_DEBUG_UTILS_EXTENSION.name.as_ptr());
@@ -241,18 +246,25 @@ impl Instance {
     }
 
     unsafe fn check_physical_device_extensions(&self, physical_device: PhysicalDevice) -> Result<()> {
-        let extensions = self.handle.enumerate_device_extension_properties(physical_device, None)?
+        let available = self.handle.enumerate_device_extension_properties(physical_device, None)?
             .iter()
             .map(|e| e.extension_name)
             .collect::<HashSet<_>>();
 
-        if DEVICE_EXTENSIONS.iter().all(|e| {
-            extensions.contains(e)
-        }) {
+        if DEVICE_EXTENSIONS.iter().all(|e| available.contains(e)) {
             Ok(())
         } else {
             Err(anyhow!(SuitabilityError("Missing required device extensions.")))
         }
+    }
+
+    pub unsafe fn supported_optional_extensions(&self, physical_device: PhysicalDevice) -> Result<Vec<vk::ExtensionName>> {
+        let available = self.handle.enumerate_device_extension_properties(physical_device, None)?
+            .iter()
+            .map(|e| e.extension_name)
+            .collect::<HashSet<_>>();
+
+        Ok(OPTIONAL_DEVICE_EXTENSIONS.iter().filter(|e| available.contains(e)).copied().collect())
     }
 
     pub unsafe fn get_supported_format(&self, device: &Device, candidates: &[vk::Format], tiling: vk::ImageTiling, features: vk::FormatFeatureFlags) -> Result<vk::Format> {
@@ -359,13 +371,17 @@ impl SwapchainSupport {
 
     pub unsafe fn get_present_mode(&self, vsync: bool) -> vk::PresentModeKHR {
         if vsync {
-            vk::PresentModeKHR::FIFO
+            self.present_modes
+                .iter()
+                .cloned()
+                .find(|m| *m == vk::PresentModeKHR::FIFO_LATEST_READY)
+                .unwrap_or(vk::PresentModeKHR::FIFO)
         } else {
             self.present_modes
                 .iter()
                 .cloned()
                 .find(|m| *m == vk::PresentModeKHR::MAILBOX)
-                .unwrap_or(vk::PresentModeKHR::FIFO)
+                .unwrap_or(vk::PresentModeKHR::FIFO_LATEST_READY)
         }
     }
 

@@ -16,11 +16,11 @@ use winit::{
     dpi::LogicalSize,
     event::{DeviceEvent, Event, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
-    keyboard::{KeyCode, PhysicalKey},
+    keyboard::PhysicalKey,
     window::{CursorGrabMode, Window, WindowBuilder},
 };
 
-use app::App;
+use app::{App, AppEvent};
 
 const TICK_RATE: u128 = 1000 / 60;  // In milliseconds
 
@@ -50,15 +50,20 @@ fn main() -> Result<()> {
     event_loop.run(move |event, elwt| {
         match event {
             Event::DeviceEvent { event: DeviceEvent::MouseMotion { delta }, .. } => {
-                app.mouse_cursor_update(delta);
+                app.mouse_motion((delta.0 as f32, delta.1 as f32));
             },
             Event::AboutToWait => {
                 let now = Instant::now();
                 if now.duration_since(tick).as_millis() >= TICK_RATE {
-                    let delta = now.duration_since(tick).as_secs_f32();
+                    let dt = now.duration_since(tick).as_secs_f32();
                     unsafe {
-                        app.handle_input(&window, delta);
-                        app.update(&window, delta);
+                        if let Some(AppEvent::Exit) = app.handle_input(&window) {
+                            let _ = window.set_cursor_grab(CursorGrabMode::None);
+                            window.set_cursor_visible(true);
+                            elwt.exit();
+                            return;
+                        }
+                        app.update(&window, dt);
                     }
                     tick = now;
                     window.request_redraw();
@@ -66,19 +71,15 @@ fn main() -> Result<()> {
                 elwt.set_control_flow(ControlFlow::WaitUntil(tick + Duration::from_millis(TICK_RATE as u64)));
             },
             Event::WindowEvent { event, .. } => match event {
+                WindowEvent::CursorMoved { position, .. } => {
+                    app.cursor_moved(position.x as f32, position.y as f32);
+                },
                 WindowEvent::MouseInput { device_id, state, button } => {
-                    app.mouse_button_update(button, state);
+                    app.button_update(button, state);
                 },
                 WindowEvent::KeyboardInput { event, .. } => {
                     if let PhysicalKey::Code(code) = event.physical_key {
-                        if event.state.is_pressed() && code == KeyCode::Escape {
-                            let _ = window.set_cursor_grab(CursorGrabMode::None);
-                            window.set_cursor_visible(true);
-                            elwt.exit();
-                            unsafe { app.destroy() }
-                            return;
-                        }
-                        app.keyboard_update(code, event.state);
+                        app.button_update(code, event.state);
                     }
                 },
                 WindowEvent::RedrawRequested if !elwt.exiting() && !minimized => unsafe {
@@ -96,7 +97,6 @@ fn main() -> Result<()> {
                     let _ = window.set_cursor_grab(CursorGrabMode::None);
                     window.set_cursor_visible(true);
                     elwt.exit();
-                    unsafe { app.destroy(); }
                 }
                 _ => {}
             }

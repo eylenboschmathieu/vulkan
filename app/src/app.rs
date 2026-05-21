@@ -1,13 +1,16 @@
 #![allow(dead_code, unsafe_op_in_unsafe_fn, unused_variables, clippy::too_many_arguments, clippy::unnecessary_wraps)]
 
-use cgmath::{point3, vec3, Deg};
+use cgmath::{point3, Deg};
 use anyhow::Result;
-use std::time::Instant;
 use log::*;
-use winit::{event::{ElementState, MouseButton}, keyboard::KeyCode, window::{CursorGrabMode, Window}};
+use winit::{event::ElementState, window::Window};
 use blitz::*;
 
-use crate::{camera::FpCamera, input::{Action, InputManager}, ui::Ui, world::World};
+use crate::{camera::FpCamera, input::{Action, Input, InputManager}, ui::{Ui, UiAction}, world::World};
+
+pub enum AppEvent {
+    Exit,
+}
 
 #[derive(Debug)]
 struct DynamicObject {
@@ -22,7 +25,7 @@ impl DynamicObject {
         Self { mesh: Mesh::default(), texture_id: 0, angle: 0.0, speed: 0.0 }
     }
 
-    pub unsafe fn alloc(&mut self, container: &mut Container, vertices: &[Vertex_3D_RGBA_TEXTURE], indices: &[u16]) {
+    pub unsafe fn alloc(&mut self, container: &mut Container, vertices: &[VERTEX_3D_RGBA_TEXTURE], indices: &[u16]) {
         self.mesh = container.alloc_mesh(vertices, indices);
     }
 
@@ -58,7 +61,7 @@ impl StaticObject {
         Self { mesh: Mesh::default(), texture_id: 0 }
     }
 
-    pub unsafe fn alloc(&mut self, container: &mut Container, vertices: &[Vertex_3D_RGBA_TEXTURE], indices: &[u16]) {
+    pub unsafe fn alloc(&mut self, container: &mut Container, vertices: &[VERTEX_3D_RGBA_TEXTURE], indices: &[u16]) {
         self.mesh = container.alloc_mesh(vertices, indices);
     }
 
@@ -74,13 +77,11 @@ impl StaticObject {
 // Our Vulkan app.
 #[derive(Debug)]
 pub struct App {
-    delta: Instant,
     blitz: blitz::Blitz,
     input: InputManager,
     camera: FpCamera,
     world: World,
     ui: Ui,
-    mouse_capture: bool,
 }
 
 impl App {
@@ -88,81 +89,60 @@ impl App {
     pub unsafe fn new(window: &Window) -> Result<Self> {
         let mut blitz = blitz::init(window)?;
 
-        let input = InputManager::new();
+        let input = InputManager::new(window);
 
         let world = World::new(&mut blitz)?;
-        let ui = Ui::new(&blitz);
+        let ui = Ui::new(&window, &blitz);
 
         let camera = FpCamera::new(point3(0.0, 2.0, 0.0), 0.0, 0.0);
 
         info!("+ App");
-        Ok(Self { blitz, delta: Instant::now(), input, camera, world, ui, mouse_capture: true })
+        Ok(Self { blitz, input, camera, world, ui })
     }
 
-    pub fn keyboard_update(&mut self, button: KeyCode, state: ElementState) {
-        self.input.update(button, state);
+    /// Update the state of keyboard or mouse buttons
+    pub fn button_update<T: Into<Input>>(&mut self, button: T, state: ElementState) {
+        self.input.button_update(button, state);
     }
 
-    pub fn mouse_button_update(&mut self, button: MouseButton, state: ElementState) {
-        self.input.update(button, state);
+    pub fn mouse_motion(&mut self, delta: (f32, f32)) {
+        if !self.ui.menu_opened() {
+            self.camera.mouse_move(delta.0, delta.1);
+        }
     }
 
-    pub fn mouse_cursor_update(&mut self, delta: (f64, f64)) {
-        self.camera.mouse_move(delta.0 as f32, delta.1 as f32);
+    pub fn cursor_moved(&mut self, x: f32, y: f32) {
+        self.input.cursor_update(x, y);
     }
 
-    pub fn handle_input(&mut self, window: &Window, delta: f32) {
-        if self.input.is_pressed(Action::AddBlock) {
-            if let Some((pos, face)) = self.world.raycast(self.camera.eye, self.camera.forward(), 4.0) {
-                let block = self.world.block_at(pos.x, pos.y, pos.z).unwrap();
-                println!("Selected {:?} of {} block at {:?}", face, block, pos);
-                self.world.add_block(pos, face);
-            } else {
-                println!("No block selected")
-            }
+    pub fn handle_input(&mut self, window: &Window) -> Option<AppEvent> {
+        if self.input.is_pressed(Action::Quit) {
+            return Some(AppEvent::Exit);
         }
 
-        if self.input.is_pressed(Action::RemoveBlock) {
-            if let Some((pos, _face)) = self.world.raycast(self.camera.eye, self.camera.forward(), 4.0) {
-                self.world.remove_block(pos);
-            }
+        if self.input.is_pressed(Action::ToggleMenu) {
+            self.ui.toggle_menu(window);
         }
 
-        if self.input.is_pressed(Action::ToggleMouseLock) {
-            if self.mouse_capture {
-                window.set_cursor_grab(CursorGrabMode::None)
-                    .expect("Failed to free cursor");
-                window.set_cursor_visible(true);
-                self.mouse_capture = false;
-            } else {
-                window.set_cursor_grab(CursorGrabMode::Locked)
-                    .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined))
-                    .expect("Failed to grab cursor");
-                window.set_cursor_visible(false);
-                self.mouse_capture = true;
+        if self.ui.menu_opened() {
+            match self.ui.handle_input(&self.input) {
+                Some(UiAction::CloseMenu) => self.ui.toggle_menu(window),
+                Some(UiAction::ExitApp)   => return Some(AppEvent::Exit),
+                _ => {}
             }
+        } else {
+            self.world.handle_input(&self.input, &self.camera);
         }
-
+        
         self.input.state.clear();
-    }
-
-    fn update_camera(&mut self, delta: f32) {
-        let fwd   = self.camera.forward();
-        let right = self.camera.right();
-        let up    = vec3(0.0_f32, 1.0, 0.0);
-        const SPEED: f32 = 6.0;
-
-        if self.input.is_held(Action::MoveForward)  { self.camera.eye += fwd   * SPEED * delta; }
-        if self.input.is_held(Action::MoveBackward) { self.camera.eye -= fwd   * SPEED * delta; }
-        if self.input.is_held(Action::MoveLeft)     { self.camera.eye -= right * SPEED * delta; }
-        if self.input.is_held(Action::MoveRight)    { self.camera.eye += right * SPEED * delta; }
-        if self.input.is_held(Action::Jump)         { self.camera.eye += up    * SPEED * delta; }
-        if self.input.is_held(Action::Crouch)       { self.camera.eye -= up    * SPEED * delta; }
+        None
     }
 
     pub unsafe fn update(&mut self, window: &Window, delta: f32) {
+        if !self.ui.menu_opened() {
+            self.camera.handle_input(&self.input, delta);
+        }
         self.world.update(delta);
-        self.update_camera(delta);
 
         let size = window.inner_size();
         let aspect = size.width as f32 / size.height as f32;
@@ -191,10 +171,5 @@ impl App {
         }
 
         Ok(())
-    }
-
-    /// Destroys our app.
-    pub unsafe fn destroy(&mut self) {
-        info!("~ App");
     }
 }

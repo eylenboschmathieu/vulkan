@@ -549,7 +549,7 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
 
     // Pre-allocate a single mesh for all UI quads. Indices are baked once; vertices are updated as needed.
     let ui_mesh = {
-        let zeroed_verts = vec![resources::vertices::Vertex_2D_RGBA::new(
+        let zeroed_verts = vec![resources::vertices::VERTEX_2D_RGBA::new(
             cgmath::vec2(0.0, 0.0), cgmath::vec4(0.0, 0.0, 0.0, 0.0),
         ); MAX_UI_QUADS * 4];
         let indices: Vec<u16> = (0..MAX_UI_QUADS as u16)

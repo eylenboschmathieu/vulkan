@@ -73,16 +73,6 @@ impl Block {
         }
     }
 
-    pub fn color(self) -> cgmath::Vector3<f32> {
-        use cgmath::vec3;
-        match self.kind {
-            BlockType::Air   => vec3(0.0, 0.0, 0.0),
-            BlockType::Dirt  => vec3(0.55, 0.35, 0.15),
-            BlockType::Stone => vec3(0.50, 0.50, 0.50),
-            BlockType::Sand  => vec3(0.85, 0.80, 0.55),
-            BlockType::Grass => vec3(0.30, 0.60, 0.20),
-        }
-    }
 }
 
 impl Display for Block {

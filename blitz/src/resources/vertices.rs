@@ -1,4 +1,4 @@
-#![allow(dead_code, unsafe_op_in_unsafe_fn, unused_variables, clippy::unnecessary_wraps)]
+#![allow(non_camel_case_types, unsafe_op_in_unsafe_fn, unused_variables, clippy::unnecessary_wraps)]
 
 use vulkanalia::vk::{self, HasBuilder};
 
@@ -12,43 +12,43 @@ pub type Rgba = cgmath::Vector4<f32>;
 
 #[derive(Debug, Clone)]
 pub enum VertexFormat {
-    Vertex2D_RGBA,
-    Vertex2D_UV,
-    Vertex3D_RGBA,
-    Vertex3D_RGBA_Texture,
-    Vertex3D_TextureArray,
+    VERTEX_2D_RGBA,
+    VERTEX_2D_TEXTURE,
+    VERTEX_3D_RGBA,
+    VERTEX_3D_RGBA_TEXTURE,
+    VERTEX_3D_TEXTURE_ARRAY_NORMAL,
 }
 
 impl VertexFormat {
     pub fn binding_description(&self, binding: u32) -> vk::VertexInputBindingDescription {
         match self {
-            VertexFormat::Vertex2D_RGBA         => Vertex_2D_RGBA::binding_description(binding),
-            VertexFormat::Vertex2D_UV           => Vertex_2D_TEXTURE::binding_description(binding),
-            VertexFormat::Vertex3D_RGBA         => Vertex_3D_RGBA::binding_description(binding),
-            VertexFormat::Vertex3D_RGBA_Texture => Vertex_3D_RGBA_TEXTURE::binding_description(binding),
-            VertexFormat::Vertex3D_TextureArray => Vertex_3D_TEXTURE_ARRAY::binding_description(binding),
+            VertexFormat::VERTEX_2D_RGBA                 => VERTEX_2D_RGBA::binding_description(binding),
+            VertexFormat::VERTEX_2D_TEXTURE              => VERTEX_2D_TEXTURE::binding_description(binding),
+            VertexFormat::VERTEX_3D_RGBA                 => VERTEX_3D_RGBA::binding_description(binding),
+            VertexFormat::VERTEX_3D_RGBA_TEXTURE         => VERTEX_3D_RGBA_TEXTURE::binding_description(binding),
+            VertexFormat::VERTEX_3D_TEXTURE_ARRAY_NORMAL => VERTEX_3D_TEXTURE_ARRAY::binding_description(binding),
         }
     }
 
     pub fn attribute_description(&self, binding: u32) -> Vec<vk::VertexInputAttributeDescription> {
         match self {
-            VertexFormat::Vertex2D_RGBA         => Vertex_2D_RGBA::attribute_description(binding).to_vec(),
-            VertexFormat::Vertex2D_UV           => Vertex_2D_TEXTURE::attribute_description(binding).to_vec(),
-            VertexFormat::Vertex3D_RGBA         => Vertex_3D_RGBA::attribute_description(binding).to_vec(),
-            VertexFormat::Vertex3D_RGBA_Texture => Vertex_3D_RGBA_TEXTURE::attribute_description(binding).to_vec(),
-            VertexFormat::Vertex3D_TextureArray => Vertex_3D_TEXTURE_ARRAY::attribute_description(binding).to_vec(),
+            VertexFormat::VERTEX_2D_RGBA                 => VERTEX_2D_RGBA::attribute_description(binding).to_vec(),
+            VertexFormat::VERTEX_2D_TEXTURE              => VERTEX_2D_TEXTURE::attribute_description(binding).to_vec(),
+            VertexFormat::VERTEX_3D_RGBA                 => VERTEX_3D_RGBA::attribute_description(binding).to_vec(),
+            VertexFormat::VERTEX_3D_RGBA_TEXTURE         => VERTEX_3D_RGBA_TEXTURE::attribute_description(binding).to_vec(),
+            VertexFormat::VERTEX_3D_TEXTURE_ARRAY_NORMAL => VERTEX_3D_TEXTURE_ARRAY::attribute_description(binding).to_vec(),
         }
     }
 }
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-pub struct Vertex_2D_TEXTURE {
+pub struct VERTEX_2D_TEXTURE {
     pos: Vec2,
     uv:  Vec2,
 }
 
-impl Vertex_2D_TEXTURE {
+impl VERTEX_2D_TEXTURE {
     pub const fn new(pos: Vec2, uv: Vec2) -> Self {
         Self { pos, uv }
     }
@@ -83,12 +83,12 @@ impl Vertex_2D_TEXTURE {
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-pub struct Vertex_2D_RGBA {
+pub struct VERTEX_2D_RGBA {
     pos:   Vec2,
     color: Vec4,
 }
 
-impl Vertex_2D_RGBA {
+impl VERTEX_2D_RGBA {
     pub const fn new(pos: Vec2, color: Vec4) -> Self {
         Self { pos, color }
     }
@@ -123,12 +123,12 @@ impl Vertex_2D_RGBA {
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-pub struct Vertex_3D_RGBA {
+pub struct VERTEX_3D_RGBA {
     pos:   Vec3,
     color: Vec4,
 }
 
-impl Vertex_3D_RGBA {
+impl VERTEX_3D_RGBA {
     pub const fn new(pos: Vec3, color: Vec4) -> Self {
         Self { pos, color }
     }
@@ -163,13 +163,13 @@ impl Vertex_3D_RGBA {
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-pub struct Vertex_3D_RGBA_TEXTURE {
-    pos:       Vec3,
-    color:     Vec4,
-    uv: Vec2,
+pub struct VERTEX_3D_RGBA_TEXTURE {
+    pos:   Vec3,
+    color: Vec4,
+    uv:    Vec2,
 }
 
-impl Vertex_3D_RGBA_TEXTURE {
+impl VERTEX_3D_RGBA_TEXTURE {
     pub const fn new(pos: Vec3, color: Vec4, uv: Vec2) -> Self {
         Self { pos, color, uv }
     }
@@ -211,14 +211,14 @@ impl Vertex_3D_RGBA_TEXTURE {
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-pub struct Vertex_3D_TEXTURE_ARRAY {
+pub struct VERTEX_3D_TEXTURE_ARRAY {
     pos:    Vec3,
     uv:     Vec2,
     layer:  u32,
     normal: Vec3,
 }
 
-impl Vertex_3D_TEXTURE_ARRAY {
+impl VERTEX_3D_TEXTURE_ARRAY {
     pub const fn new(pos: Vec3, uv: Vec2, layer: u32, normal: Vec3) -> Self {
         Self { pos, uv, layer, normal }
     }

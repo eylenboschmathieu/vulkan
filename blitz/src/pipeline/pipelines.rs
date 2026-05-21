@@ -36,7 +36,7 @@ impl Pipelines {
         layouts: &[vk::DescriptorSetLayout],
     ) -> Result<Self> {
         let mesh_static = Pipeline::new(renderpass, extent, format, layouts, &PipelineDef {
-            vertex_format:   VertexFormat::Vertex3D_RGBA_Texture,
+            vertex_format:   VertexFormat::VERTEX_3D_RGBA_TEXTURE,
             vertex_shader:   include_bytes!("../../shaders/mesh_static.vert.spv"),
             fragment_shader: include_bytes!("../../shaders/mesh_static.frag.spv"),
             push_constants:  false,
@@ -45,7 +45,7 @@ impl Pipelines {
         })?;
 
         let mesh_dynamic = Pipeline::new(renderpass, extent, format, layouts, &PipelineDef {
-            vertex_format:   VertexFormat::Vertex3D_RGBA_Texture,
+            vertex_format:   VertexFormat::VERTEX_3D_RGBA_TEXTURE,
             vertex_shader:   include_bytes!("../../shaders/mesh_dynamic.vert.spv"),
             fragment_shader: include_bytes!("../../shaders/mesh_dynamic.frag.spv"),
             push_constants:  true,
@@ -55,7 +55,7 @@ impl Pipelines {
 
         // Color-only dynamic pipeline: camera (set 0) + push constants, no texture.
         let mesh_color = Pipeline::new(renderpass, extent, format, &[layouts[0]], &PipelineDef {
-            vertex_format:   VertexFormat::Vertex3D_RGBA,
+            vertex_format:   VertexFormat::VERTEX_3D_RGBA,
             vertex_shader:   include_bytes!("../../shaders/mesh_color.vert.spv"),
             fragment_shader: include_bytes!("../../shaders/mesh_color.frag.spv"),
             push_constants:  true,
@@ -64,7 +64,7 @@ impl Pipelines {
         })?;
 
         let chunk = Pipeline::new(renderpass, extent, format, layouts, &PipelineDef {
-            vertex_format:   VertexFormat::Vertex3D_TextureArray,
+            vertex_format:   VertexFormat::VERTEX_3D_TEXTURE_ARRAY_NORMAL,
             vertex_shader:   include_bytes!("../../shaders/chunk.vert.spv"),
             fragment_shader: include_bytes!("../../shaders/chunk.frag.spv"),
             push_constants:  false,
@@ -74,7 +74,7 @@ impl Pipelines {
 
         // UI pipeline: vertex color only, no descriptor sets, push constants for ortho matrix.
         let ui = Pipeline::new(renderpass, extent, format, &[], &PipelineDef {
-            vertex_format:   VertexFormat::Vertex2D_RGBA,
+            vertex_format:   VertexFormat::VERTEX_2D_RGBA,
             vertex_shader:   include_bytes!("../../shaders/ui.vert.spv"),
             fragment_shader: include_bytes!("../../shaders/ui.frag.spv"),
             push_constants:  true,

@@ -2,12 +2,13 @@
 
 use std::collections::HashMap;
 use anyhow::Result;
-use blitz::{Blitz, Container, LightingUbo, Mesh, Vertex_3D_RGBA};
+use blitz::{Blitz, Container, LightingUbo, Mesh, VERTEX_3D_RGBA};
 use cgmath::{vec3, vec4, InnerSpace, Matrix4, Point3, Vector3, Vector4};
 use crate::{
     block::{Block, BlockType, Face},
     camera::FpCamera,
     chunk::{Blocks, CHUNK_SIZE, Chunk},
+    input::{Action, InputManager},
 };
 
 #[derive(Debug)]
@@ -25,10 +26,10 @@ impl Sun {
         let gold = vec4(1.0, 0.84, 0.0, 1.0);
         self.mesh = container.alloc_mesh(
             &[
-                Vertex_3D_RGBA::new(vec3(-0.5, -0.5, 0.0), gold),
-                Vertex_3D_RGBA::new(vec3( 0.5, -0.5, 0.0), gold),
-                Vertex_3D_RGBA::new(vec3( 0.5,  0.5, 0.0), gold),
-                Vertex_3D_RGBA::new(vec3(-0.5,  0.5, 0.0), gold),
+                VERTEX_3D_RGBA::new(vec3(-0.5, -0.5, 0.0), gold),
+                VERTEX_3D_RGBA::new(vec3( 0.5, -0.5, 0.0), gold),
+                VERTEX_3D_RGBA::new(vec3( 0.5,  0.5, 0.0), gold),
+                VERTEX_3D_RGBA::new(vec3(-0.5,  0.5, 0.0), gold),
             ],
             &[2u16, 1, 0, 0, 3, 2],
         );
@@ -139,6 +140,21 @@ impl World {
         let day   = [0.22_f32, 0.48, 0.72, 1.0];
         let night = [0.01_f32, 0.01, 0.05, 1.0];
         std::array::from_fn(|i| night[i] + (day[i] - night[i]) * t)
+    }
+
+    pub fn handle_input(&mut self, input: &InputManager, camera: &FpCamera) {
+        if input.is_pressed(Action::PrimaryAction) {
+            if let Some((pos, face)) = self.raycast(camera.eye, camera.forward(), 4.0) {
+                let block = self.block_at(pos.x, pos.y, pos.z).unwrap();
+                self.add_block(pos, face);
+            }
+        }
+
+        if input.is_pressed(Action::SecondaryAction) {
+            if let Some((pos, _face)) = self.raycast(camera.eye, camera.forward(), 4.0) {
+                self.remove_block(pos);
+            }
+        }
     }
 
     pub unsafe fn draw(&self, blitz: &mut Blitz, camera: &FpCamera) -> Result<()> {

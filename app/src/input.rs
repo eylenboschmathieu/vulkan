@@ -7,7 +7,7 @@ use winit::{self,
         ElementState,
         MouseButton
     },
-    keyboard::KeyCode
+    keyboard::KeyCode, window::Window
 };
 
 #[derive(Hash, PartialEq, Eq, Clone, Copy, Debug)]
@@ -20,8 +20,10 @@ pub enum Action {
     Prone,
     Crouch,
     ToggleMouseLock,
-    AddBlock,
-    RemoveBlock,
+    PrimaryAction,
+    SecondaryAction,
+    ToggleMenu,
+    Quit,
 }
 
 #[derive(Hash, PartialEq, Eq, Clone, Copy, Debug)]
@@ -54,6 +56,7 @@ impl InputBindings {
     pub fn default() -> Self {
         let mut s = Self { bindings: HashMap::new(), reverse: HashMap::new() };
 
+        s.bind(Action::ToggleMenu,      Binding { first: Some(Input::Keyboard(KeyCode::Escape)),    second: None });
         s.bind(Action::MoveForward,     Binding { first: Some(Input::Keyboard(KeyCode::ArrowUp)),    second: None });
         s.bind(Action::MoveBackward,    Binding { first: Some(Input::Keyboard(KeyCode::ArrowDown)),  second: None });
         s.bind(Action::MoveLeft,        Binding { first: Some(Input::Keyboard(KeyCode::ArrowLeft)),  second: None });
@@ -61,9 +64,10 @@ impl InputBindings {
         s.bind(Action::Jump,            Binding { first: Some(Input::Keyboard(KeyCode::Numpad1)),    second: None });
         s.bind(Action::Crouch,          Binding { first: Some(Input::Keyboard(KeyCode::Numpad2)),    second: None });
         s.bind(Action::Prone,           Binding { first: Some(Input::Keyboard(KeyCode::Numpad3)),    second: None });
-        s.bind(Action::AddBlock,        Binding { first: Some(Input::Mouse(MouseButton::Left)),      second: None });
-        s.bind(Action::RemoveBlock,     Binding { first: Some(Input::Mouse(MouseButton::Right)),     second: None });
+        s.bind(Action::PrimaryAction,   Binding { first: Some(Input::Mouse(MouseButton::Left)),      second: None });
+        s.bind(Action::SecondaryAction, Binding { first: Some(Input::Mouse(MouseButton::Right)),     second: None });
         s.bind(Action::ToggleMouseLock, Binding { first: Some(Input::Keyboard(KeyCode::KeyC)),       second: Some(Input::Keyboard(KeyCode::KeyL)) });
+        s.bind(Action::Quit,            Binding { first: Some(Input::Keyboard(KeyCode::KeyQ)),       second: None });
 
         s
     }
@@ -145,10 +149,13 @@ impl InputState {
 pub struct InputManager {
     pub bindings: InputBindings,
     pub state:    InputState,
+    cursor: (f32, f32), // Mouse position on screen in range of [0, 0] -> [screen_width, screen_height]
+    window_size: (f32, f32), // inner width and height of the window
 }
 
 impl InputManager {
-    pub fn new() -> Self {
+    pub fn new(window: &Window) -> Self {
+        let area = window.inner_size();  
         Self {
             bindings: InputBindings::default(),
             state: InputState {
@@ -156,13 +163,20 @@ impl InputManager {
                 pressed:  HashSet::new(),
                 released: HashSet::new(),
             },
+            cursor: ( (area.width as f32) / 2.0, (area.height as f32) / 2.0 ),
+            window_size: (area.width as f32, area.height as f32),
         }
     }
 
-    pub fn update<T: Into<Input>>(&mut self, button: T, state: ElementState) {
+    /// Update state for keyboard and mouse button
+    pub fn button_update<T: Into<Input>>(&mut self, button: T, state: ElementState) {
         if let Some(&action) = self.bindings.reverse.get(&button.into()) {
             self.state.update(action, state);
         }
+    }
+
+    pub fn cursor_update(&mut self, x: f32, y: f32) {
+        self.cursor = (x, y);
     }
 
     pub fn is_held(&self, action: Action) -> bool {
@@ -175,5 +189,9 @@ impl InputManager {
 
     pub fn is_released(&self, action: Action) -> bool {
         self.state.released.contains(&action)
+    }
+
+    pub fn cursor(&self) -> (f32, f32) {
+        (self.cursor.0.clamp(0.0, self.window_size.0), self.cursor.1.clamp(0.0, self.window_size.1))
     }
 }

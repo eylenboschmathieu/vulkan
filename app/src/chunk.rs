@@ -1,7 +1,7 @@
 #![allow(dead_code, unsafe_op_in_unsafe_fn, unused_variables, clippy::too_many_arguments, clippy::unnecessary_wraps)]
 
 use cgmath::{vec2, vec3};
-use blitz::{Blitz, Container, Mesh, Vertex_3D_TEXTURE_ARRAY, TextureArrayId};
+use blitz::{Blitz, Container, Mesh, VERTEX_3D_TEXTURE_ARRAY, TextureArrayId};
 
 use crate::block::{Block, BlockType, Face};
 
@@ -106,7 +106,7 @@ impl ChunkMesh {
             self.mesh = None;
         }
 
-        let mut vertices: Vec<Vertex_3D_TEXTURE_ARRAY> = vec![];
+        let mut vertices: Vec<VERTEX_3D_TEXTURE_ARRAY> = vec![];
         let mut indices:  Vec<u16> = vec![];
 
         for (face_idx, desc) in FACE_DESCS.iter().enumerate() {
@@ -222,7 +222,7 @@ impl ChunkMesh {
                             p[desc.normal_axis] = face_d;
                             p[desc.u_axis]      = *cu;
                             p[desc.v_axis]      = *cv;
-                            vertices.push(Vertex_3D_TEXTURE_ARRAY::new(
+                            vertices.push(VERTEX_3D_TEXTURE_ARRAY::new(
                                 vec3(offset.0 as f32 + p[0], offset.1 as f32 + p[1], offset.2 as f32 + p[2]),
                                 vec2(tex_uvs[i].0, tex_uvs[i].1),
                                 layer,

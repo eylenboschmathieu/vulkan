@@ -1,10 +1,7 @@
-use std::collections::HashSet;
-
 use cgmath::{vec3, Deg, InnerSpace, Matrix4, Point3, Vector3};
-use winit::keyboard::KeyCode;
 use blitz::CameraUbo;
+use crate::input::{Action, InputManager};
 
-const MOVE_SPEED: f32 = 6.0;
 const MOUSE_SENSITIVITY: f32 = 0.2; // degrees per pixel
 
 #[derive(Debug)]
@@ -30,30 +27,18 @@ impl FpCamera {
         vec3(-sy, 0.0, cy).normalize()
     }
 
-    pub fn input(&mut self, keys: &HashSet<KeyCode>, dt: f32) {
+    pub fn handle_input(&mut self, input: &InputManager, dt: f32) {
         let fwd   = self.forward();
         let right = self.right();
         let up    = vec3(0.0_f32, 1.0, 0.0);
+        const SPEED: f32 = 6.0;
 
-        if keys.contains(&KeyCode::ArrowUp)    { self.eye += fwd   * MOVE_SPEED * dt; }
-        if keys.contains(&KeyCode::ArrowDown)  { self.eye -= fwd   * MOVE_SPEED * dt; }
-        if keys.contains(&KeyCode::ArrowLeft)  { self.eye -= right * MOVE_SPEED * dt; }
-        if keys.contains(&KeyCode::ArrowRight) { self.eye += right * MOVE_SPEED * dt; }
-        if keys.contains(&KeyCode::Numpad1)    { self.eye += up    * MOVE_SPEED * dt; }
-        if keys.contains(&KeyCode::Numpad2)    { self.eye -= up    * MOVE_SPEED * dt; }
-    }
-
-    pub fn input_v2(&mut self, code: KeyCode, delta: f32) {
-        let fwd   = self.forward();
-        let right = self.right();
-        let up    = vec3(0.0_f32, 1.0, 0.0);
-
-        if code == KeyCode::ArrowUp    { self.eye += fwd   * MOVE_SPEED * delta; }
-        if code == KeyCode::ArrowDown  { self.eye -= fwd   * MOVE_SPEED * delta; }
-        if code == KeyCode::ArrowLeft  { self.eye -= right * MOVE_SPEED * delta; }
-        if code == KeyCode::ArrowRight { self.eye += right * MOVE_SPEED * delta; }
-        if code == KeyCode::Numpad1    { self.eye += up    * MOVE_SPEED * delta; }
-        if code == KeyCode::Numpad2    { self.eye -= up    * MOVE_SPEED * delta; }
+        if input.is_held(Action::MoveForward)  { self.eye += fwd   * SPEED * dt; }
+        if input.is_held(Action::MoveBackward) { self.eye -= fwd   * SPEED * dt; }
+        if input.is_held(Action::MoveLeft)     { self.eye -= right * SPEED * dt; }
+        if input.is_held(Action::MoveRight)    { self.eye += right * SPEED * dt; }
+        if input.is_held(Action::Jump)         { self.eye += up    * SPEED * dt; }
+        if input.is_held(Action::Crouch)       { self.eye -= up    * SPEED * dt; }
     }
 
     pub fn mouse_move(&mut self, dx: f32, dy: f32) {

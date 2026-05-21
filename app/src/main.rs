@@ -63,7 +63,7 @@ fn main() -> Result<()> {
                             elwt.exit();
                             return;
                         }
-                        app.update(&window, dt);
+                        app.update(dt);
                     }
                     tick = now;
                     window.request_redraw();

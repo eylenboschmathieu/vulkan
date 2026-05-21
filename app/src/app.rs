@@ -105,16 +105,20 @@ impl App {
         self.input.button_update(button, state);
     }
 
+    /// Apply raw mouse delta to the camera. Ignored while the menu is open.
     pub fn mouse_motion(&mut self, delta: (f32, f32)) {
         if !self.ui.menu_opened() {
             self.camera.mouse_move(delta.0, delta.1);
         }
     }
 
+    /// Update the absolute cursor position (used for UI hit-testing).
     pub fn cursor_moved(&mut self, x: f32, y: f32) {
         self.input.cursor_update(x, y);
     }
 
+    /// Process one tick of input. Returns `Some(AppEvent::Exit)` when the app should quit.
+    /// Clears per-tick pressed/released state at the end.
     pub fn handle_input(&mut self, window: &Window) -> Option<AppEvent> {
         if self.input.is_pressed(Action::Quit) {
             return Some(AppEvent::Exit);
@@ -138,22 +142,23 @@ impl App {
         None
     }
 
-    pub unsafe fn update(&mut self, window: &Window, delta: f32) {
+    /// Advance simulation by `delta` seconds.
+    pub unsafe fn update(&mut self, delta: f32) {
         if !self.ui.menu_opened() {
             self.camera.handle_input(&self.input, delta);
         }
         self.world.update(delta);
+    }
 
+    /// Push UBOs, upload any dirty GPU data, then record and submit a frame.
+    pub unsafe fn render(&mut self, window: &Window) -> Result<()> {
         let size = window.inner_size();
+        let current_size = (size.width, size.height);
+
         let aspect = size.width as f32 / size.height as f32;
         self.blitz.update_camera(self.camera.ubo(aspect));
         self.blitz.update_lighting(self.world.lighting_ubo());
         self.blitz.set_sky_color(self.world.sky_color());
-    }
-
-    pub unsafe fn render(&mut self, window: &Window) -> Result<()> {
-        let size = window.inner_size();
-        let current_size = (size.width, size.height);
         let needs_upload = self.world.has_dirty_chunks() || self.ui.is_dirty(current_size);
 
         if needs_upload {

@@ -369,6 +369,18 @@ impl SwapchainSupport {
             }).unwrap_or_else(|| self.formats[0])
     }
 
+    /// Select the best available present mode for the requested vsync setting.
+    ///
+    /// **vsync on**: prefers `FIFO_LATEST_READY` (vblank-synced, always shows the latest frame,
+    /// no tearing), falls back to `FIFO` (vblank-synced, queues frames in order, no tearing).
+    ///
+    /// `FIFO` is
+    /// intentionally avoided: on Linux, `FIFO` causes a double-vblank problem where the app
+    /// blocks at `queue_present` *and* the compositor adds its own vblank wait on top,
+    /// resulting in increased latency and stuttering. Prefer any non-blocking mode instead.
+    /// 
+    /// **vsync off**: prefers `MAILBOX` (non-blocking, no tearing), falls back to `IMMEDIATE`
+    /// (non-blocking, but ignores vblank entirely — tearing is possible).
     pub unsafe fn get_present_mode(&self, vsync: bool) -> vk::PresentModeKHR {
         if vsync {
             self.present_modes
@@ -381,7 +393,7 @@ impl SwapchainSupport {
                 .iter()
                 .cloned()
                 .find(|m| *m == vk::PresentModeKHR::MAILBOX)
-                .unwrap_or(vk::PresentModeKHR::FIFO_LATEST_READY)
+                .unwrap_or(vk::PresentModeKHR::IMMEDIATE)
         }
     }
 

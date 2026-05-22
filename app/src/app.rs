@@ -88,11 +88,6 @@ impl App {
     /// Create our Vulkan app.
     pub unsafe fn new(window: &Window) -> Result<Self> {
         let mut blitz = blitz::init(window)?;
-        if blitz.set_fps_limit(Some(120)) {
-            println!("Frame rate was set");
-        } else {
-            println!("Setting frame rate was ignored")
-        }
 
         let input = InputManager::new(window);
 
@@ -148,28 +143,30 @@ impl App {
     }
 
     /// Advance simulation by `delta` seconds.
-    pub unsafe fn update(&mut self, delta: f32) {
+    pub unsafe fn update(&mut self, dt: f32) {
         if !self.ui.menu_opened() {
-            self.camera.handle_input(&self.input, delta);
+            self.camera.handle_input(&self.input, dt);
         }
-        self.world.update(delta);
+        self.world.update(dt);
     }
 
     /// Push UBOs, upload any dirty GPU data, then record and submit a frame.
     pub unsafe fn render(&mut self, window: &Window) -> Result<()> {
         let size = window.inner_size();
-        let current_size = (size.width, size.height);
-
         let aspect = size.width as f32 / size.height as f32;
+
         self.blitz.update_camera(self.camera.ubo(aspect));
         self.blitz.update_lighting(self.world.lighting_ubo());
         self.blitz.set_sky_color(self.world.sky_color());
-        let needs_upload = self.world.has_dirty_chunks() || self.ui.is_dirty(current_size);
 
-        if needs_upload {
+        if self.world.has_dirty_chunks() || self.ui.dirty {
             self.blitz.upload(|container| unsafe {
-                self.world.flush_dirty(container);
-                self.ui.flush(container, current_size);
+                if self.world.has_dirty_chunks() {
+                    self.world.flush_dirty(container);
+                }
+                if self.ui.dirty {
+                    self.ui.flush(container, (size.width as f32, size.height as f32));
+                }
                 Ok(())
             })?;
         }

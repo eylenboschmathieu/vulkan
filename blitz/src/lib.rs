@@ -107,7 +107,8 @@ struct ArrayDrawCall {
     texture_array_id: TextureArrayId,
 }
 
-pub const MAX_UI_QUADS: usize = 1024;
+pub const MAX_UI_QUADS:    usize = 1024;
+pub const MAX_DEBUG_QUADS: usize = 256;
 
 #[derive(Debug)]
 struct UiDrawCall {
@@ -135,6 +136,8 @@ pub struct Blitz {
     array_queue: Vec<ArrayDrawCall>,
     ui_mesh: Mesh,
     ui_queue: Vec<UiDrawCall>,
+    debug_mesh: Mesh,
+    debug_queue: Vec<UiDrawCall>,
     sky_color: [f32; 4],
     vsync: bool,
     vsync_dirty: bool,
@@ -336,6 +339,14 @@ impl Blitz {
         self.ui_mesh.vertices
     }
 
+    pub unsafe fn draw_debug_quads(&mut self, first_quad: usize, quad_count: usize, texture_id: TextureId) {
+        self.debug_queue.push(UiDrawCall { first_quad, quad_count, texture_id });
+    }
+
+    pub fn debug_vertex_id(&self) -> resources::buffers::vertex_buffer::VertexBufferId {
+        self.debug_mesh.vertices
+    }
+
     /// Write camera matrices for the current frame-in-flight slot.
     /// Call this every frame before [`Blitz::start_render`].
     pub unsafe fn update_camera(&mut self, ubo: CameraUbo) {
@@ -450,6 +461,33 @@ impl Blitz {
                 );
             }
             self.ui_queue.clear();
+        }
+
+        if !self.debug_queue.is_empty() {
+            let extent = self.swapchain.extent();
+            let w = extent.width as f32;
+            let h = extent.height as f32;
+            let ortho = cgmath::Matrix4::new(
+                2.0/w,  0.0,   0.0, 0.0,
+                0.0,   2.0/h,  0.0, 0.0,
+                0.0,    0.0,   1.0, 0.0,
+               -1.0,   -1.0,  0.0, 1.0,
+            );
+            p.ui.bind(cb);
+            p.ui.push_constants(cb, &ortho);
+            globals::vertex_buffer().bind(cb, self.debug_mesh.vertices);
+            globals::index_buffer().bind(cb, self.debug_mesh.indices);
+            for draw in &self.debug_queue {
+                let descriptor_set = globals::textures()[draw.texture_id].descriptor_set;
+                p.ui.bind_sets(cb, &[descriptor_set], 0);
+                globals::index_buffer().draw_range(
+                    cb,
+                    self.debug_mesh.indices,
+                    (draw.first_quad * 6) as u32,
+                    (draw.quad_count * 6) as u32,
+                );
+            }
+            self.debug_queue.clear();
         }
     }
 
@@ -568,24 +606,6 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
     let pipelines = pipeline::Pipelines::new(&renderpass, swapchain.extent(), swapchain.format(), layouts)?;
     globals::init_pipelines(pipelines);
 
-    // Pre-allocate a single mesh for all UI quads. Indices are baked once; vertices are updated as needed.
-    let ui_mesh = {
-        let zeroed_verts = vec![resources::vertices::VERTEX_2D_RGBA::new(
-            cgmath::vec2(0.0, 0.0), cgmath::vec2(0.0, 0.0), cgmath::vec4(0.0, 0.0, 0.0, 0.0),
-        ); MAX_UI_QUADS * 4];
-        let indices: Vec<u16> = (0..MAX_UI_QUADS as u16)
-            .flat_map(|q| {
-                let b = q * 4;
-                [b, b+1, b+2, b+2, b+3, b]
-            })
-            .collect();
-        let mut container = Container::new()?;
-        let mesh = container.alloc_mesh(&zeroed_verts, &indices);
-        container.process()?;
-        container.destroy();
-        mesh
-    };
-
     let mut blitz = Blitz {
         _entry: entry,
         camera,
@@ -598,8 +618,10 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
         dynamic_queue: vec![],
         color_queue: vec![],
         array_queue: vec![],
-        ui_mesh,
-        ui_queue: vec![],
+        ui_mesh:     Mesh::default(),
+        ui_queue:    vec![],
+        debug_mesh:  Mesh::default(),
+        debug_queue: vec![],
         sky_color: [0.22, 0.48, 0.72, 1.0],
         vsync: false,
         vsync_dirty: false,
@@ -607,6 +629,28 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
         fps_limit: None,
         frame_start: Instant::now(),
     };
+
+    // Pre-allocate UI and debug quad meshes in one upload. Indices are baked once; vertices are updated each frame.
+    let mut ui_mesh    = Mesh::default();
+    let mut debug_mesh = Mesh::default();
+    let zeroed = resources::vertices::VERTEX_2D_RGBA::new(
+        cgmath::vec2(0.0, 0.0), cgmath::vec2(0.0, 0.0), cgmath::vec4(0.0, 0.0, 0.0, 0.0),
+    );
+    blitz.upload(|container| unsafe {
+        let ui_indices: Vec<u16> = (0..MAX_UI_QUADS as u16)
+            .flat_map(|q| { let b = q * 4; [b, b+1, b+2, b+2, b+3, b] })
+            .collect();
+        ui_mesh = container.alloc_mesh(&vec![zeroed; MAX_UI_QUADS * 4], &ui_indices);
+
+        let debug_indices: Vec<u16> = (0..MAX_DEBUG_QUADS as u16)
+            .flat_map(|q| { let b = q * 4; [b, b+1, b+2, b+2, b+3, b] })
+            .collect();
+        debug_mesh = container.alloc_mesh(&vec![zeroed; MAX_DEBUG_QUADS * 4], &debug_indices);
+
+        Ok(())
+    })?;
+    blitz.ui_mesh    = ui_mesh;
+    blitz.debug_mesh = debug_mesh;
 
     blitz.set_fps_limit(Some(60));
 

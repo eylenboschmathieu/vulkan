@@ -23,6 +23,7 @@ pub enum Action {
     PrimaryAction,
     SecondaryAction,
     ToggleMenu,
+    ToggleDebug,
     Quit,
 }
 
@@ -57,6 +58,7 @@ impl InputBindings {
         let mut s = Self { bindings: HashMap::new(), reverse: HashMap::new() };
 
         s.bind(Action::ToggleMenu,      Binding { first: Some(Input::Keyboard(KeyCode::Escape)),    second: None });
+        s.bind(Action::ToggleDebug,     Binding { first: Some(Input::Keyboard(KeyCode::F1)),        second: None });
         s.bind(Action::MoveForward,     Binding { first: Some(Input::Keyboard(KeyCode::ArrowUp)),    second: None });
         s.bind(Action::MoveBackward,    Binding { first: Some(Input::Keyboard(KeyCode::ArrowDown)),  second: None });
         s.bind(Action::MoveLeft,        Binding { first: Some(Input::Keyboard(KeyCode::ArrowLeft)),  second: None });

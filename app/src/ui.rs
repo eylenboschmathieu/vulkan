@@ -419,7 +419,7 @@ impl Ui {
         blitz.draw_ui_quads(0, self.quad_count, self.font_atlas.texture_id);
     }
 
-    pub fn dirty_nodes(&self) -> bool {
+    pub fn has_dirty_nodes(&self) -> bool {
         !self.dirty_nodes.is_empty()
     }
 

@@ -8,7 +8,7 @@ use log::*;
 use winit::{event::ElementState, window::Window};
 use blitz::*;
 
-use crate::{camera::FpCamera, font::FontManager, input::{Action, Input, InputManager}, ui::{Ui, UiAction}, world::World};
+use crate::{camera::FpCamera, debug::DebugInfo, font::FontManager, input::{Action, Input, InputManager}, ui::{Ui, UiAction}, world::World};
 
 pub enum AppEvent {
     Exit,
@@ -80,6 +80,7 @@ impl StaticObject {
 #[derive(Debug)]
 pub struct App {
     blitz: blitz::Blitz,
+    debug: DebugInfo,
     input: InputManager,
     camera: FpCamera,
     world: World,
@@ -93,6 +94,8 @@ impl App {
         let mut blitz = blitz::init(window)?;
         let fonts = FontManager::new(&mut blitz)?;
 
+        let debug = DebugInfo::new(window, &blitz, Rc::clone(&fonts.debug_atlas));
+
         let input = InputManager::new(window);
 
         let world = World::new(&mut blitz)?;
@@ -101,7 +104,7 @@ impl App {
         let camera = FpCamera::new(point3(0.0, 2.0, 0.0), 0.0, 0.0);
 
         info!("+ App");
-        Ok(Self { blitz, input, camera, world, ui, fonts })
+        Ok(Self { blitz, input, camera, world, ui, fonts, debug })
     }
 
     /// Update the state of keyboard or mouse buttons
@@ -130,6 +133,10 @@ impl App {
 
         if self.input.is_pressed(Action::ToggleMenu) {
             self.ui.toggle_menu(window);
+        }
+
+        if self.input.is_pressed(Action::ToggleDebug) {
+            self.debug.enabled = !self.debug.enabled;
         }
 
         if self.ui.menu_opened() {
@@ -163,28 +170,29 @@ impl App {
         self.blitz.update_lighting(self.world.lighting_ubo());
         self.blitz.set_sky_color(self.world.sky_color());
 
-        if self.world.has_dirty_chunks() || self.ui.dirty || self.ui.dirty_nodes() {
-            self.blitz.upload(|container| unsafe {
-                if self.world.has_dirty_chunks() {
-                    self.world.flush_dirty(container);
-                }
-                if self.ui.dirty {
-                    self.ui.flush_all(container, (size.width as f32, size.height as f32));
-                } else {
-                    if self.ui.dirty_nodes() {
-                        self.ui.flush_dirty(container);
-                    }
-                }
-                Ok(())
-            })?;
-        }
+        self.blitz.upload(|container| unsafe {
+            if self.world.has_dirty_chunks() {
+                self.world.flush_dirty(container);
+            }
+            if self.ui.dirty {
+                self.ui.flush_all(container, (size.width as f32, size.height as f32));
+            } else if self.ui.has_dirty_nodes() {
+                self.ui.flush_dirty(container);
+            }
+            if self.debug.enabled {
+                self.debug.flush(container, &self.camera, size.width as f32);
+            }
+            Ok(())
+        })?;
 
         if self.blitz.start_render(window)? {
             self.world.draw(&mut self.blitz, &self.camera)?;
             self.ui.draw(&mut self.blitz);
+            self.debug.draw(&mut self.blitz);
             self.blitz.end_render(window)?;
         }
 
+        self.debug.on_frame();
         Ok(())
     }
 }

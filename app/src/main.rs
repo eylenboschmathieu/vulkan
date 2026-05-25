@@ -2,6 +2,7 @@
 
 mod app;
 mod font;
+mod debug;
 mod input;
 mod camera;
 mod ui;
@@ -47,8 +48,6 @@ fn main() -> Result<()> {
 
     let mut minimized: bool = false;
     let mut tick = Instant::now();
-    let mut fps_timer = Instant::now();
-    let mut frame_count: u32 = 0;
 
     event_loop.run(move |event, elwt| {
         match event {
@@ -87,14 +86,6 @@ fn main() -> Result<()> {
                 },
                 WindowEvent::RedrawRequested if !elwt.exiting() && !minimized => unsafe {
                     app.render(&window).expect("Failed to render.");
-                    frame_count += 1;
-                    let elapsed = fps_timer.elapsed();
-                    if elapsed.as_secs_f32() >= 1.0 {
-                        let fps = frame_count as f32 / elapsed.as_secs_f32();
-                        window.set_title(&format!("Playground — {fps:.0} fps"));
-                        frame_count = 0;
-                        fps_timer = Instant::now();
-                    }
                 },
                 WindowEvent::Resized(size) => {
                     info!("WindowEvent::Resized");

@@ -9,6 +9,7 @@ type Vec4 = cgmath::Vector4<f32>;
 pub type Pos2 = cgmath::Vector2<f32>;
 pub type Pos3 = cgmath::Vector3<f32>;
 pub type Rgba = cgmath::Vector4<f32>;
+pub type UV   = cgmath::Vector2<f32>;
 
 #[derive(Debug, Clone)]
 pub enum VertexFormat {
@@ -80,17 +81,21 @@ impl VERTEX_2D_TEXTURE {
     }
 }
 
-
+// Primarily used for the UI.
+// To handle text as well ui widgets, we need the uv to be a single white texel.
+// "Technically" we're using a texture, but in reality it's that single texel.
+// The rest are characters in an atlas, not actual textures in the traditional sense.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct VERTEX_2D_RGBA {
     pos:   Vec2,
+    uv:    Vec2,
     color: Vec4,
 }
 
 impl VERTEX_2D_RGBA {
-    pub const fn new(pos: Vec2, color: Vec4) -> Self {
-        Self { pos, color }
+    pub const fn new(pos: Vec2, uv: Vec2, color: Vec4) -> Self {
+        Self { pos, uv, color }
     }
 
     pub fn binding_description(binding: u32) -> vk::VertexInputBindingDescription {
@@ -101,7 +106,7 @@ impl VERTEX_2D_RGBA {
             .build()
     }
 
-    pub fn attribute_description(binding: u32) -> [vk::VertexInputAttributeDescription; 2] {
+    pub fn attribute_description(binding: u32) -> [vk::VertexInputAttributeDescription; 3] {
         let pos = vk::VertexInputAttributeDescription::builder()
             .binding(binding)
             .location(0)
@@ -109,14 +114,21 @@ impl VERTEX_2D_RGBA {
             .offset(0)
             .build();
 
-        let color = vk::VertexInputAttributeDescription::builder()
+        let uv = vk::VertexInputAttributeDescription::builder()
             .binding(binding)
             .location(1)
-            .format(vk::Format::R32G32B32A32_SFLOAT)
+            .format(vk::Format::R32G32_SFLOAT)
             .offset(size_of::<Vec2>() as u32)
             .build();
 
-        [pos, color]
+        let color = vk::VertexInputAttributeDescription::builder()
+            .binding(binding)
+            .location(2)
+            .format(vk::Format::R32G32B32A32_SFLOAT)
+            .offset((size_of::<Vec2>() * 2) as u32)
+            .build();
+
+        [pos, uv, color]
     }
 }
 

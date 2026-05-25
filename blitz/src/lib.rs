@@ -113,6 +113,7 @@ pub const MAX_UI_QUADS: usize = 1024;
 struct UiDrawCall {
     first_quad: usize,
     quad_count: usize,
+    texture_id: resources::image::TextureId,
 }
 
 /// Main renderer handle.
@@ -325,8 +326,8 @@ impl Blitz {
     /// Enqueue a 2D UI draw call for a range of quads in the shared UI mesh.
     /// `first_quad` and `quad_count` index into the buffer updated by `update_ui_vertices`.
     /// Drawn after all 3D geometry with depth testing off and alpha blending on.
-    pub unsafe fn draw_ui_quads(&mut self, first_quad: usize, quad_count: usize) {
-        self.ui_queue.push(UiDrawCall { first_quad, quad_count });
+    pub unsafe fn draw_ui_quads(&mut self, first_quad: usize, quad_count: usize, texture_id: TextureId) {
+        self.ui_queue.push(UiDrawCall { first_quad, quad_count, texture_id });
     }
 
     /// Re-upload vertex data for the shared UI quad buffer.
@@ -439,6 +440,8 @@ impl Blitz {
             globals::vertex_buffer().bind(cb, self.ui_mesh.vertices);
             globals::index_buffer().bind(cb, self.ui_mesh.indices);
             for draw in &self.ui_queue {
+                let descriptor_set = globals::textures()[draw.texture_id].descriptor_set;
+                p.ui.bind_sets(cb, &[descriptor_set], 0);
                 globals::index_buffer().draw_range(
                     cb,
                     self.ui_mesh.indices,
@@ -568,7 +571,7 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
     // Pre-allocate a single mesh for all UI quads. Indices are baked once; vertices are updated as needed.
     let ui_mesh = {
         let zeroed_verts = vec![resources::vertices::VERTEX_2D_RGBA::new(
-            cgmath::vec2(0.0, 0.0), cgmath::vec4(0.0, 0.0, 0.0, 0.0),
+            cgmath::vec2(0.0, 0.0), cgmath::vec2(0.0, 0.0), cgmath::vec4(0.0, 0.0, 0.0, 0.0),
         ); MAX_UI_QUADS * 4];
         let indices: Vec<u16> = (0..MAX_UI_QUADS as u16)
             .flat_map(|q| {

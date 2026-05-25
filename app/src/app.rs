@@ -1,12 +1,14 @@
 #![allow(dead_code, unsafe_op_in_unsafe_fn, unused_variables, clippy::too_many_arguments, clippy::unnecessary_wraps)]
 
+use std::rc::Rc;
+
 use cgmath::{point3, Deg};
 use anyhow::Result;
 use log::*;
 use winit::{event::ElementState, window::Window};
 use blitz::*;
 
-use crate::{camera::FpCamera, input::{Action, Input, InputManager}, ui::{Ui, UiAction}, world::World};
+use crate::{camera::FpCamera, font::FontManager, input::{Action, Input, InputManager}, ui::{Ui, UiAction}, world::World};
 
 pub enum AppEvent {
     Exit,
@@ -82,22 +84,24 @@ pub struct App {
     camera: FpCamera,
     world: World,
     ui: Ui,
+    pub fonts: FontManager,
 }
 
 impl App {
     /// Create our Vulkan app.
     pub unsafe fn new(window: &Window) -> Result<Self> {
         let mut blitz = blitz::init(window)?;
+        let fonts = FontManager::new(&mut blitz)?;
 
         let input = InputManager::new(window);
 
         let world = World::new(&mut blitz)?;
-        let ui = Ui::new(&window, &blitz);
+        let ui = Ui::new(&window, &blitz, Rc::clone(&fonts.ui_atlas));
 
         let camera = FpCamera::new(point3(0.0, 2.0, 0.0), 0.0, 0.0);
 
         info!("+ App");
-        Ok(Self { blitz, input, camera, world, ui })
+        Ok(Self { blitz, input, camera, world, ui, fonts })
     }
 
     /// Update the state of keyboard or mouse buttons
@@ -159,13 +163,17 @@ impl App {
         self.blitz.update_lighting(self.world.lighting_ubo());
         self.blitz.set_sky_color(self.world.sky_color());
 
-        if self.world.has_dirty_chunks() || self.ui.dirty {
+        if self.world.has_dirty_chunks() || self.ui.dirty || self.ui.dirty_nodes() {
             self.blitz.upload(|container| unsafe {
                 if self.world.has_dirty_chunks() {
                     self.world.flush_dirty(container);
                 }
                 if self.ui.dirty {
-                    self.ui.flush(container, (size.width as f32, size.height as f32));
+                    self.ui.flush_all(container, (size.width as f32, size.height as f32));
+                } else {
+                    if self.ui.dirty_nodes() {
+                        self.ui.flush_dirty(container);
+                    }
                 }
                 Ok(())
             })?;

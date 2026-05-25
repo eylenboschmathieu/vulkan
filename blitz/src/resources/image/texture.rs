@@ -53,11 +53,50 @@ impl Texture {
         Ok(Self { image, view, sampler, descriptor_set })
     }
 
+    /// Create a single-channel (`R8_UNORM`) texture for use as a font atlas.
+    /// Uses a sampler without anisotropy, since it is not meaningful for a 2D grayscale atlas.
+    pub unsafe fn new_font(layout: vk::DescriptorSetLayout, width: u32, height: u32) -> Result<Self> {
+        let image = Image::new(
+            width,
+            height,
+            vk::Format::R8_UNORM,
+            vk::ImageTiling::OPTIMAL,
+            vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST,
+            vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        )?;
+
+        let view = Image::build_view(image.handle(), vk::Format::R8_UNORM, vk::ImageAspectFlags::COLOR)?;
+        let sampler = Texture::build_font_sampler()?;
+        let descriptor_set = globals::descriptor_pool_mut().alloc(layout, 1)?[0];
+
+        Ok(Self { image, view, sampler, descriptor_set })
+    }
+
     pub unsafe fn destroy(&self) {
         globals::device().logical().destroy_sampler(self.sampler, None);
         globals::device().logical().destroy_image_view(self.view, None);
         self.image.destroy();
         info!("~ Texture")
+    }
+
+    unsafe fn build_font_sampler() -> Result<vk::Sampler> {
+        let create_info = vk::SamplerCreateInfo::builder()
+            .mag_filter(vk::Filter::LINEAR)
+            .min_filter(vk::Filter::LINEAR)
+            .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+            .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+            .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+            .anisotropy_enable(false)
+            .border_color(vk::BorderColor::FLOAT_TRANSPARENT_BLACK)
+            .unnormalized_coordinates(false)
+            .compare_enable(false)
+            .compare_op(vk::CompareOp::ALWAYS)
+            .mipmap_mode(vk::SamplerMipmapMode::NEAREST)
+            .mip_lod_bias(0.0)
+            .min_lod(0.0)
+            .max_lod(0.0);
+
+        Ok(globals::device().logical().create_sampler(&create_info, None)?)
     }
 
     unsafe fn build_sampler() -> Result<vk::Sampler> {
@@ -177,6 +216,16 @@ impl Textures {
 
     pub unsafe fn new_texture(&mut self, data: &TextureData) -> Result<usize> {
         let texture = Texture::new(self.descriptor_set_layout, data.width, data.height)?;
+        if let Some(id) = self.free_ids.pop() {
+            self.textures[id] = texture;
+            return Ok(id);
+        }
+        self.textures.push(texture);
+        Ok(self.textures.len() - 1)
+    }
+
+    pub unsafe fn new_font_atlas(&mut self, width: u32, height: u32) -> Result<TextureId> {
+        let texture = Texture::new_font(self.descriptor_set_layout, width, height)?;
         if let Some(id) = self.free_ids.pop() {
             self.textures[id] = texture;
             return Ok(id);

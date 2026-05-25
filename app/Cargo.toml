@@ -13,4 +13,5 @@ thiserror = "1"
 tobj = { version = "3", features = ["log"] }
 vulkanalia = { version = "=0.35.0", features = ["libloading", "provisional", "window"] }
 winit = "0.29"
+fontdue = "0.9.3"
 blitz = { version = "0.1.0", path = "../blitz" }

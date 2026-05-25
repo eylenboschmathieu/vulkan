@@ -29,18 +29,20 @@ pub(crate) struct TextureData {
 /// end of the closure.  Meshes go through the transfer queue only; textures go
 /// transfer → graphics with an explicit queue-family ownership transfer.
 pub struct Container {
-    meshes:          Vec<(Mesh, Vec<u8>, Vec<u16>)>,
-    vertex_updates:  Vec<(VertexBufferId, Vec<u8>)>,
-    textures:        Vec<(TextureId, TextureData)>,
-    texture_arrays:  Vec<(TextureArrayId, Vec<TextureData>)>,
-    semaphore:       vk::Semaphore,
+    meshes:                  Vec<(Mesh, Vec<u8>, Vec<u16>)>,
+    vertex_updates:          Vec<(VertexBufferId, Vec<u8>)>,
+    vertex_partial_updates:  Vec<(VertexBufferId, usize, Vec<u8>)>,  // (id, byte_offset, data)
+    textures:                Vec<(TextureId, TextureData)>,
+    texture_arrays:          Vec<(TextureArrayId, Vec<TextureData>)>,
+    font_atlases:            Vec<(TextureId, TextureData)>,
+    semaphore:               vk::Semaphore,
 }
 
 impl Container {
     pub(crate) unsafe fn new() -> Result<Self> {
         let semaphore_info = vk::SemaphoreCreateInfo::builder();
         let semaphore = globals::device().logical().create_semaphore(&semaphore_info, None)?;
-        Ok(Self { meshes: vec![], vertex_updates: vec![], textures: vec![], texture_arrays: vec![], semaphore })
+        Ok(Self { meshes: vec![], vertex_updates: vec![], vertex_partial_updates: vec![], textures: vec![], texture_arrays: vec![], font_atlases: vec![], semaphore })
     }
 
     /// Eagerly allocates GPU buffer slots and returns the live Mesh immediately.
@@ -57,6 +59,15 @@ impl Container {
         let raw = std::slice::from_raw_parts(vertices.as_ptr() as *const u8, byte_len).to_vec();
         self.meshes.push((mesh, raw, indices.to_vec()));
         mesh
+    }
+
+    /// Stage a partial update to an existing vertex buffer at a specific vertex offset.
+    /// All staged regions are uploaded in a single batched transfer when [`Container::process`] runs.
+    pub unsafe fn stage_vertex_update_at<V>(&mut self, id: VertexBufferId, vertex_offset: usize, vertices: &[V]) {
+        let byte_offset = vertex_offset * size_of::<V>();
+        let byte_len = vertices.len() * size_of::<V>();
+        let raw = std::slice::from_raw_parts(vertices.as_ptr() as *const u8, byte_len).to_vec();
+        self.vertex_partial_updates.push((id, byte_offset, raw));
     }
 
     /// Stage new vertex data into an existing vertex buffer allocation.
@@ -106,6 +117,13 @@ impl Container {
         Ok(id)
     }
 
+    /// Create a font atlas texture from a raw `R8_UNORM` pixel buffer.
+    pub unsafe fn alloc_font_atlas(&mut self, pixels: Vec<u8>, width: u32, height: u32) -> Result<TextureId> {
+        let id = globals::textures_mut().new_font_atlas(width, height)?;
+        self.font_atlases.push((id, TextureData { pixels, width, height }));
+        Ok(id)
+    }
+
     /// Build a `sampler2DArray` from a slice of PNG paths.
     ///
     /// All images must have the same dimensions; returns an error otherwise.
@@ -152,40 +170,40 @@ impl Container {
     }
 
     pub(crate) unsafe fn process(&mut self) -> Result<()> {
-        if !self.meshes.is_empty() || !self.vertex_updates.is_empty() {
+        if !self.meshes.is_empty() || !self.vertex_updates.is_empty() || !self.vertex_partial_updates.is_empty() {
             let command_buffer = globals::commands().begin_one_time_submit(vk::QueueFlags::TRANSFER)?;
-            let mesh_s_id    = if !self.meshes.is_empty()          { Some(self.upload_meshes(&command_buffer)?) }         else { None };
-            let update_s_id  = if !self.vertex_updates.is_empty()  { Some(self.apply_vertex_updates(&command_buffer)?) }  else { None };
+            let mesh_s_id    = if !self.meshes.is_empty()                   { Some(self.upload_meshes(&command_buffer)?) }                else { None };
+            let update_s_id  = if !self.vertex_updates.is_empty()           { Some(self.apply_vertex_updates(&command_buffer)?) }         else { None };
+            let partial_s_id = if !self.vertex_partial_updates.is_empty()   { Some(self.apply_vertex_partial_updates(&command_buffer)?) } else { None };
             command_buffer.end_one_time_submit(globals::queues().transfer(), None)?;
-            if let Some(s_id) = mesh_s_id   { globals::staging_buffer_mut().free(s_id); }
-            if let Some(s_id) = update_s_id { globals::staging_buffer_mut().free(s_id); }
+            if let Some(s_id) = mesh_s_id    { globals::staging_buffer_mut().free(s_id); }
+            if let Some(s_id) = update_s_id  { globals::staging_buffer_mut().free(s_id); }
+            if let Some(s_id) = partial_s_id { globals::staging_buffer_mut().free(s_id); }
         }
 
-        let has_images = !self.textures.is_empty() || !self.texture_arrays.is_empty();
+        let has_images = !self.textures.is_empty() || !self.texture_arrays.is_empty() || !self.font_atlases.is_empty();
         if has_images {
             let command_buffer = globals::commands().begin_one_time_submit(vk::QueueFlags::TRANSFER)?;
 
-            let tex_s_id = if !self.textures.is_empty() {
-                Some(self.upload_textures(&command_buffer)?)
-            } else { None };
-
-            let arr_s_id = if !self.texture_arrays.is_empty() {
-                Some(self.upload_texture_arrays(&command_buffer)?)
-            } else { None };
+            let tex_s_id   = if !self.textures.is_empty()     { Some(self.upload_textures(&command_buffer)?)     } else { None };
+            let arr_s_id   = if !self.texture_arrays.is_empty()  { Some(self.upload_texture_arrays(&command_buffer)?) } else { None };
+            let font_s_id  = if !self.font_atlases.is_empty()  { Some(self.upload_font_atlases(&command_buffer)?) } else { None };
 
             command_buffer.end_one_time_submit(globals::queues().transfer(), Some(self.semaphore))?;
 
-            let images: Vec<Image> = self.textures.iter()
-                .map(|(id, _)| globals::textures()[*id].image.clone())
-                .chain(self.texture_arrays.iter().map(|(id, _)| globals::textures().texture_array(*id).image.clone()))
+            let images: Vec<(Image, vk::Format)> = self.textures.iter()
+                .map(|(id, _)| (globals::textures()[*id].image.clone(), vk::Format::R8G8B8A8_SRGB))
+                .chain(self.texture_arrays.iter().map(|(id, _)| (globals::textures().texture_array(*id).image.clone(), vk::Format::R8G8B8A8_SRGB)))
+                .chain(self.font_atlases.iter().map(|(id, _)| (globals::textures()[*id].image.clone(), vk::Format::R8_UNORM)))
                 .collect();
 
             let command_buffer = globals::commands().begin_one_time_submit(vk::QueueFlags::GRAPHICS)?;
             self.ownership_transfer(&command_buffer, &images)?;
             command_buffer.end_one_time_submit(globals::queues().graphics(), Some(self.semaphore))?;
 
-            if let Some(s_id) = tex_s_id { globals::staging_buffer_mut().free(s_id); }
-            if let Some(s_id) = arr_s_id { globals::staging_buffer_mut().free(s_id); }
+            if let Some(s_id) = tex_s_id  { globals::staging_buffer_mut().free(s_id); }
+            if let Some(s_id) = arr_s_id  { globals::staging_buffer_mut().free(s_id); }
+            if let Some(s_id) = font_s_id { globals::staging_buffer_mut().free(s_id); }
 
             if !self.textures.is_empty() {
                 let update_info: Vec<DescriptorSetUpdateInfo> = self.textures.iter()
@@ -202,6 +220,11 @@ impl Container {
             for (id, _) in &self.texture_arrays {
                 let arr = globals::textures().texture_array(*id);
                 globals::descriptor_pool().update_image_sampler(arr.descriptor_set, 0, arr.view, arr.sampler);
+            }
+
+            for (id, _) in &self.font_atlases {
+                let tex = &globals::textures()[*id];
+                globals::descriptor_pool().update_image_sampler(tex.descriptor_set, 0, tex.view, tex.sampler);
             }
         }
 
@@ -275,12 +298,12 @@ impl Container {
 
     /// Transfer ownership of `images` from the transfer queue to the graphics queue,
     /// transitioning them to `SHADER_READ_ONLY_OPTIMAL` in the process.
-    unsafe fn ownership_transfer(&self, command_buffer: &CommandBuffer, images: &[Image]) -> Result<()> {
+    unsafe fn ownership_transfer(&self, command_buffer: &CommandBuffer, images: &[(Image, vk::Format)]) -> Result<()> {
         let queue_family_indices = globals::device().queue_family_indices();
-        for image in images {
+        for (image, format) in images {
             image.transition_image_layout(
                 command_buffer,
-                vk::Format::R8G8B8A8_SRGB,
+                *format,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 Some(ImageMemoryBarrierQueueFamilyIndices {
@@ -334,6 +357,59 @@ impl Container {
         Ok(s_id)
     }
 
+
+    unsafe fn upload_font_atlases(&self, command_buffer: &CommandBuffer) -> Result<usize> {
+        let queue_family_indices = globals::device().queue_family_indices();
+
+        let size: usize = self.font_atlases.iter().map(|(_, t)| t.pixels.len()).sum();
+        let s_id = globals::staging_buffer_mut().alloc(size)?;
+
+        let mut offset = 0;
+        for (id, tex_data) in &self.font_atlases {
+            globals::staging_buffer_mut().copy_to_staging_at(s_id, tex_data.pixels.as_ref(), offset)?;
+            let image = globals::textures()[*id].image.clone();
+
+            image.transition_image_layout(
+                command_buffer,
+                vk::Format::R8_UNORM,
+                vk::ImageLayout::UNDEFINED,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                None,
+            )?;
+            globals::staging_buffer_mut().copy_to_image_at(command_buffer, s_id, &image, offset as u64)?;
+            image.transition_image_layout(
+                command_buffer,
+                vk::Format::R8_UNORM,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                Some(ImageMemoryBarrierQueueFamilyIndices {
+                    src_queue_family_index: queue_family_indices.transfer(),
+                    dst_queue_family_index: queue_family_indices.graphics(),
+                }),
+            )?;
+            offset += tex_data.pixels.len();
+        }
+
+        Ok(s_id)
+    }
+
+    unsafe fn apply_vertex_partial_updates(&self, command_buffer: &CommandBuffer) -> Result<usize> {
+        let sb = globals::staging_buffer_mut();
+        let vb = globals::vertex_buffer_mut();
+
+        let size: usize = self.vertex_partial_updates.iter().map(|(_, _, b)| b.len()).sum();
+        let s_id = sb.alloc(size)?;
+
+        let mut staging_offset = 0;
+        for (id, byte_offset, bytes) in &self.vertex_partial_updates {
+            sb.copy_to_staging_at(s_id, bytes.as_slice(), staging_offset)?;
+            let dst_offset = vb.alloc_info(*id).offset as u64 + *byte_offset as u64;
+            sb.copy_to_buffer_sized(command_buffer, vb, dst_offset, staging_offset as u64, bytes.len() as u64)?;
+            staging_offset += bytes.len();
+        }
+
+        Ok(s_id)
+    }
 
     unsafe fn apply_vertex_updates(&self, command_buffer: &CommandBuffer) -> Result<usize> {
         let sb = globals::staging_buffer_mut();

@@ -72,8 +72,8 @@ impl Pipelines {
             alpha_blend:     false,
         })?;
 
-        // UI pipeline: vertex color only, no descriptor sets, push constants for ortho matrix.
-        let ui = Pipeline::new(renderpass, extent, format, &[], &PipelineDef {
+        // UI pipeline: font atlas sampler at set 0, push constants for ortho matrix.
+        let ui = Pipeline::new(renderpass, extent, format, &[layouts[1]], &PipelineDef {
             vertex_format:   VertexFormat::VERTEX_2D_RGBA,
             vertex_shader:   include_bytes!("../../shaders/ui.vert.spv"),
             fragment_shader: include_bytes!("../../shaders/ui.frag.spv"),

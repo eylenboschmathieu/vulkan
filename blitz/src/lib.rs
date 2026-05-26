@@ -141,6 +141,7 @@ pub struct Blitz {
     sky_color: [f32; 4],
     vsync: bool,
     vsync_dirty: bool,
+    resize_dirty: bool,
     window_refresh_rate: u32,  // Physical refresh rate of the monitor
     fps_limit: Option<Duration>,
     frame_start: Instant,
@@ -174,27 +175,12 @@ impl Blitz {
         self.sky_color = color;
     }
 
-    pub unsafe fn start_recording(&mut self) -> Result<()> {
-        let command_buffer = &globals::commands().graphics()[self.sync.frame];
-        self.sync.command_buffer = *command_buffer;
-
-        command_buffer.begin_recording(
-            self.swapchain.extent(),
-            &self.renderpass,
-            self.swapchain[self.sync.image].framebuffer(),
-            self.sky_color,
-        )?;
-        Ok(())
+    /// Signal that the window was resized. The swapchain will be rebuilt at the
+    /// start of the next frame and `start_render` will return `Ok(false)`.
+    pub fn request_resize(&mut self) {
+        self.resize_dirty = true;
     }
 
-    pub unsafe fn end_recording(&mut self) -> Result<()> {
-        self.flush_draw();
-        self.sync.command_buffer.end_recording(&self.renderpass)
-    }
-
-    /// Begin a frame.  Returns `Ok(false)` when the swapchain was out-of-date
-    /// and had to be rebuilt; the caller should skip draw calls for that frame.
-    /// Returns `Ok(true)` when the frame is ready to receive draw calls.
     pub fn set_vsync(&mut self, vsync: bool) {
         if self.vsync != vsync {
             self.vsync = vsync;
@@ -224,6 +210,9 @@ impl Blitz {
         }
     }
 
+    /// Begin a frame.  Returns `Ok(false)` when the swapchain was out-of-date
+    /// and had to be rebuilt; the caller should skip draw calls for that frame.
+    /// Returns `Ok(true)` when the frame is ready to receive draw calls.
     pub unsafe fn start_render(&mut self, window: &Window) -> Result<bool> {
         if let Some(limit) = self.fps_limit {
             let elapsed = self.frame_start.elapsed();
@@ -233,8 +222,9 @@ impl Blitz {
         }
         self.frame_start = Instant::now();
 
-        if self.vsync_dirty {
+        if self.vsync_dirty || self.resize_dirty {
             self.vsync_dirty = false;
+            self.resize_dirty = false;
             self.rebuild_swapchain(window)?;
             return Ok(false);
         }
@@ -266,6 +256,24 @@ impl Blitz {
         self.start_recording()?;
 
         Ok(true)
+    }
+
+    pub unsafe fn start_recording(&mut self) -> Result<()> {
+        let command_buffer = &globals::commands().graphics()[self.sync.frame];
+        self.sync.command_buffer = *command_buffer;
+
+        command_buffer.begin_recording(
+            self.swapchain.extent(),
+            &self.renderpass,
+            self.swapchain[self.sync.image].framebuffer(),
+            self.sky_color,
+        )?;
+        Ok(())
+    }
+
+    pub unsafe fn end_recording(&mut self) -> Result<()> {
+        self.flush_draw();
+        self.sync.command_buffer.end_recording(&self.renderpass)
     }
 
     pub unsafe fn end_render(&mut self, window: &Window) -> Result<()> {
@@ -339,10 +347,15 @@ impl Blitz {
         self.ui_mesh.vertices
     }
 
+    /// Enqueue a debug overlay draw call for a range of quads in the shared debug mesh.
+    /// Uses the same UI pipeline (no depth test, alpha blending on), drawn on top of UI.
+    /// `first_quad` and `quad_count` index into the buffer updated via [`Blitz::debug_vertex_id`].
     pub unsafe fn draw_debug_quads(&mut self, first_quad: usize, quad_count: usize, texture_id: TextureId) {
         self.debug_queue.push(UiDrawCall { first_quad, quad_count, texture_id });
     }
 
+    /// Returns the vertex buffer ID for the pre-allocated debug quad mesh.
+    /// Call via `blitz.upload(|c| { c.stage_vertex_update(blitz.debug_vertex_id(), &verts); Ok(()) })`.
     pub fn debug_vertex_id(&self) -> resources::buffers::vertex_buffer::VertexBufferId {
         self.debug_mesh.vertices
     }
@@ -625,6 +638,7 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
         sky_color: [0.22, 0.48, 0.72, 1.0],
         vsync: false,
         vsync_dirty: false,
+        resize_dirty: false,
         window_refresh_rate,
         fps_limit: None,
         frame_start: Instant::now(),

@@ -93,6 +93,7 @@ fn main() -> Result<()> {
                         minimized = true;
                     } else {
                         minimized = false;
+                        app.request_resize();
                     }
                 },
                 WindowEvent::CloseRequested => {

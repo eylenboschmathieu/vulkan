@@ -2,7 +2,7 @@
 
 use std::rc::Rc;
 
-use cgmath::{point3, Deg};
+use cgmath::point3;
 use anyhow::Result;
 use log::*;
 use winit::{event::ElementState, window::Window};
@@ -14,67 +14,6 @@ pub enum AppEvent {
     Exit,
 }
 
-#[derive(Debug)]
-struct DynamicObject {
-    mesh: Mesh,
-    texture_id: TextureId,
-    angle: f32,
-    pub speed: f32,
-}
-
-impl DynamicObject {
-    pub fn new() -> Self {
-        Self { mesh: Mesh::default(), texture_id: 0, angle: 0.0, speed: 0.0 }
-    }
-
-    pub unsafe fn alloc(&mut self, container: &mut Container, vertices: &[VERTEX_3D_RGBA_TEXTURE], indices: &[u16]) {
-        self.mesh = container.alloc_mesh(vertices, indices);
-    }
-
-    pub unsafe fn free(&self, container: &Container) {
-        container.free_mesh(self.mesh);
-    }
-
-    pub fn update(&mut self, dt: f32) -> cgmath::Matrix4<f32> {
-        self.angle += dt * self.speed;
-        if self.angle > 360.0 {
-            self.angle -= 360.0;
-        }
-        cgmath::Matrix4::from_angle_z(Deg(self.angle))
-    }
-
-    pub unsafe fn draw_static(&self, blitz: &mut Blitz) {
-        blitz.draw_static(self.mesh, self.texture_id);
-    }
-
-    pub unsafe fn draw_dynamic(&self, blitz: &mut Blitz, transform: cgmath::Matrix4<f32>) {
-        blitz.draw_dynamic(self.mesh, self.texture_id, transform);
-    }
-}
-
-#[derive(Debug)]
-struct StaticObject {
-    mesh: Mesh,
-    texture_id: TextureId,
-}
-
-impl StaticObject {
-    pub fn new() -> Self {
-        Self { mesh: Mesh::default(), texture_id: 0 }
-    }
-
-    pub unsafe fn alloc(&mut self, container: &mut Container, vertices: &[VERTEX_3D_RGBA_TEXTURE], indices: &[u16]) {
-        self.mesh = container.alloc_mesh(vertices, indices);
-    }
-
-    pub unsafe fn free(&self, container: &Container) {
-        container.free_mesh(self.mesh);
-    }
-
-    pub unsafe fn draw_static(&self, blitz: &mut Blitz) {
-        blitz.draw_static(self.mesh, self.texture_id);
-    }
-}
 
 // Our Vulkan app.
 #[derive(Debug)]
@@ -105,6 +44,11 @@ impl App {
 
         info!("+ App");
         Ok(Self { blitz, input, camera, world, ui, fonts, debug })
+    }
+
+    /// Signal that the window was resized so the swapchain is rebuilt next frame.
+    pub fn request_resize(&mut self) {
+        self.blitz.request_resize();
     }
 
     /// Update the state of keyboard or mouse buttons
@@ -190,6 +134,10 @@ impl App {
             self.ui.draw(&mut self.blitz);
             self.debug.draw(&mut self.blitz);
             self.blitz.end_render(window)?;
+        } else {
+            let window_area = window.inner_size();
+            self.ui.generate_tree(window_area.width as f32, window_area.height as f32);
+            self.ui.dirty = true;
         }
 
         self.debug.on_frame();

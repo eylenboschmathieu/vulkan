@@ -423,7 +423,16 @@ impl Ui {
         !self.dirty_nodes.is_empty()
     }
 
-    fn generate_tree(&mut self, screen_width: f32, screen_height: f32) {
+    pub fn generate_tree(&mut self, screen_width: f32, screen_height: f32) {
+        self.tree = UiTree {
+            root: 0,
+            nodes: vec![UiNode::Container(ContainerNode::new(
+                Rect { x: 0.0, y: 0.0, width: screen_width, height: screen_height },
+            ))],
+        };
+        self.hovered_node = None;
+        self.dirty_nodes.clear();
+
         let white              = self.font_atlas.white_uv;
         let button_color       = Rgba::new(0.5, 0.5, 0.5, 0.4);
         let button_hover_color = Rgba::new(0.65, 0.65, 0.65, 0.5);
@@ -505,6 +514,12 @@ impl Ui {
             slot.uv_min  = white;
             slot.uv_max  = white;
             self.tree.add_child(UiNode::Button(slot), hotbar_idx);
+        }
+
+        // Reapply menu visibility in case the tree was rebuilt mid-session
+        if self.state != MenuState::None {
+            self.tree.nodes[menu_idx].base_mut().visible = true;
+            self.tree.nodes[hotbar_idx].base_mut().visible = false;
         }
     }
 

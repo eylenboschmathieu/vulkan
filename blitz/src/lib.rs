@@ -68,8 +68,6 @@ pub use crate::{
     },
 };
 
-pub type MaterialId = usize;
-
 use crate::{
     camera::Camera,
     device::Device,
@@ -82,39 +80,104 @@ use crate::{
 
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
 
-#[derive(Debug)]
-struct StaticDrawCall {
-    mesh: Mesh,
-    texture_id: TextureId,
-}
-
-#[derive(Debug)]
-struct DynamicDrawCall {
-    mesh: Mesh,
-    texture_id: TextureId,
-    transform: cgmath::Matrix4<f32>,
-}
-
-#[derive(Debug)]
-struct ColorDrawCall {
-    mesh: Mesh,
-    transform: cgmath::Matrix4<f32>,
-}
-
-#[derive(Debug)]
-struct ArrayDrawCall {
-    mesh: Mesh,
-    texture_array_id: TextureArrayId,
-}
-
 pub const MAX_UI_QUADS:    usize = 1024;
 pub const MAX_DEBUG_QUADS: usize = 256;
 
-#[derive(Debug)]
-struct UiDrawCall {
-    first_quad: usize,
-    quad_count: usize,
-    texture_id: resources::image::TextureId,
+// ── Render layers ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Default)]
+struct ColorLayer {
+    queue: Vec<(Mesh, cgmath::Matrix4<f32>)>,
+}
+
+impl ColorLayer {
+    fn enqueue(&mut self, mesh: Mesh, transform: cgmath::Matrix4<f32>) {
+        self.queue.push((mesh, transform));
+    }
+
+    unsafe fn flush(&mut self, cb: &commands::CommandBuffer, camera_set: vk::DescriptorSet) {
+        if self.queue.is_empty() { return; }
+        let p = globals::pipelines_mut();
+        p.mesh_color.bind(cb);
+        p.mesh_color.bind_sets(cb, &[camera_set], 0);
+        for (mesh, transform) in &self.queue {
+            p.mesh_color.push_constants(cb, transform);
+            globals::vertex_buffer().bind(cb, mesh.vertices);
+            globals::index_buffer().bind(cb, mesh.indices);
+            globals::index_buffer().draw(cb, mesh.indices, 0);
+        }
+        self.queue.clear();
+    }
+}
+
+#[derive(Debug, Default)]
+struct ArrayLayer {
+    queue: Vec<(Mesh, TextureArrayId)>,
+}
+
+impl ArrayLayer {
+    fn enqueue(&mut self, mesh: Mesh, texture_array_id: TextureArrayId) {
+        self.queue.push((mesh, texture_array_id));
+    }
+
+    unsafe fn flush(&mut self, cb: &commands::CommandBuffer, camera_set: vk::DescriptorSet, lighting_set: vk::DescriptorSet) {
+        if self.queue.is_empty() { return; }
+        let p = globals::pipelines_mut();
+        p.chunk.bind(cb);
+        p.chunk.bind_sets(cb, &[camera_set], 0);
+        p.chunk.bind_sets(cb, &[lighting_set], 2);
+        self.queue.sort_by_key(|(_, id)| *id);
+        let mut current_array = None;
+        for (mesh, texture_array_id) in &self.queue {
+            if current_array != Some(*texture_array_id) {
+                let descriptor_set = globals::textures().texture_array(*texture_array_id).descriptor_set;
+                p.chunk.bind_sets(cb, &[descriptor_set], 1);
+                current_array = Some(*texture_array_id);
+            }
+            globals::vertex_buffer().bind(cb, mesh.vertices);
+            globals::index_buffer().bind(cb, mesh.indices);
+            globals::index_buffer().draw(cb, mesh.indices, 0);
+        }
+        self.queue.clear();
+    }
+}
+
+/// A 2D quad layer using the UI pipeline. Shared by the UI and debug overlays.
+#[derive(Debug, Default)]
+struct QuadLayer {
+    mesh:  Mesh,
+    queue: Vec<(usize, usize, TextureId)>,  // (first_quad, quad_count, texture_id)
+}
+
+impl QuadLayer {
+    fn vertex_id(&self) -> VertexBufferId { self.mesh.vertices }
+
+    fn enqueue(&mut self, first_quad: usize, quad_count: usize, texture_id: TextureId) {
+        self.queue.push((first_quad, quad_count, texture_id));
+    }
+
+    unsafe fn flush(&mut self, cb: &commands::CommandBuffer, extent: vk::Extent2D) {
+        if self.queue.is_empty() { return; }
+        let w = extent.width as f32;
+        let h = extent.height as f32;
+        let ortho = cgmath::Matrix4::new(
+            2.0/w,  0.0,    0.0, 0.0,
+            0.0,    2.0/h,  0.0, 0.0,
+            0.0,    0.0,    1.0, 0.0,
+           -1.0,   -1.0,   0.0, 1.0,
+        );
+        let p = globals::pipelines_mut();
+        p.ui.bind(cb);
+        p.ui.push_constants(cb, &ortho);
+        globals::vertex_buffer().bind(cb, self.mesh.vertices);
+        globals::index_buffer().bind(cb, self.mesh.indices);
+        for &(first_quad, quad_count, texture_id) in &self.queue {
+            let descriptor_set = globals::textures()[texture_id].descriptor_set;
+            p.ui.bind_sets(cb, &[descriptor_set], 0);
+            globals::index_buffer().draw_range(cb, self.mesh.indices, (first_quad * 6) as u32, (quad_count * 6) as u32);
+        }
+        self.queue.clear();
+    }
 }
 
 /// Main renderer handle.
@@ -130,14 +193,10 @@ pub struct Blitz {
     sync: Synchronization,
     depth_buffer: DepthBuffer,
     renderpass: Renderpass,
-    static_queue: Vec<StaticDrawCall>,
-    dynamic_queue: Vec<DynamicDrawCall>,
-    color_queue: Vec<ColorDrawCall>,
-    array_queue: Vec<ArrayDrawCall>,
-    ui_mesh: Mesh,
-    ui_queue: Vec<UiDrawCall>,
-    debug_mesh: Mesh,
-    debug_queue: Vec<UiDrawCall>,
+    color_layer: ColorLayer,
+    array_layer: ArrayLayer,
+    ui:          QuadLayer,
+    debug:       QuadLayer,
     sky_color: [f32; 4],
     vsync: bool,
     vsync_dirty: bool,
@@ -169,6 +228,11 @@ impl Blitz {
         container.destroy();
         Ok(())
     }
+
+    /// Get the swapchain presentation mode
+     pub fn get_present_mode(&self) -> vk::PresentModeKHR {
+        self.swapchain.present_mode()
+     }
 
     /// Set the RGBA clear color used at the start of each render pass.
     pub unsafe fn set_sky_color(&mut self, color: [f32; 4]) {
@@ -312,53 +376,33 @@ impl Blitz {
         Ok(())
     }
 
-    /// Enqueue a draw call for a mesh with a fixed world transform (identity).
-    /// Batched draw calls are sorted by texture to minimise pipeline state changes.
-    pub unsafe fn draw_static(&mut self, mesh: Mesh, texture_id: TextureId) {
-        self.static_queue.push(StaticDrawCall { mesh, texture_id });
-    }
-
-    /// Enqueue a draw call with a per-object transform uploaded via push constants.
-    pub unsafe fn draw_dynamic(&mut self, mesh: Mesh, texture_id: TextureId, transform: cgmath::Matrix4<f32>) {
-        self.dynamic_queue.push(DynamicDrawCall { mesh, texture_id, transform });
-    }
-
     /// Enqueue a vertex-colored draw call with a per-object transform. No texture needed.
     pub unsafe fn draw_dynamic_color(&mut self, mesh: Mesh, transform: cgmath::Matrix4<f32>) {
-        self.color_queue.push(ColorDrawCall { mesh, transform });
+        self.color_layer.enqueue(mesh, transform);
     }
 
     /// Enqueue a draw call that samples from a `sampler2DArray` (e.g. chunk meshes
     /// where each vertex carries a layer index into the tile atlas).
     pub unsafe fn draw_array(&mut self, mesh: Mesh, texture_array_id: TextureArrayId) {
-        self.array_queue.push(ArrayDrawCall { mesh, texture_array_id });
+        self.array_layer.enqueue(mesh, texture_array_id);
     }
 
     /// Enqueue a 2D UI draw call for a range of quads in the shared UI mesh.
-    /// `first_quad` and `quad_count` index into the buffer updated by `update_ui_vertices`.
     /// Drawn after all 3D geometry with depth testing off and alpha blending on.
     pub unsafe fn draw_ui_quads(&mut self, first_quad: usize, quad_count: usize, texture_id: TextureId) {
-        self.ui_queue.push(UiDrawCall { first_quad, quad_count, texture_id });
+        self.ui.enqueue(first_quad, quad_count, texture_id);
     }
 
-    /// Re-upload vertex data for the shared UI quad buffer.
-    /// Call via `blitz.upload(|c| { c.stage_vertex_update(blitz.ui_vertex_id(), &verts); Ok(()) })`.
-    pub fn ui_vertex_id(&self) -> resources::buffers::vertex_buffer::VertexBufferId {
-        self.ui_mesh.vertices
-    }
+    /// Returns the vertex buffer ID for the pre-allocated UI quad mesh.
+    pub fn ui_vertex_id(&self) -> VertexBufferId { self.ui.vertex_id() }
 
-    /// Enqueue a debug overlay draw call for a range of quads in the shared debug mesh.
-    /// Uses the same UI pipeline (no depth test, alpha blending on), drawn on top of UI.
-    /// `first_quad` and `quad_count` index into the buffer updated via [`Blitz::debug_vertex_id`].
+    /// Enqueue a debug overlay draw call. Uses the same UI pipeline, drawn on top of UI.
     pub unsafe fn draw_debug_quads(&mut self, first_quad: usize, quad_count: usize, texture_id: TextureId) {
-        self.debug_queue.push(UiDrawCall { first_quad, quad_count, texture_id });
+        self.debug.enqueue(first_quad, quad_count, texture_id);
     }
 
     /// Returns the vertex buffer ID for the pre-allocated debug quad mesh.
-    /// Call via `blitz.upload(|c| { c.stage_vertex_update(blitz.debug_vertex_id(), &verts); Ok(()) })`.
-    pub fn debug_vertex_id(&self) -> resources::buffers::vertex_buffer::VertexBufferId {
-        self.debug_mesh.vertices
-    }
+    pub fn debug_vertex_id(&self) -> VertexBufferId { self.debug.vertex_id() }
 
     /// Write camera matrices for the current frame-in-flight slot.
     /// Call this every frame before [`Blitz::start_render`].
@@ -376,132 +420,12 @@ impl Blitz {
         let cb           = &self.sync.command_buffer;
         let camera_set   = self.camera[self.sync.frame];
         let lighting_set = self.lighting[self.sync.frame];
-        let p            = globals::pipelines_mut();
+        let extent       = self.swapchain.extent();
 
-        if !self.static_queue.is_empty() {
-            p.mesh_static.bind(cb);
-            p.mesh_static.bind_sets(cb, &[camera_set], 0);
-            p.mesh_static.bind_sets(cb, &[lighting_set], 2);
-            self.static_queue.sort_by_key(|d| d.texture_id);
-            let mut current_texture = None;
-            for draw in &self.static_queue {
-                if current_texture != Some(draw.texture_id) {
-                    let descriptor_set = globals::textures()[draw.texture_id].descriptor_set;
-                    p.mesh_static.bind_sets(cb, &[descriptor_set], 1);
-                    current_texture = Some(draw.texture_id);
-                }
-                globals::vertex_buffer().bind(cb, draw.mesh.vertices);
-                globals::index_buffer().bind(cb, draw.mesh.indices);
-                globals::index_buffer().draw(cb, draw.mesh.indices, 0);
-            }
-            self.static_queue.clear();
-        }
-
-        if !self.dynamic_queue.is_empty() {
-            p.mesh_dynamic.bind(cb);
-            p.mesh_dynamic.bind_sets(cb, &[camera_set], 0);
-            p.mesh_dynamic.bind_sets(cb, &[lighting_set], 2);
-            self.dynamic_queue.sort_by_key(|d| d.texture_id);
-            let mut current_texture = None;
-            for draw in &self.dynamic_queue {
-                if current_texture != Some(draw.texture_id) {
-                    let descriptor_set = globals::textures()[draw.texture_id].descriptor_set;
-                    p.mesh_dynamic.bind_sets(cb, &[descriptor_set], 1);
-                    current_texture = Some(draw.texture_id);
-                }
-                p.mesh_dynamic.push_constants(cb, &draw.transform);
-                globals::vertex_buffer().bind(cb, draw.mesh.vertices);
-                globals::index_buffer().bind(cb, draw.mesh.indices);
-                globals::index_buffer().draw(cb, draw.mesh.indices, 0);
-            }
-            self.dynamic_queue.clear();
-        }
-
-        if !self.color_queue.is_empty() {
-            p.mesh_color.bind(cb);
-            p.mesh_color.bind_sets(cb, &[camera_set], 0);
-            for draw in &self.color_queue {
-                p.mesh_color.push_constants(cb, &draw.transform);
-                globals::vertex_buffer().bind(cb, draw.mesh.vertices);
-                globals::index_buffer().bind(cb, draw.mesh.indices);
-                globals::index_buffer().draw(cb, draw.mesh.indices, 0);
-            }
-            self.color_queue.clear();
-        }
-
-        if !self.array_queue.is_empty() {
-            p.chunk.bind(cb);
-            p.chunk.bind_sets(cb, &[camera_set], 0);
-            p.chunk.bind_sets(cb, &[lighting_set], 2);
-            self.array_queue.sort_by_key(|d| d.texture_array_id);
-            let mut current_array = None;
-            for draw in &self.array_queue {
-                if current_array != Some(draw.texture_array_id) {
-                    let descriptor_set = globals::textures().texture_array(draw.texture_array_id).descriptor_set;
-                    p.chunk.bind_sets(cb, &[descriptor_set], 1);
-                    current_array = Some(draw.texture_array_id);
-                }
-                globals::vertex_buffer().bind(cb, draw.mesh.vertices);
-                globals::index_buffer().bind(cb, draw.mesh.indices);
-                globals::index_buffer().draw(cb, draw.mesh.indices, 0);
-            }
-            self.array_queue.clear();
-        }
-
-        if !self.ui_queue.is_empty() {
-            let extent = self.swapchain.extent();
-            let w = extent.width as f32;
-            let h = extent.height as f32;
-            // Orthographic matrix: pixel coords (0=top-left) → Vulkan NDC
-            let ortho = cgmath::Matrix4::new(
-                2.0/w,  0.0,    0.0, 0.0,
-                0.0,    2.0/h,  0.0, 0.0,
-                0.0,    0.0,    1.0, 0.0,
-               -1.0,   -1.0,   0.0, 1.0,
-            );
-            p.ui.bind(cb);
-            p.ui.push_constants(cb, &ortho);
-            globals::vertex_buffer().bind(cb, self.ui_mesh.vertices);
-            globals::index_buffer().bind(cb, self.ui_mesh.indices);
-            for draw in &self.ui_queue {
-                let descriptor_set = globals::textures()[draw.texture_id].descriptor_set;
-                p.ui.bind_sets(cb, &[descriptor_set], 0);
-                globals::index_buffer().draw_range(
-                    cb,
-                    self.ui_mesh.indices,
-                    (draw.first_quad * 6) as u32,
-                    (draw.quad_count * 6) as u32,
-                );
-            }
-            self.ui_queue.clear();
-        }
-
-        if !self.debug_queue.is_empty() {
-            let extent = self.swapchain.extent();
-            let w = extent.width as f32;
-            let h = extent.height as f32;
-            let ortho = cgmath::Matrix4::new(
-                2.0/w,  0.0,   0.0, 0.0,
-                0.0,   2.0/h,  0.0, 0.0,
-                0.0,    0.0,   1.0, 0.0,
-               -1.0,   -1.0,  0.0, 1.0,
-            );
-            p.ui.bind(cb);
-            p.ui.push_constants(cb, &ortho);
-            globals::vertex_buffer().bind(cb, self.debug_mesh.vertices);
-            globals::index_buffer().bind(cb, self.debug_mesh.indices);
-            for draw in &self.debug_queue {
-                let descriptor_set = globals::textures()[draw.texture_id].descriptor_set;
-                p.ui.bind_sets(cb, &[descriptor_set], 0);
-                globals::index_buffer().draw_range(
-                    cb,
-                    self.debug_mesh.indices,
-                    (draw.first_quad * 6) as u32,
-                    (draw.quad_count * 6) as u32,
-                );
-            }
-            self.debug_queue.clear();
-        }
+        self.color_layer.flush(cb, camera_set);
+        self.array_layer.flush(cb, camera_set, lighting_set);
+        self.ui.flush(cb, extent);
+        self.debug.flush(cb, extent);
     }
 
     unsafe fn rebuild_swapchain(&mut self, window: &Window) -> Result<()> {
@@ -627,14 +551,10 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
         sync,
         depth_buffer,
         renderpass,
-        static_queue: vec![],
-        dynamic_queue: vec![],
-        color_queue: vec![],
-        array_queue: vec![],
-        ui_mesh:     Mesh::default(),
-        ui_queue:    vec![],
-        debug_mesh:  Mesh::default(),
-        debug_queue: vec![],
+        color_layer: ColorLayer::default(),
+        array_layer: ArrayLayer::default(),
+        ui:          QuadLayer::default(),
+        debug:       QuadLayer::default(),
         sky_color: [0.22, 0.48, 0.72, 1.0],
         vsync: false,
         vsync_dirty: false,
@@ -663,8 +583,8 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
 
         Ok(())
     })?;
-    blitz.ui_mesh    = ui_mesh;
-    blitz.debug_mesh = debug_mesh;
+    blitz.ui.mesh    = ui_mesh;
+    blitz.debug.mesh = debug_mesh;
 
     blitz.set_fps_limit(Some(60));
 

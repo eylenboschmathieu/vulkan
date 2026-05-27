@@ -399,12 +399,13 @@ impl Container {
 
         let size: usize = self.vertex_partial_updates.iter().map(|(_, _, b)| b.len()).sum();
         let s_id = sb.alloc(size)?;
+        let alloc_start = sb.alloc_info(s_id).offset as u64;
 
         let mut staging_offset = 0;
         for (id, byte_offset, bytes) in &self.vertex_partial_updates {
             sb.copy_to_staging_at(s_id, bytes.as_slice(), staging_offset)?;
             let dst_offset = vb.alloc_info(*id).offset as u64 + *byte_offset as u64;
-            sb.copy_to_buffer_sized(command_buffer, vb, dst_offset, staging_offset as u64, bytes.len() as u64)?;
+            sb.copy_to_buffer_sized(command_buffer, vb, dst_offset, alloc_start + staging_offset as u64, bytes.len() as u64)?;
             staging_offset += bytes.len();
         }
 
@@ -417,12 +418,13 @@ impl Container {
 
         let size: usize = self.vertex_updates.iter().map(|(_, b)| b.len()).sum();
         let s_id = sb.alloc(size)?;
+        let alloc_start = sb.alloc_info(s_id).offset as u64;
 
         let mut offset = 0;
         for (id, bytes) in &self.vertex_updates {
             sb.copy_to_staging_at(s_id, bytes.as_slice(), offset)?;
             let dst_offset = vb.alloc_info(*id).offset as u64;
-            sb.copy_to_buffer_sized(command_buffer, vb, dst_offset, offset as u64, bytes.len() as u64)?;
+            sb.copy_to_buffer_sized(command_buffer, vb, dst_offset, alloc_start + offset as u64, bytes.len() as u64)?;
             offset += bytes.len();
         }
 

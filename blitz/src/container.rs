@@ -183,23 +183,32 @@ impl Container {
 
         let has_images = !self.textures.is_empty() || !self.texture_arrays.is_empty() || !self.font_atlases.is_empty();
         if has_images {
+            let same_family = {
+                let qfi = globals::device().queue_family_indices();
+                qfi.transfer() == qfi.graphics()
+            };
+
             let command_buffer = globals::commands().begin_one_time_submit(vk::QueueFlags::TRANSFER)?;
 
-            let tex_s_id   = if !self.textures.is_empty()     { Some(self.upload_textures(&command_buffer)?)     } else { None };
-            let arr_s_id   = if !self.texture_arrays.is_empty()  { Some(self.upload_texture_arrays(&command_buffer)?) } else { None };
-            let font_s_id  = if !self.font_atlases.is_empty()  { Some(self.upload_font_atlases(&command_buffer)?) } else { None };
+            let tex_s_id   = if !self.textures.is_empty()       { Some(self.upload_textures(&command_buffer, same_family)?)       } else { None };
+            let arr_s_id   = if !self.texture_arrays.is_empty() { Some(self.upload_texture_arrays(&command_buffer, same_family)?) } else { None };
+            let font_s_id  = if !self.font_atlases.is_empty()   { Some(self.upload_font_atlases(&command_buffer, same_family)?)   } else { None };
 
-            command_buffer.end_one_time_submit(globals::queues().transfer(), Some(self.semaphore))?;
+            if same_family {
+                command_buffer.end_one_time_submit(globals::queues().transfer(), None)?;
+            } else {
+                command_buffer.end_one_time_submit(globals::queues().transfer(), Some(self.semaphore))?;
 
-            let images: Vec<(Image, vk::Format)> = self.textures.iter()
-                .map(|(id, _)| (globals::textures()[*id].image.clone(), vk::Format::R8G8B8A8_SRGB))
-                .chain(self.texture_arrays.iter().map(|(id, _)| (globals::textures().texture_array(*id).image.clone(), vk::Format::R8G8B8A8_SRGB)))
-                .chain(self.font_atlases.iter().map(|(id, _)| (globals::textures()[*id].image.clone(), vk::Format::R8_UNORM)))
-                .collect();
+                let images: Vec<(Image, vk::Format)> = self.textures.iter()
+                    .map(|(id, _)| (globals::textures()[*id].image.clone(), vk::Format::R8G8B8A8_SRGB))
+                    .chain(self.texture_arrays.iter().map(|(id, _)| (globals::textures().texture_array(*id).image.clone(), vk::Format::R8G8B8A8_SRGB)))
+                    .chain(self.font_atlases.iter().map(|(id, _)| (globals::textures()[*id].image.clone(), vk::Format::R8_UNORM)))
+                    .collect();
 
-            let command_buffer = globals::commands().begin_one_time_submit(vk::QueueFlags::GRAPHICS)?;
-            self.ownership_transfer(&command_buffer, &images)?;
-            command_buffer.end_one_time_submit(globals::queues().graphics(), Some(self.semaphore))?;
+                let command_buffer = globals::commands().begin_one_time_submit(vk::QueueFlags::GRAPHICS)?;
+                self.ownership_transfer(&command_buffer, &images)?;
+                command_buffer.end_one_time_submit(globals::queues().graphics(), Some(self.semaphore))?;
+            }
 
             if let Some(s_id) = tex_s_id  { globals::staging_buffer_mut().free(s_id); }
             if let Some(s_id) = arr_s_id  { globals::staging_buffer_mut().free(s_id); }
@@ -261,9 +270,7 @@ impl Container {
         Ok(s_id)
     }
 
-    unsafe fn upload_textures(&self, command_buffer: &CommandBuffer) -> Result<usize> {
-        let queue_family_indices = globals::device().queue_family_indices();
-
+    unsafe fn upload_textures(&self, command_buffer: &CommandBuffer, same_family: bool) -> Result<usize> {
         let size: usize = self.textures.iter().map(|(_, t)| t.pixels.len()).sum();
         let s_id = globals::staging_buffer_mut().alloc(size)?;
 
@@ -280,16 +287,27 @@ impl Container {
                 None,
             )?;
             globals::staging_buffer_mut().copy_to_image_at(command_buffer, s_id, &image, offset as u64)?;
-            image.transition_image_layout(
-                command_buffer,
-                vk::Format::R8G8B8A8_SRGB,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                Some(ImageMemoryBarrierQueueFamilyIndices {
-                    src_queue_family_index: queue_family_indices.transfer(),
-                    dst_queue_family_index: queue_family_indices.graphics(),
-                }),
-            )?;
+            if same_family {
+                image.transition_image_layout(
+                    command_buffer,
+                    vk::Format::R8G8B8A8_SRGB,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                    None,
+                )?;
+            } else {
+                let qfi = globals::device().queue_family_indices();
+                image.transition_image_layout(
+                    command_buffer,
+                    vk::Format::R8G8B8A8_SRGB,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    Some(ImageMemoryBarrierQueueFamilyIndices {
+                        src_queue_family_index: qfi.transfer(),
+                        dst_queue_family_index: qfi.graphics(),
+                    }),
+                )?;
+            }
             offset += tex_data.pixels.len();
         }
 
@@ -315,9 +333,7 @@ impl Container {
         Ok(())
     }
 
-    unsafe fn upload_texture_arrays(&self, command_buffer: &CommandBuffer) -> Result<usize> {
-        let queue_family_indices = globals::device().queue_family_indices();
-
+    unsafe fn upload_texture_arrays(&self, command_buffer: &CommandBuffer, same_family: bool) -> Result<usize> {
         let size: usize = self.texture_arrays.iter()
             .flat_map(|(_, tiles): &(TextureArrayId, Vec<TextureData>)| tiles.iter())
             .map(|t| t.pixels.len())
@@ -342,25 +358,34 @@ impl Container {
                 offset += tile.pixels.len();
             }
 
-            image.transition_image_layout(
-                command_buffer,
-                vk::Format::R8G8B8A8_SRGB,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                Some(ImageMemoryBarrierQueueFamilyIndices {
-                    src_queue_family_index: queue_family_indices.transfer(),
-                    dst_queue_family_index: queue_family_indices.graphics(),
-                }),
-            )?;
+            if same_family {
+                image.transition_image_layout(
+                    command_buffer,
+                    vk::Format::R8G8B8A8_SRGB,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                    None,
+                )?;
+            } else {
+                let qfi = globals::device().queue_family_indices();
+                image.transition_image_layout(
+                    command_buffer,
+                    vk::Format::R8G8B8A8_SRGB,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    Some(ImageMemoryBarrierQueueFamilyIndices {
+                        src_queue_family_index: qfi.transfer(),
+                        dst_queue_family_index: qfi.graphics(),
+                    }),
+                )?;
+            }
         }
 
         Ok(s_id)
     }
 
 
-    unsafe fn upload_font_atlases(&self, command_buffer: &CommandBuffer) -> Result<usize> {
-        let queue_family_indices = globals::device().queue_family_indices();
-
+    unsafe fn upload_font_atlases(&self, command_buffer: &CommandBuffer, same_family: bool) -> Result<usize> {
         let size: usize = self.font_atlases.iter().map(|(_, t)| t.pixels.len()).sum();
         let s_id = globals::staging_buffer_mut().alloc(size)?;
 
@@ -377,16 +402,27 @@ impl Container {
                 None,
             )?;
             globals::staging_buffer_mut().copy_to_image_at(command_buffer, s_id, &image, offset as u64)?;
-            image.transition_image_layout(
-                command_buffer,
-                vk::Format::R8_UNORM,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                Some(ImageMemoryBarrierQueueFamilyIndices {
-                    src_queue_family_index: queue_family_indices.transfer(),
-                    dst_queue_family_index: queue_family_indices.graphics(),
-                }),
-            )?;
+            if same_family {
+                image.transition_image_layout(
+                    command_buffer,
+                    vk::Format::R8_UNORM,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                    None,
+                )?;
+            } else {
+                let qfi = globals::device().queue_family_indices();
+                image.transition_image_layout(
+                    command_buffer,
+                    vk::Format::R8_UNORM,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    Some(ImageMemoryBarrierQueueFamilyIndices {
+                        src_queue_family_index: qfi.transfer(),
+                        dst_queue_family_index: qfi.graphics(),
+                    }),
+                )?;
+            }
             offset += tex_data.pixels.len();
         }
 

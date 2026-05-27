@@ -2,6 +2,7 @@
 
 use std::{rc::Rc, time::Instant};
 
+use vulkanalia::vk::PresentModeKHR;
 use blitz::{Blitz, Container, Pos2, Rgba, UV, VERTEX_2D_RGBA, VertexBufferId};
 use winit::window::Window;
 
@@ -16,6 +17,7 @@ pub struct DebugInfo {
     atlas: Rc<FontAtlas>,
     vertex_id: VertexBufferId,
     quad_count: usize,
+    pub present_mode: PresentModeKHR,
 
     fps: f32,
     frame_count: u32,
@@ -29,6 +31,7 @@ impl DebugInfo {
             atlas,
             vertex_id: blitz.debug_vertex_id(),
             quad_count: 0,
+            present_mode: blitz.get_present_mode(),
             fps: 0.0,
             frame_count: 0,
             fps_timer: Instant::now(),
@@ -64,6 +67,17 @@ impl DebugInfo {
         // Camera position — top left
         let cam_text = format!("x:{:.1} y:{:.1} z:{:.1}", camera.eye.x, camera.eye.y, camera.eye.z);
         Self::emit_text(&mut verts, atlas, &cam_text, PADDING, PADDING, white);
+
+        // Present Mode - top left
+        let present_mode_text = match self.present_mode {
+            PresentModeKHR::FIFO => "FIFO",
+            PresentModeKHR::FIFO_LATEST_READY => "FIFO_LATEST_READY",
+            PresentModeKHR::MAILBOX => "MAILBOX",
+            PresentModeKHR::IMMEDIATE => "IMMEDIATE",
+            _ => "Error"
+        };
+        let present_mode_text = format!("Present mode: {}", present_mode_text);
+        Self::emit_text(&mut verts, atlas, &present_mode_text, PADDING, 32.0, white);
 
         // FPS — top right
         let fps_text = format!("{:.0} fps", self.fps);

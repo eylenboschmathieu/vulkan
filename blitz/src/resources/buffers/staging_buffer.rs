@@ -1,7 +1,7 @@
 #![allow(dead_code, unsafe_op_in_unsafe_fn, unused_variables, clippy::too_many_arguments, clippy::unnecessary_wraps)]
 
 use std::{
-    ffi::c_void, ops::{Deref, DerefMut}, ptr::{copy_nonoverlapping as memcpy}
+    ffi::c_void, ops::Deref, ptr::{copy_nonoverlapping as memcpy}
 };
 
 use log::*;
@@ -74,10 +74,6 @@ impl SubBuffer {
 impl Deref for SubBuffer {
     type Target = Buffer;
     fn deref(&self) -> &Self::Target { &self.buffer }
-}
-
-impl DerefMut for SubBuffer {
-    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.buffer }
 }
 
 impl std::fmt::Debug for SubBuffer {

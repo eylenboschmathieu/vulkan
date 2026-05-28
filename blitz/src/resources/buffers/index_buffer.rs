@@ -1,6 +1,6 @@
 #![allow(dead_code, unsafe_op_in_unsafe_fn, unused_variables, clippy::too_many_arguments, clippy::unnecessary_wraps)]
 
-use std::ops::{Deref, DerefMut};
+use std::ops::Deref;
 
 use log::*;
 use anyhow::{anyhow, Result};
@@ -77,10 +77,6 @@ impl TransferDst for SubBuffer {}
 impl Deref for SubBuffer {
     type Target = Buffer;
     fn deref(&self) -> &Self::Target { &self.buffer }
-}
-
-impl DerefMut for SubBuffer {
-    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.buffer }
 }
 
 impl std::fmt::Debug for SubBuffer {

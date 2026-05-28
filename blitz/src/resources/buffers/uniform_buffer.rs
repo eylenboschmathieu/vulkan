@@ -94,6 +94,8 @@ impl UniformBuffer {
         self.buffer.destroy();
     }
 
+    /// Writes `data` into the allocation via the permanently-mapped pointer.
+    /// No flush needed — `HOST_COHERENT` guarantees device visibility.
     pub unsafe fn update<T: Copy>(&self, id: UniformBufferId, data: T) -> Result<()> {
         let offset = self.alloc_list[id].offset;
         memcpy(&data, self.mapped_ptr.add(offset).cast(), 1);
@@ -101,6 +103,7 @@ impl UniformBuffer {
     }
 
 
+    /// Suballocates `size` bytes and returns a `UniformBufferId`.
     pub fn alloc(&mut self, size: usize) -> Result<UniformBufferId> {
         if let Some(allocation) = self.allocator.alloc(size) {
             if self.free_list.is_empty() {
@@ -126,6 +129,7 @@ impl UniformBuffer {
         self.alloc_list[id]
     }
 
+    /// Returns a snapshot of all allocation records, used to build descriptor set write infos.
     pub fn get_data(&self) -> Vec<Allocation> {
         self.alloc_list.clone()
     }

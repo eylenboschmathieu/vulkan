@@ -5,13 +5,20 @@ use log::*;
 use vulkanalia::vk::{self, *};
 use crate::globals;
 
-pub trait TransferDst {}  // Implemented by VertexBuffer and IndexBuffer so they're treated as Transfer targets
+/// Marker for buffers that may be the destination of a `vkCmdCopyBuffer`.
+/// Implemented by [`VertexBuffer`] and [`IndexBuffer`] so [`StagingBuffer`] copy
+/// methods are generic without accepting arbitrary types.
+pub trait TransferDst {}
 
+/// Raw Vulkan buffer + device memory pair with no suballocator.
+///
+/// Higher-level buffer types (`VertexBuffer`, `IndexBuffer`, `StagingBuffer`,
+/// `UniformBuffer`) all `Deref` into this to expose the handle and memory.
 #[derive(Debug)]
 pub struct Buffer {
     handle: vk::Buffer,
     memory: vk::DeviceMemory,
-    size: u64,  // Buffer size
+    size: u64,
 }
 
 impl Buffer {
@@ -19,6 +26,10 @@ impl Buffer {
         Ok(Self { handle, memory, size })
     }
 
+    /// Creates a `VkBuffer` shared between the graphics and transfer queue families.
+    ///
+    /// `CONCURRENT` sharing mode avoids explicit ownership transfers for buffer copies.
+    /// Images are a different story and do require ownership transfers when the families differ.
     pub unsafe fn create_buffer(size: u64, usage: vk::BufferUsageFlags) -> Result<vk::Buffer> {
         let queue_family_indices = &[globals::device().queue_family_indices().graphics(), globals::device().queue_family_indices().transfer()];
 
@@ -27,7 +38,7 @@ impl Buffer {
             .usage(usage)
             .sharing_mode(vk::SharingMode::CONCURRENT)
             .flags(vk::BufferCreateFlags::empty())
-            .queue_family_indices(queue_family_indices);  // If SharingMode::CONCURRENT -> List the family indices that will be used
+            .queue_family_indices(queue_family_indices);
         create_info.queue_family_index_count = 2;
 
         let handle = globals::device().logical().create_buffer(&create_info, None)?;
@@ -35,6 +46,7 @@ impl Buffer {
         Ok(handle)
     }
 
+    /// Allocates device memory that satisfies `requirements` and has all bits in `properties`.
     pub unsafe fn create_memory(requirements: vk::MemoryRequirements, properties: vk::MemoryPropertyFlags) -> Result<vk::DeviceMemory> {
         let memory_info = vk::MemoryAllocateInfo::builder()
             .allocation_size(requirements.size)
@@ -69,6 +81,8 @@ impl Buffer {
         self.size
     }
 
+    /// Returns the first memory type index whose type bits overlap `requirements` and whose
+    /// flags contain all of `properties`.
     pub unsafe fn get_memory_type_index(properties: vk::MemoryPropertyFlags, requirements: vk::MemoryRequirements) -> Result<u32> {
         let memory_properties = globals::device().memory_properties();
         (0..memory_properties.memory_type_count)

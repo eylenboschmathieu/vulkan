@@ -17,6 +17,11 @@ use crate::{
 
 pub type VertexBufferId = usize;
 
+/// `DEVICE_LOCAL` vertex buffer with a freelist suballocator.
+///
+/// A single `VkBuffer` holds all mesh vertex data; each allocation is addressed
+/// by a `VertexBufferId`.  Data must arrive via [`StagingBuffer`] — this buffer
+/// is not host-visible.
 #[derive(Debug)]
 pub struct VertexBuffer {
     buffer: Buffer,
@@ -26,6 +31,7 @@ pub struct VertexBuffer {
 }
 
 impl VertexBuffer {
+    /// Allocates a `DEVICE_LOCAL` `VkBuffer` of `size` bytes.
     pub unsafe fn new(size: vk::DeviceSize) -> Result<Self> {
 
         // Buffer
@@ -57,6 +63,8 @@ impl VertexBuffer {
         Ok(Self { buffer, allocator, alloc_list: vec![], free_list: vec![] })
     }
 
+    /// Records `vkCmdBindVertexBuffers` at the byte offset of the allocation,
+    /// allowing a single `VkBuffer` to hold multiple meshes.
     pub unsafe fn bind(&self, command_buffer: &CommandBuffer, id: VertexBufferId) {
         globals::device().logical().cmd_bind_vertex_buffers(
             command_buffer.handle(),
@@ -66,6 +74,7 @@ impl VertexBuffer {
         );
     }
 
+    /// Suballocates `size` bytes and returns a `VertexBufferId`.
     pub fn alloc(&mut self, size: usize) -> Result<VertexBufferId> {
         if let Some(allocation) = self.allocator.alloc(size) {
             if self.free_list.is_empty() {

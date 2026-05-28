@@ -20,6 +20,11 @@ pub type IndexBufferId = usize;
 #[derive(Clone, Copy, Debug)]
 pub struct IndexBufferData { pub allocation: Allocation, pub count: usize }
 
+/// `DEVICE_LOCAL` index buffer (`u16`) with a freelist suballocator.
+///
+/// A single `VkBuffer` holds all mesh index data; each allocation is addressed
+/// by an `IndexBufferId`.  Data must arrive via [`StagingBuffer`] — this buffer
+/// is not host-visible.
 #[derive(Debug)]
 pub struct IndexBuffer {
     buffer: Buffer,
@@ -28,8 +33,8 @@ pub struct IndexBuffer {
     free_list: Vec<IndexBufferId>,
 }
 
-// Need to incorporate this into a resource manager at some point
 impl IndexBuffer {
+    /// Allocates a `DEVICE_LOCAL` `VkBuffer` large enough for `count` `u16` indices.
     pub unsafe fn new(count: usize) -> Result<Self> {
         let size = size_of::<IndexType>() * count;  // We're going with the assumption indices ur u16
 
@@ -62,6 +67,7 @@ impl IndexBuffer {
         Ok(Self { buffer, allocator, buffer_list: vec![], free_list: vec![] })
     }
 
+    /// Suballocates space for `count` indices and returns an `IndexBufferId`.
     pub fn alloc(&mut self, count: usize) -> Result<IndexBufferId> {
         if let Some(allocation) = self.allocator.alloc(count * size_of::<IndexType>()) {
             if self.free_list.is_empty() {
@@ -84,6 +90,7 @@ impl IndexBuffer {
         self.buffer_list[id] = IndexBufferData { allocation: Allocation { offset: 0, size: 0 }, count: 0 }
     }
 
+    /// Records `vkCmdBindIndexBuffer` at the byte offset of the allocation.
     pub unsafe fn bind(&self, command_buffer: &CommandBuffer, id: usize) {
         globals::device().logical().cmd_bind_index_buffer(
             command_buffer.handle(),
@@ -92,6 +99,7 @@ impl IndexBuffer {
             vk::IndexType::UINT16);
     }
 
+    /// Records `vkCmdDrawIndexed` for all indices in the allocation.
     pub unsafe fn draw(&self, command_buffer: &CommandBuffer, id: IndexBufferId, vertex_offset: i32) {
         globals::device().logical().cmd_draw_indexed(
             command_buffer.handle(),
@@ -102,6 +110,8 @@ impl IndexBuffer {
             0);
     }
 
+    /// Records `vkCmdDrawIndexed` for a sub-range of the allocation.
+    /// `first_index` and `count` are index element counts, not byte offsets.
     pub unsafe fn draw_range(&self, command_buffer: &CommandBuffer, id: IndexBufferId, first_index: u32, count: u32) {
         globals::device().logical().cmd_draw_indexed(
             command_buffer.handle(),

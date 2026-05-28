@@ -231,7 +231,6 @@ impl Blitz {
         let mut container = Container::new()?;
         f(&mut container)?;
         container.process()?;
-        container.destroy();
         Ok(())
     }
 

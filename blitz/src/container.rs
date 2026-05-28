@@ -41,14 +41,11 @@ pub struct Container {
     textures:                Vec<(TextureId, TextureData)>,
     texture_arrays:          Vec<(TextureArrayId, Vec<TextureData>)>,
     font_atlases:            Vec<(TextureId, TextureData)>,
-    semaphore:               vk::Semaphore,
 }
 
 impl Container {
     pub(crate) unsafe fn new() -> Result<Self> {
-        let semaphore_info = vk::SemaphoreCreateInfo::builder();
-        let semaphore = globals::device().logical().create_semaphore(&semaphore_info, None)?;
-        Ok(Self { meshes: vec![], vertex_updates: vec![], vertex_partial_updates: vec![], textures: vec![], texture_arrays: vec![], font_atlases: vec![], semaphore })
+        Ok(Self { meshes: vec![], vertex_updates: vec![], vertex_partial_updates: vec![], textures: vec![], texture_arrays: vec![], font_atlases: vec![] })
     }
 
     /// Eagerly allocates GPU buffer slots and returns the live Mesh immediately.
@@ -218,7 +215,9 @@ impl Container {
             if same_family {
                 command_buffer.end_one_time_submit(globals::queues().transfer(), None)?;
             } else {
-                command_buffer.end_one_time_submit(globals::queues().transfer(), Some(self.semaphore))?;
+                let semaphore = globals::device().logical().create_semaphore(&vk::SemaphoreCreateInfo::builder(), None)?;
+
+                command_buffer.end_one_time_submit(globals::queues().transfer(), Some(semaphore))?;
 
                 let images: Vec<(Image, vk::Format)> = self.textures.iter()
                     .map(|(id, _)| (globals::textures()[*id].image.clone(), vk::Format::R8G8B8A8_SRGB))
@@ -228,7 +227,9 @@ impl Container {
 
                 let command_buffer = globals::commands().begin_one_time_submit(vk::QueueFlags::GRAPHICS)?;
                 self.ownership_transfer(&command_buffer, &images)?;
-                command_buffer.end_one_time_submit(globals::queues().graphics(), Some(self.semaphore))?;
+                command_buffer.end_one_time_submit(globals::queues().graphics(), Some(semaphore))?;
+
+                globals::device().logical().destroy_semaphore(semaphore, None);
             }
 
             if let Some(s_id) = tex_s_id  { globals::staging_buffer_mut().free(s_id); }
@@ -414,7 +415,6 @@ impl Container {
         Ok(s_id)
     }
 
-
     /// Stages and uploads font atlas images (`R8_UNORM`).
     /// Same transfer and ownership-transfer pattern as `upload_textures`, but single-channel.
     unsafe fn upload_font_atlases(&self, command_buffer: &CommandBuffer, same_family: bool) -> Result<StagingAllocId> {
@@ -501,7 +501,4 @@ impl Container {
         Ok(s_id)
     }
 
-    pub(crate) unsafe fn destroy(&self) {
-        globals::device().logical().destroy_semaphore(self.semaphore, None);
-    }
 }

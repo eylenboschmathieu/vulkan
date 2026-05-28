@@ -16,6 +16,7 @@ use crate::{
     },
 };
 
+/// Decoded pixel buffer with dimensions, used to carry image data from `alloc_*` calls to [`Container::process`].
 pub(crate) struct TextureData {
     pub pixels: Vec<u8>,
     pub width:  u32,
@@ -26,8 +27,10 @@ pub(crate) struct TextureData {
 ///
 /// IDs are allocated eagerly so callers can store them immediately, but the
 /// actual DMA transfers are deferred until [`Container::process`] runs at the
-/// end of the closure.  Meshes go through the transfer queue only; textures go
-/// transfer → graphics with an explicit queue-family ownership transfer.
+/// end of the closure.  Meshes and vertex updates go through the transfer queue
+/// only; textures are transferred and then transitioned to `SHADER_READ_ONLY_OPTIMAL`
+/// — with an explicit queue-family ownership transfer when the transfer and graphics
+/// families differ, or directly in the transfer command buffer when they are the same.
 pub struct Container {
     meshes:                  Vec<(Mesh, Vec<u8>, Vec<u16>)>,
     vertex_updates:          Vec<(VertexBufferId, Vec<u8>)>,
@@ -169,6 +172,20 @@ impl Container {
         Ok(id)
     }
 
+    /// Executes all staged uploads and updates descriptor sets.
+    ///
+    /// Runs two independent phases:
+    /// - **Buffer phase**: meshes and vertex updates are uploaded on the transfer queue in a
+    ///   single one-time command buffer.  No semaphore is needed — all buffers are created with
+    ///   `CONCURRENT` sharing so no ownership transfer is required.
+    /// - **Image phase**: textures, texture arrays, and font atlases are staged and transitioned.
+    ///   When the transfer and graphics queue families differ, a release barrier is recorded in
+    ///   the transfer command buffer and a separate graphics command buffer handles the acquire
+    ///   and final transition to `SHADER_READ_ONLY_OPTIMAL`, with a semaphore synchronizing them.
+    ///   When both queues share a family the final transition happens directly in the transfer
+    ///   command buffer and the graphics submission is skipped entirely.
+    ///
+    /// Descriptor sets for all uploaded images are written after the GPU submissions.
     pub(crate) unsafe fn process(&mut self) -> Result<()> {
         if !self.meshes.is_empty() || !self.vertex_updates.is_empty() || !self.vertex_partial_updates.is_empty() {
             let command_buffer = globals::commands().begin_one_time_submit(vk::QueueFlags::TRANSFER)?;
@@ -240,6 +257,8 @@ impl Container {
         Ok(())
     }
 
+    /// Packs all pending mesh vertex and index data into a single contiguous staging allocation
+    /// and records the copy commands into their respective `DEVICE_LOCAL` buffers.
     unsafe fn upload_meshes(&self, command_buffer: &CommandBuffer) -> Result<usize> {
         let sb = globals::staging_buffer_mut();
         let vb = globals::vertex_buffer_mut();
@@ -270,6 +289,10 @@ impl Container {
         Ok(s_id)
     }
 
+    /// Stages and uploads all pending `R8G8B8A8_SRGB` textures.
+    /// Each image is transitioned `UNDEFINED → TRANSFER_DST_OPTIMAL`, filled from staging,
+    /// then either transitioned directly to `SHADER_READ_ONLY_OPTIMAL` (`same_family`) or
+    /// released with a queue-family ownership transfer for the graphics queue to acquire.
     unsafe fn upload_textures(&self, command_buffer: &CommandBuffer, same_family: bool) -> Result<usize> {
         let size: usize = self.textures.iter().map(|(_, t)| t.pixels.len()).sum();
         let s_id = globals::staging_buffer_mut().alloc(size)?;
@@ -333,6 +356,9 @@ impl Container {
         Ok(())
     }
 
+    /// Stages and uploads all pending texture arrays.
+    /// All layers of each array are packed contiguously in the staging buffer and copied one
+    /// layer at a time. The same ownership-transfer logic as `upload_textures` applies per array.
     unsafe fn upload_texture_arrays(&self, command_buffer: &CommandBuffer, same_family: bool) -> Result<usize> {
         let size: usize = self.texture_arrays.iter()
             .flat_map(|(_, tiles): &(TextureArrayId, Vec<TextureData>)| tiles.iter())
@@ -385,6 +411,8 @@ impl Container {
     }
 
 
+    /// Stages and uploads font atlas images (`R8_UNORM`).
+    /// Same transfer and ownership-transfer pattern as `upload_textures`, but single-channel.
     unsafe fn upload_font_atlases(&self, command_buffer: &CommandBuffer, same_family: bool) -> Result<usize> {
         let size: usize = self.font_atlases.iter().map(|(_, t)| t.pixels.len()).sum();
         let s_id = globals::staging_buffer_mut().alloc(size)?;
@@ -429,6 +457,9 @@ impl Container {
         Ok(s_id)
     }
 
+    /// Records partial vertex buffer writes at their caller-specified byte offsets.
+    /// All regions are packed into one staging allocation; `alloc_start` is added to each
+    /// staging offset to produce the absolute source address required by `copy_to_buffer_sized`.
     unsafe fn apply_vertex_partial_updates(&self, command_buffer: &CommandBuffer) -> Result<usize> {
         let sb = globals::staging_buffer_mut();
         let vb = globals::vertex_buffer_mut();
@@ -448,6 +479,9 @@ impl Container {
         Ok(s_id)
     }
 
+    /// Records full vertex buffer replacements for all pending updates.
+    /// All payloads are packed into one staging allocation; `alloc_start` is added to each
+    /// staging offset to produce the absolute source address required by `copy_to_buffer_sized`.
     unsafe fn apply_vertex_updates(&self, command_buffer: &CommandBuffer) -> Result<usize> {
         let sb = globals::staging_buffer_mut();
         let vb = globals::vertex_buffer_mut();

@@ -79,6 +79,12 @@ impl Edges {
 
 // ── Node types ───────────────────────────────────────────────────────────────
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Overflow {
+    Visible,
+    Clip,
+}
+
 #[derive(Debug)]
 pub struct NodeBase {
     pub bounds: Rect,
@@ -153,6 +159,32 @@ impl ButtonNode {
             on_enter:   None,
             on_leave:   None,
         }
+    }
+}
+
+/// Interactive checkbox button. Labelable.
+#[derive(Debug)]
+pub struct CheckboxNode {
+    container: ContainerNode,
+    button: ButtonNode,
+    selected_color: Rgba,
+    selected: bool,
+}
+
+impl CheckboxNode {
+    pub fn new(bounds: Rect) -> Self {
+        let button_size = bounds.height;
+        Self {
+            container: ContainerNode::new(bounds),
+            button: ButtonNode::new(Rect {x: 0.0, y: 0.0, width: button_size, height: button_size }),
+            selected_color: Rgba::new(0.0, 0.0, 1.0, 0.5),
+            selected: false,
+        }
+    }
+
+    // If text is positioned left, set the button on the right and vica versa.
+    pub fn set_text_position(left: bool) { // TODO
+
     }
 }
 
@@ -233,7 +265,7 @@ impl UiTree {
     /// Adds a text label as a child of a Panel or Button. Panics for other node types.
     pub fn add_label(&mut self, parent_idx: usize, x: f32, y: f32, text: impl Into<String>) -> usize {
         assert!(
-            matches!(&self.nodes[parent_idx], UiNode::Panel(_) | UiNode::Button(_)),
+            matches!(&self.nodes[parent_idx], UiNode::Container(_) | UiNode::Panel(_) | UiNode::Button(_)),
             "add_label: only Panel and Button nodes can contain labels"
         );
         self.add_child(UiNode::Label(LabelNode::new(Rect { x, y, width: 0.0, height: 0.0 }, text)), parent_idx)

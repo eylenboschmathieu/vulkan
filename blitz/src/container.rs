@@ -6,12 +6,15 @@ use anyhow::Result;
 use vulkanalia::vk::{self, DeviceV1_0, Handle, HasBuilder};
 
 use crate::{
-    DescriptorSetUpdateInfo, TextureId, TextureArrayId,
+    DescriptorId, DescriptorSetUpdateInfo, TextureId, TextureArrayId,
     commands::CommandBuffer,
     globals,
     mesh::Mesh,
     resources::{
-        buffers::vertex_buffer::VertexBufferId,
+        buffers::{
+            staging_buffer::StagingAllocId,
+            vertex_buffer::VertexAllocId,
+        },
         image::{Image, ImageMemoryBarrierQueueFamilyIndices},
     },
 };
@@ -33,8 +36,8 @@ pub(crate) struct TextureData {
 /// families differ, or directly in the transfer command buffer when they are the same.
 pub struct Container {
     meshes:                  Vec<(Mesh, Vec<u8>, Vec<u16>)>,
-    vertex_updates:          Vec<(VertexBufferId, Vec<u8>)>,
-    vertex_partial_updates:  Vec<(VertexBufferId, usize, Vec<u8>)>,  // (id, byte_offset, data)
+    vertex_updates:          Vec<(VertexAllocId, Vec<u8>)>,
+    vertex_partial_updates:  Vec<(VertexAllocId, usize, Vec<u8>)>,  // (id, byte_offset, data)
     textures:                Vec<(TextureId, TextureData)>,
     texture_arrays:          Vec<(TextureArrayId, Vec<TextureData>)>,
     font_atlases:            Vec<(TextureId, TextureData)>,
@@ -50,13 +53,14 @@ impl Container {
 
     /// Eagerly allocates GPU buffer slots and returns the live Mesh immediately.
     /// Data is staged to the GPU when the upload closure returns.
-    pub unsafe fn alloc_mesh<V>(&mut self, vertices: &[V], indices: &[u16]) -> Mesh {
+    /// `buffer` selects which vertex sub-buffer to allocate from (use the `*_VB` constants).
+    pub unsafe fn alloc_mesh<V>(&mut self, buffer: usize, vertices: &[V], indices: &[u16]) -> Mesh {
         let byte_len = vertices.len() * size_of::<V>();
         let v_id = globals::vertex_buffer_mut()
-            .alloc(byte_len)
+            .alloc(buffer, byte_len)
             .expect("Vertex buffer OOM");
         let i_id = globals::index_buffer_mut()
-            .alloc(indices.len())
+            .alloc(0, indices.len())
             .expect("Index buffer OOM");
         let mesh = Mesh { vertices: v_id, indices: i_id };
         let raw = std::slice::from_raw_parts(vertices.as_ptr() as *const u8, byte_len).to_vec();
@@ -66,7 +70,7 @@ impl Container {
 
     /// Stage a partial update to an existing vertex buffer at a specific vertex offset.
     /// All staged regions are uploaded in a single batched transfer when [`Container::process`] runs.
-    pub unsafe fn stage_vertex_update_at<V>(&mut self, id: VertexBufferId, vertex_offset: usize, vertices: &[V]) {
+    pub unsafe fn stage_vertex_update_at<V>(&mut self, id: VertexAllocId, vertex_offset: usize, vertices: &[V]) {
         let byte_offset = vertex_offset * size_of::<V>();
         let byte_len = vertices.len() * size_of::<V>();
         let raw = std::slice::from_raw_parts(vertices.as_ptr() as *const u8, byte_len).to_vec();
@@ -75,7 +79,7 @@ impl Container {
 
     /// Stage new vertex data into an existing vertex buffer allocation.
     /// Used to update pre-allocated geometry (e.g. the UI quad buffer) without re-allocating.
-    pub unsafe fn stage_vertex_update<V>(&mut self, id: VertexBufferId, vertices: &[V]) {
+    pub unsafe fn stage_vertex_update<V>(&mut self, id: VertexAllocId, vertices: &[V]) {
         let byte_len = vertices.len() * size_of::<V>();
         let raw = std::slice::from_raw_parts(vertices.as_ptr() as *const u8, byte_len).to_vec();
         self.vertex_updates.push((id, raw));
@@ -237,7 +241,7 @@ impl Container {
                         binding: 0,
                         descriptor_set: vk::DescriptorSet::null(),
                         descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                        id: *id,
+                        id: DescriptorId::Texture(*id),
                     })
                     .collect();
                 globals::descriptor_pool().update(&update_info);
@@ -259,7 +263,7 @@ impl Container {
 
     /// Packs all pending mesh vertex and index data into a single contiguous staging allocation
     /// and records the copy commands into their respective `DEVICE_LOCAL` buffers.
-    unsafe fn upload_meshes(&self, command_buffer: &CommandBuffer) -> Result<usize> {
+    unsafe fn upload_meshes(&self, command_buffer: &CommandBuffer) -> Result<StagingAllocId> {
         let sb = globals::staging_buffer_mut();
         let vb = globals::vertex_buffer_mut();
         let ib = globals::index_buffer_mut();
@@ -268,7 +272,7 @@ impl Container {
             .map(|(_, v, i)| v.len() + i.len() * size_of::<u16>())
             .sum();
 
-        let s_id = sb.alloc(size)?;
+        let s_id = sb.alloc(0, size)?;
 
         let mut offset = 0;
         for (_, v_bytes, indices) in &self.meshes {
@@ -280,9 +284,9 @@ impl Container {
 
         offset = 0;
         for (mesh, v_bytes, indices) in &self.meshes {
-            sb.copy_to_buffer(command_buffer, vb, vb.alloc_info(mesh.vertices), offset as u64)?;
+            sb.copy_to_buffer(command_buffer, s_id, vb.sub_buffer(mesh.vertices), vb.alloc_info(mesh.vertices), offset as u64)?;
             offset += v_bytes.len();
-            sb.copy_to_buffer(command_buffer, ib, ib.alloc_info(mesh.indices), offset as u64)?;
+            sb.copy_to_buffer(command_buffer, s_id, ib.sub_buffer(mesh.indices), ib.alloc_info(mesh.indices), offset as u64)?;
             offset += indices.len() * size_of::<u16>();
         }
 
@@ -293,9 +297,9 @@ impl Container {
     /// Each image is transitioned `UNDEFINED → TRANSFER_DST_OPTIMAL`, filled from staging,
     /// then either transitioned directly to `SHADER_READ_ONLY_OPTIMAL` (`same_family`) or
     /// released with a queue-family ownership transfer for the graphics queue to acquire.
-    unsafe fn upload_textures(&self, command_buffer: &CommandBuffer, same_family: bool) -> Result<usize> {
+    unsafe fn upload_textures(&self, command_buffer: &CommandBuffer, same_family: bool) -> Result<StagingAllocId> {
         let size: usize = self.textures.iter().map(|(_, t)| t.pixels.len()).sum();
-        let s_id = globals::staging_buffer_mut().alloc(size)?;
+        let s_id = globals::staging_buffer_mut().alloc(0, size)?;
 
         let mut offset = 0;
         for (id, tex_data) in &self.textures {
@@ -359,12 +363,12 @@ impl Container {
     /// Stages and uploads all pending texture arrays.
     /// All layers of each array are packed contiguously in the staging buffer and copied one
     /// layer at a time. The same ownership-transfer logic as `upload_textures` applies per array.
-    unsafe fn upload_texture_arrays(&self, command_buffer: &CommandBuffer, same_family: bool) -> Result<usize> {
+    unsafe fn upload_texture_arrays(&self, command_buffer: &CommandBuffer, same_family: bool) -> Result<StagingAllocId> {
         let size: usize = self.texture_arrays.iter()
             .flat_map(|(_, tiles): &(TextureArrayId, Vec<TextureData>)| tiles.iter())
             .map(|t| t.pixels.len())
             .sum();
-        let s_id = globals::staging_buffer_mut().alloc(size)?;
+        let s_id = globals::staging_buffer_mut().alloc(0, size)?;
 
         let mut offset = 0usize;
         for (id, tiles) in &self.texture_arrays {
@@ -413,9 +417,9 @@ impl Container {
 
     /// Stages and uploads font atlas images (`R8_UNORM`).
     /// Same transfer and ownership-transfer pattern as `upload_textures`, but single-channel.
-    unsafe fn upload_font_atlases(&self, command_buffer: &CommandBuffer, same_family: bool) -> Result<usize> {
+    unsafe fn upload_font_atlases(&self, command_buffer: &CommandBuffer, same_family: bool) -> Result<StagingAllocId> {
         let size: usize = self.font_atlases.iter().map(|(_, t)| t.pixels.len()).sum();
-        let s_id = globals::staging_buffer_mut().alloc(size)?;
+        let s_id = globals::staging_buffer_mut().alloc(0, size)?;
 
         let mut offset = 0;
         for (id, tex_data) in &self.font_atlases {
@@ -458,21 +462,19 @@ impl Container {
     }
 
     /// Records partial vertex buffer writes at their caller-specified byte offsets.
-    /// All regions are packed into one staging allocation; `alloc_start` is added to each
-    /// staging offset to produce the absolute source address required by `copy_to_buffer_sized`.
-    unsafe fn apply_vertex_partial_updates(&self, command_buffer: &CommandBuffer) -> Result<usize> {
+    /// All regions are packed into one staging allocation.
+    unsafe fn apply_vertex_partial_updates(&self, command_buffer: &CommandBuffer) -> Result<StagingAllocId> {
         let sb = globals::staging_buffer_mut();
         let vb = globals::vertex_buffer_mut();
 
         let size: usize = self.vertex_partial_updates.iter().map(|(_, _, b)| b.len()).sum();
-        let s_id = sb.alloc(size)?;
-        let alloc_start = sb.alloc_info(s_id).offset as u64;
+        let s_id = sb.alloc(0, size)?;
 
         let mut staging_offset = 0;
         for (id, byte_offset, bytes) in &self.vertex_partial_updates {
             sb.copy_to_staging_at(s_id, bytes.as_slice(), staging_offset)?;
-            let dst_offset = vb.alloc_info(*id).offset as u64 + *byte_offset as u64;
-            sb.copy_to_buffer_sized(command_buffer, vb, dst_offset, alloc_start + staging_offset as u64, bytes.len() as u64)?;
+            let dst_offset = vb.sub_buffer(*id).alloc_info(id.slot).offset as u64 + *byte_offset as u64;
+            sb.copy_to_buffer_sized(command_buffer, s_id, vb.sub_buffer(*id), dst_offset, staging_offset as u64, bytes.len() as u64)?;
             staging_offset += bytes.len();
         }
 
@@ -480,21 +482,19 @@ impl Container {
     }
 
     /// Records full vertex buffer replacements for all pending updates.
-    /// All payloads are packed into one staging allocation; `alloc_start` is added to each
-    /// staging offset to produce the absolute source address required by `copy_to_buffer_sized`.
-    unsafe fn apply_vertex_updates(&self, command_buffer: &CommandBuffer) -> Result<usize> {
+    /// All payloads are packed into one staging allocation.
+    unsafe fn apply_vertex_updates(&self, command_buffer: &CommandBuffer) -> Result<StagingAllocId> {
         let sb = globals::staging_buffer_mut();
         let vb = globals::vertex_buffer_mut();
 
         let size: usize = self.vertex_updates.iter().map(|(_, b)| b.len()).sum();
-        let s_id = sb.alloc(size)?;
-        let alloc_start = sb.alloc_info(s_id).offset as u64;
+        let s_id = sb.alloc(0, size)?;
 
         let mut offset = 0;
         for (id, bytes) in &self.vertex_updates {
             sb.copy_to_staging_at(s_id, bytes.as_slice(), offset)?;
-            let dst_offset = vb.alloc_info(*id).offset as u64;
-            sb.copy_to_buffer_sized(command_buffer, vb, dst_offset, alloc_start + offset as u64, bytes.len() as u64)?;
+            let dst_offset = vb.sub_buffer(*id).alloc_info(id.slot).offset as u64;
+            sb.copy_to_buffer_sized(command_buffer, s_id, vb.sub_buffer(*id), dst_offset, offset as u64, bytes.len() as u64)?;
             offset += bytes.len();
         }
 

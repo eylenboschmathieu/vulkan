@@ -2,7 +2,7 @@
 
 use std::rc::Rc;
 
-use blitz::{Blitz, Container, Pos2, Rgba, UV, VERTEX_2D_RGBA, VertexBufferId};
+use blitz::{Blitz, Container, Pos2, Rgba, UV, VERTEX_2D_RGBA, VertexAllocId};
 use winit::{dpi::{LogicalPosition, PhysicalSize}, window::{CursorGrabMode, Window}};
 
 use crate::{font::FontAtlas, input::{Action, InputManager}};
@@ -298,7 +298,7 @@ impl UiTree {
 pub struct Ui {
     pub dirty: bool,
     quad_count: usize,
-    vertex_id: VertexBufferId,
+    vertex_id: VertexAllocId,
     pub font_atlas: Rc<FontAtlas>,
     hotbar_size: (u32, u32),
     mouse_store: (f32, f32),

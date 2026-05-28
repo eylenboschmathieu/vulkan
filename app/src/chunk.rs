@@ -237,7 +237,7 @@ impl ChunkMesh {
 
         if !vertices.is_empty() {
             assert!(vertices.len() <= u16::MAX as usize, "chunk mesh exceeds u16 vertex limit");
-            self.mesh = Some(container.alloc_mesh(&vertices, &indices));
+            self.mesh = Some(container.alloc_mesh(blitz::WORLD_VB, &vertices, &indices));
         }
     }
 }

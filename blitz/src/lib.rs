@@ -54,15 +54,16 @@ pub use crate::{
     container::*,
     mesh::Mesh,
     pipeline::{
-        descriptors::DescriptorSetUpdateInfo,
+        descriptors::{DescriptorId, DescriptorSetUpdateInfo},
         PipelineDef,
     },
     resources::{
         image::{TextureId, TextureArrayId},
         buffers::{
-            index_buffer::IndexBufferId,
-            vertex_buffer::VertexBufferId,
-            uniform_buffer::{UniformBufferId, CameraUbo, LightingUbo},
+            index_buffer::IndexAllocId,
+            staging_buffer::StagingAllocId,
+            vertex_buffer::VertexAllocId,
+            uniform_buffer::{UniformAllocId, CameraUbo, LightingUbo},
         },
         vertices::*,
     },
@@ -82,6 +83,11 @@ static INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 pub const MAX_UI_QUADS:    usize = 1024;
 pub const MAX_DEBUG_QUADS: usize = 256;
+
+/// Vertex sub-buffer indices — pass to [`Container::alloc_mesh`].
+pub const WORLD_VB: usize = 0;
+pub const UI_VB:    usize = 1;
+pub const DEBUG_VB: usize = 2;
 
 // ── Render layers ─────────────────────────────────────────────────────────────
 
@@ -150,7 +156,7 @@ struct QuadLayer {
 }
 
 impl QuadLayer {
-    fn vertex_id(&self) -> VertexBufferId { self.mesh.vertices }
+    fn vertex_id(&self) -> VertexAllocId { self.mesh.vertices }
 
     fn enqueue(&mut self, first_quad: usize, quad_count: usize, texture_id: TextureId) {
         self.queue.push((first_quad, quad_count, texture_id));
@@ -394,7 +400,7 @@ impl Blitz {
     }
 
     /// Returns the vertex buffer ID for the pre-allocated UI quad mesh.
-    pub fn ui_vertex_id(&self) -> VertexBufferId { self.ui.vertex_id() }
+    pub fn ui_vertex_id(&self) -> VertexAllocId { self.ui.vertex_id() }
 
     /// Enqueue a debug overlay draw call. Uses the same UI pipeline, drawn on top of UI.
     pub unsafe fn draw_debug_quads(&mut self, first_quad: usize, quad_count: usize, texture_id: TextureId) {
@@ -402,7 +408,7 @@ impl Blitz {
     }
 
     /// Returns the vertex buffer ID for the pre-allocated debug quad mesh.
-    pub fn debug_vertex_id(&self) -> VertexBufferId { self.debug.vertex_id() }
+    pub fn debug_vertex_id(&self) -> VertexAllocId { self.debug.vertex_id() }
 
     /// Write camera matrices for the current frame-in-flight slot.
     /// Call this every frame before [`Blitz::start_render`].
@@ -509,16 +515,20 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
     let commands = commands::Commands::new(globals::instance())?;
     globals::init_commands(commands);
 
-    let staging_buffer = resources::buffers::staging_buffer::StagingBuffer::new(1024 * 1024 * 16)?;
+    let staging_buffer = resources::buffers::staging_buffer::StagingBuffer::new(&[1024 * 1024 * 16])?;
     globals::init_staging_buffer(staging_buffer);
 
-    let index_buffer = resources::buffers::index_buffer::IndexBuffer::new(1024 * 512)?;
+    let index_buffer = resources::buffers::index_buffer::IndexBuffer::new(&[1024 * 512])?;
     globals::init_index_buffer(index_buffer);
 
-    let vertex_buffer = resources::buffers::vertex_buffer::VertexBuffer::new(1024 * 1024 * 8)?;
+    let vertex_buffer = resources::buffers::vertex_buffer::VertexBuffer::new(&[
+        1024 * 1024 * 8,                          // WORLD_VB
+        MAX_UI_QUADS    * 4 * 64,                 // UI_VB
+        MAX_DEBUG_QUADS * 4 * 64,                 // DEBUG_VB
+    ])?;
     globals::init_vertex_buffer(vertex_buffer);
 
-    let uniform_buffer = resources::buffers::uniform_buffer::UniformBuffer::new(16)?;
+    let uniform_buffer = resources::buffers::uniform_buffer::UniformBuffer::new(&[16])?;
     globals::init_uniform_buffer(uniform_buffer);
 
     let descriptor_pool = pipeline::descriptors::DescriptorPool::new(16)?;
@@ -574,12 +584,12 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
         let ui_indices: Vec<u16> = (0..MAX_UI_QUADS as u16)
             .flat_map(|q| { let b = q * 4; [b, b+1, b+2, b+2, b+3, b] })
             .collect();
-        ui_mesh = container.alloc_mesh(&vec![zeroed; MAX_UI_QUADS * 4], &ui_indices);
+        ui_mesh = container.alloc_mesh(UI_VB, &vec![zeroed; MAX_UI_QUADS * 4], &ui_indices);
 
         let debug_indices: Vec<u16> = (0..MAX_DEBUG_QUADS as u16)
             .flat_map(|q| { let b = q * 4; [b, b+1, b+2, b+2, b+3, b] })
             .collect();
-        debug_mesh = container.alloc_mesh(&vec![zeroed; MAX_DEBUG_QUADS * 4], &debug_indices);
+        debug_mesh = container.alloc_mesh(DEBUG_VB, &vec![zeroed; MAX_DEBUG_QUADS * 4], &debug_indices);
 
         Ok(())
     })?;

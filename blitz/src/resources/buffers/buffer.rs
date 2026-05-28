@@ -10,36 +10,45 @@ use crate::globals;
 /// methods are generic without accepting arbitrary types.
 pub trait TransferDst {}
 
-/// Raw Vulkan buffer + device memory pair with no suballocator.
+/// Raw Vulkan buffer handle and size, with no associated `VkDeviceMemory`.
 ///
-/// Higher-level buffer types (`VertexBuffer`, `IndexBuffer`, `StagingBuffer`,
-/// `UniformBuffer`) all `Deref` into this to expose the handle and memory.
+/// Each higher-level buffer type (`VertexBuffer`, `IndexBuffer`, `StagingBuffer`,
+/// `UniformBuffer`) `Deref`s into this to expose the handle and size.
+/// Memory ownership belongs to the concrete type, not to this struct.
+///
+/// The static helpers [`Buffer::create_buffer`], [`Buffer::create_memory`], and
+/// [`Buffer::get_memory_type_index`] are construction utilities shared by all buffer types.
 #[derive(Debug)]
 pub struct Buffer {
     handle: vk::Buffer,
-    memory: vk::DeviceMemory,
     size: u64,
 }
 
 impl Buffer {
-    pub unsafe fn new(handle: vk::Buffer, memory: vk::DeviceMemory, size: u64) -> Result<Self> {
-        Ok(Self { handle, memory, size })
+    pub unsafe fn new(handle: vk::Buffer, size: u64) -> Result<Self> {
+        Ok(Self { handle, size })
     }
 
-    /// Creates a `VkBuffer` shared between the graphics and transfer queue families.
+    /// Creates a `VkBuffer` accessible by both the graphics and transfer queue families.
     ///
-    /// `CONCURRENT` sharing mode avoids explicit ownership transfers for buffer copies.
-    /// Images are a different story and do require ownership transfers when the families differ.
+    /// Uses `EXCLUSIVE` sharing when both queues belong to the same family (no overhead),
+    /// and `CONCURRENT` when they differ (avoids explicit ownership transfers for buffers).
+    /// Images still require ownership transfers regardless — `CONCURRENT` only applies to buffers.
     pub unsafe fn create_buffer(size: u64, usage: vk::BufferUsageFlags) -> Result<vk::Buffer> {
-        let queue_family_indices = &[globals::device().queue_family_indices().graphics(), globals::device().queue_family_indices().transfer()];
+        let qfi = globals::device().queue_family_indices();
+        let sharing_mode = qfi.sharing_mode();
 
+        let queue_family_indices = &[qfi.graphics(), qfi.transfer()];
         let mut create_info = vk::BufferCreateInfo::builder()
             .size(size)
             .usage(usage)
-            .sharing_mode(vk::SharingMode::CONCURRENT)
-            .flags(vk::BufferCreateFlags::empty())
-            .queue_family_indices(queue_family_indices);
-        create_info.queue_family_index_count = 2;
+            .sharing_mode(sharing_mode)
+            .flags(vk::BufferCreateFlags::empty());
+
+        if sharing_mode == vk::SharingMode::CONCURRENT {
+            create_info = create_info.queue_family_indices(queue_family_indices);
+            create_info.queue_family_index_count = 2;
+        }
 
         let handle = globals::device().logical().create_buffer(&create_info, None)?;
 
@@ -61,9 +70,6 @@ impl Buffer {
     }
 
     pub unsafe fn destroy(&mut self) {
-        globals::device().logical().free_memory(self.memory, None);
-        self.memory = vk::DeviceMemory::null();
-        info!("~ Memory");
         globals::device().logical().destroy_buffer(self.handle, None);
         self.handle = vk::Buffer::null();
         info!("~ Handle");
@@ -71,10 +77,6 @@ impl Buffer {
 
     pub fn handle(&self) -> vk::Buffer {
         self.handle
-    }
-
-    pub fn memory(&self) -> vk::DeviceMemory {
-        self.memory
     }
 
     pub fn size(&self) -> u64 {

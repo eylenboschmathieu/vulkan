@@ -330,6 +330,14 @@ impl QueueFamilyIndices {
     pub fn present(&self) -> u32 {
         self.present
     }
+
+    pub fn sharing_mode(&self) -> vk::SharingMode {
+        if self.graphics == self.transfer {
+            vk::SharingMode::EXCLUSIVE
+        } else {
+            vk::SharingMode::CONCURRENT
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

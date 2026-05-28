@@ -4,7 +4,7 @@ use vulkanalia::vk::{self, *};
 use log::*;
 use anyhow::Result;
 
-use crate::globals;
+use crate::{globals, resources::buffers::uniform_buffer::UniformAllocId};
 
 type Mat4 = cgmath::Matrix4<f32>;
 
@@ -65,11 +65,18 @@ type Mat4 = cgmath::Matrix4<f32>;
         uniform buffers are bound to set 2
 */
 
+/// Typed resource identifier for a descriptor set update.
+#[derive(Debug, Clone, Copy)]
+pub enum DescriptorId {
+    Uniform(UniformAllocId),
+    Texture(usize),
+}
+
 pub struct DescriptorSetUpdateInfo {
     pub descriptor_set: vk::DescriptorSet,
     pub binding: u32,
     pub descriptor_type: vk::DescriptorType,
-    pub id: usize, // Uniform Id, or Texture Id
+    pub id: DescriptorId,
 }
 
 pub type DescriptorSetId = usize;
@@ -133,11 +140,11 @@ impl DescriptorPool {
         let mut image_infos_store: Vec<vk::DescriptorImageInfo> = vec![];
 
         for update_info in updates {
-            match update_info.descriptor_type {
-                vk::DescriptorType::UNIFORM_BUFFER => {
-                    let alloc = globals::uniform_buffer().alloc_info(update_info.id);
+            match update_info.id {
+                DescriptorId::Uniform(uniform_id) => {
+                    let alloc = globals::uniform_buffer().alloc_info(uniform_id);
                     buffer_infos_store.push(vk::DescriptorBufferInfo::builder()
-                        .buffer(globals::uniform_buffer().handle())
+                        .buffer(globals::uniform_buffer().sub_buffer(uniform_id).handle())
                         .offset(alloc.offset as u64)
                         .range(alloc.size as u64)
                         .build()
@@ -151,8 +158,8 @@ impl DescriptorPool {
                         .build()
                     );
                 },
-                vk::DescriptorType::COMBINED_IMAGE_SAMPLER => {
-                    let texture = &globals::textures()[update_info.id];
+                DescriptorId::Texture(texture_id) => {
+                    let texture = &globals::textures()[texture_id];
                     image_infos_store.push(vk::DescriptorImageInfo::builder()
                         .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                         .image_view(texture.view())
@@ -168,7 +175,6 @@ impl DescriptorPool {
                         .build()
                     );
                 },
-                _ => {}
             }
         }
 

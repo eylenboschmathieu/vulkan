@@ -6,9 +6,9 @@ use vulkanalia::vk::{self, Handle};
 use log::*;
 
 use crate::{
-    DescriptorSetUpdateInfo, globals,
+    DescriptorId, DescriptorSetUpdateInfo, globals,
     pipeline::descriptor_set_layout::{DescriptorSetLayout, DescriptorSetLayoutBuildInfo},
-    resources::buffers::uniform_buffer::{LightingUbo, UniformBufferId},
+    resources::buffers::uniform_buffer::{LightingUbo, UniformAllocId},
     sync::FRAMES_IN_FLIGHT,
 };
 
@@ -20,7 +20,7 @@ use crate::{
 pub(crate) struct Lighting {
     descriptor_set_layout: vk::DescriptorSetLayout,
     descriptor_sets: [vk::DescriptorSet; FRAMES_IN_FLIGHT],
-    uniform_buffers: [UniformBufferId; FRAMES_IN_FLIGHT],
+    uniform_buffers: [UniformAllocId; FRAMES_IN_FLIGHT],
 }
 
 impl Lighting {
@@ -41,8 +41,8 @@ impl Lighting {
         )?.try_into()
             .unwrap_or_else(|_| panic!("Expected vector of size {}", FRAMES_IN_FLIGHT));
 
-        let uniform_buffers: [UniformBufferId; FRAMES_IN_FLIGHT] = std::array::from_fn(|_| {
-            globals::uniform_buffer_mut().alloc(size_of::<LightingUbo>()).expect("Failed to allocate lighting buffer")
+        let uniform_buffers: [UniformAllocId; FRAMES_IN_FLIGHT] = std::array::from_fn(|_| {
+            globals::uniform_buffer_mut().alloc(0, size_of::<LightingUbo>()).expect("Failed to allocate lighting buffer")
         });
 
         let updates: Vec<DescriptorSetUpdateInfo> = zip(descriptor_sets, uniform_buffers)
@@ -50,7 +50,7 @@ impl Lighting {
                 binding: 0,
                 descriptor_set,
                 descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
-                id: uniform_id,
+                id: DescriptorId::Uniform(uniform_id),
             }).collect();
 
         globals::descriptor_pool().update(&updates);

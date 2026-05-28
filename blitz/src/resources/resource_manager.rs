@@ -29,10 +29,10 @@ pub struct ResourceManager {
 impl ResourceManager {
     pub(crate) unsafe fn new() -> Result<Self> {
         Ok(Self {
-            staging_buffer: StagingBuffer::new(1024 * 1024 * 4)?, // 4Mb
-            index_buffer: IndexBuffer::new(1024)?, // 2Kb
-            vertex_buffer: VertexBuffer::new(1024 * 1024 * 4)?, // 4Mb
-            uniform_buffer: UniformBuffer::new(16)?,
+            staging_buffer: StagingBuffer::new(&[1024 * 1024 * 4])?, // 4Mb
+            index_buffer: IndexBuffer::new(&[1024])?, // 2Kb
+            vertex_buffer: VertexBuffer::new(&[1024 * 1024 * 4])?, // 4Mb
+            uniform_buffer: UniformBuffer::new(&[16])?,
             descriptors: DescriptorPool::new(4)?,
             textures: Textures::new()?,
             materials: Materials::new()?,

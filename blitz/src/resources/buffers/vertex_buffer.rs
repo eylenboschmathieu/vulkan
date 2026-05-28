@@ -1,119 +1,193 @@
 #![allow(dead_code, unsafe_op_in_unsafe_fn, unused_variables, clippy::too_many_arguments, clippy::unnecessary_wraps)]
 
-use std::{
-    ops::{Deref, DerefMut},
-};
+use std::ops::{Deref, DerefMut};
 
 use log::*;
 use anyhow::{anyhow, Result};
-use vulkanalia::vk::{self, *};
+use vulkanalia::vk::{self, DeviceV1_0, Handle};
 
 use crate::{
     globals,
-    resources::buffers::{buffer::{
-        Buffer, TransferDst,
-    }, freelist::{Allocation, Allocator},}, commands::CommandBuffer,
+    resources::buffers::{buffer::{Buffer, TransferDst}, freelist::{Allocation, Allocator}},
+    commands::CommandBuffer,
 };
 
-pub type VertexBufferId = usize;
+/// Encodes both which sub-buffer and which suballocation slot within it.
+/// Returned by [`VertexBuffer::alloc`]; passed to every other method so
+/// callers never need to track the two levels separately.
+#[derive(Debug, Clone, Copy)]
+pub struct VertexAllocId {
+    pub buffer: usize,  // index into VertexBuffer's sub-buffer list
+    pub slot:   usize,  // suballocation slot within that sub-buffer
+}
 
-/// `DEVICE_LOCAL` vertex buffer with a freelist suballocator.
+impl Default for VertexAllocId {
+    fn default() -> Self {
+        Self { buffer: usize::MAX, slot: usize::MAX }
+    }
+}
+
+/// One `VkBuffer` handle with its own freelist suballocator.
+/// Memory is owned by the parent [`VertexBuffer`] and shared across all sub-buffers.
+pub(crate) struct SubBuffer {
+    buffer:     Buffer,           // VkBuffer handle only — Buffer holds no DeviceMemory; memory is owned by VertexBuffer
+    allocator:  Allocator,        // Manages byte ranges within this VkBuffer
+    alloc_list: Vec<Allocation>,  // Maps slot → byte offset and size
+    free_ids:   Vec<usize>,       // Reusable alloc_list slots from previous frees
+}
+
+impl SubBuffer {
+    fn alloc(&mut self, size: usize) -> Option<usize> {
+        if let Some(allocation) = self.allocator.alloc(size) {
+            if self.free_ids.is_empty() {
+                self.alloc_list.push(allocation);
+                Some(self.alloc_list.len() - 1)
+            } else {
+                let slot = self.free_ids.pop().unwrap();
+                self.alloc_list[slot] = allocation;
+                Some(slot)
+            }
+        } else {
+            None
+        }
+    }
+
+    fn free(&mut self, slot: usize) {
+        self.allocator.free(self.alloc_list[slot]);
+        self.free_ids.push(slot);
+        self.alloc_list[slot] = Allocation { offset: 0, size: 0 };
+    }
+
+    pub fn alloc_info(&self, slot: usize) -> Allocation {
+        self.alloc_list[slot]
+    }
+}
+
+impl TransferDst for SubBuffer {}
+
+impl Deref for SubBuffer {
+    type Target = Buffer;
+    fn deref(&self) -> &Self::Target { &self.buffer }
+}
+
+impl DerefMut for SubBuffer {
+    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.buffer }
+}
+
+impl std::fmt::Debug for SubBuffer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SubBuffer")
+            .field("size", &self.buffer.size())
+            .field("slots", &self.alloc_list.len())
+            .finish()
+    }
+}
+
+/// Collection of `DEVICE_LOCAL` vertex sub-buffers backed by a single shared `VkDeviceMemory`.
 ///
-/// A single `VkBuffer` holds all mesh vertex data; each allocation is addressed
-/// by a `VertexBufferId`.  Data must arrive via [`StagingBuffer`] — this buffer
-/// is not host-visible.
+/// Each sub-buffer has its own `VkBuffer` and freelist suballocator but no memory of its own.
+/// Allocations are addressed by [`VertexAllocId`], which encodes both the sub-buffer index
+/// and the slot within it, so callers can never mix the two up.
 #[derive(Debug)]
 pub struct VertexBuffer {
-    buffer: Buffer,
-    allocator: Allocator,
-    alloc_list: Vec<Allocation>,
-    free_list: Vec<VertexBufferId>,
+    buffers: Vec<SubBuffer>,
+    memory:  vk::DeviceMemory,  // Shared across all sub-buffers
 }
 
 impl VertexBuffer {
-    /// Allocates a `DEVICE_LOCAL` `VkBuffer` of `size` bytes.
-    pub unsafe fn new(size: vk::DeviceSize) -> Result<Self> {
+    /// Creates one `VkBuffer` per entry in `sizes`, all bound to a single `VkDeviceMemory`.
+    pub unsafe fn new(sizes: &[usize]) -> Result<Self> {
+        assert!(!sizes.is_empty(), "VertexBuffer requires at least one sub-buffer");
 
-        // Buffer
+        // Create all VkBuffer handles and query their memory requirements.
+        let mut handles: Vec<(vk::Buffer, vk::MemoryRequirements, usize)> = Vec::new();
+        for &size in sizes {
+            let handle = Buffer::create_buffer(
+                size as u64,
+                vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+            )?;
+            info!("+ Handle");
+            let req = globals::device().logical().get_buffer_memory_requirements(handle);
+            handles.push((handle, req, size));
+        }
 
-        let handle = Buffer::create_buffer(
-            size,
-            vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST
-        )?;
-        info!("+ Handle");
+        // Compute the aligned binding offset for each buffer within the shared allocation.
+        let mut bind_offsets = Vec::with_capacity(sizes.len());
+        let mut cursor = 0u64;
+        for (_, req, _) in &handles {
+            cursor = align_up(cursor, req.alignment);
+            bind_offsets.push(cursor);
+            cursor += req.size;
+        }
+        let total_size = cursor;
 
-        // Memory
+        // Intersect memory type bits across all buffers; find a compatible DEVICE_LOCAL type.
+        let combined_type_bits = handles.iter().fold(!0u32, |acc, (_, r, _)| acc & r.memory_type_bits);
+        let combined_req = vk::MemoryRequirements {
+            size: total_size,
+            alignment: handles.iter().map(|(_, r, _)| r.alignment).max().unwrap_or(1),
+            memory_type_bits: combined_type_bits,
+        };
+        let memory = Buffer::create_memory(combined_req, vk::MemoryPropertyFlags::DEVICE_LOCAL)?;
+        info!("+ Memory (shared, {} sub-buffers)", sizes.len());
 
-        let requirements = globals::device().logical().get_buffer_memory_requirements(handle);
+        // Bind each VkBuffer to its offset within the shared memory.
+        // SubBuffer's Buffer holds no DeviceMemory — the parent VertexBuffer owns it.
+        let mut buffers = Vec::with_capacity(sizes.len());
+        for ((handle, req, size), offset) in handles.into_iter().zip(bind_offsets) {
+            globals::device().logical().bind_buffer_memory(handle, memory, offset)?;
+            let buffer = Buffer::new(handle, size as u64)?;
+            let allocator = Allocator::new(size, req.alignment as usize);
+            buffers.push(SubBuffer { buffer, allocator, alloc_list: vec![], free_ids: vec![] });
+        }
 
-        let memory = Buffer::create_memory(
-            requirements,
-            vk::MemoryPropertyFlags::DEVICE_LOCAL
-        )?;
-        info!("+ Memory");
-
-        // Binding
-
-        globals::device().logical().bind_buffer_memory(handle, memory, 0)?;
-
-        let buffer = Buffer::new(handle, memory, size)?;
-
-        let allocator = Allocator::new(size as usize, requirements.alignment as usize);
-
-        Ok(Self { buffer, allocator, alloc_list: vec![], free_list: vec![] })
+        Ok(Self { buffers, memory })
     }
 
-    /// Records `vkCmdBindVertexBuffers` at the byte offset of the allocation,
-    /// allowing a single `VkBuffer` to hold multiple meshes.
-    pub unsafe fn bind(&self, command_buffer: &CommandBuffer, id: VertexBufferId) {
+    /// Suballocates `size` bytes from sub-buffer `buffer` and returns a [`VertexAllocId`].
+    pub fn alloc(&mut self, buffer: usize, size: usize) -> Result<VertexAllocId> {
+        self.buffers[buffer]
+            .alloc(size)
+            .map(|slot| VertexAllocId { buffer, slot })
+            .ok_or_else(|| anyhow!("Couldn't allocate vertex buffer {buffer}"))
+    }
+
+    pub fn free(&mut self, id: VertexAllocId) {
+        self.buffers[id.buffer].free(id.slot);
+    }
+
+    pub fn alloc_info(&self, id: VertexAllocId) -> Allocation {
+        self.buffers[id.buffer].alloc_info(id.slot)
+    }
+
+    /// Records `vkCmdBindVertexBuffers` for the sub-buffer and offset encoded in `id`.
+    pub unsafe fn bind(&self, command_buffer: &CommandBuffer, id: VertexAllocId) {
+        let sub = &self.buffers[id.buffer];
         globals::device().logical().cmd_bind_vertex_buffers(
             command_buffer.handle(),
             0,
-            &[self.handle()],
-            &[self.alloc_list[id].offset as u64]
+            &[sub.handle()],
+            &[sub.alloc_info(id.slot).offset as u64],
         );
     }
 
-    /// Suballocates `size` bytes and returns a `VertexBufferId`.
-    pub fn alloc(&mut self, size: usize) -> Result<VertexBufferId> {
-        if let Some(allocation) = self.allocator.alloc(size) {
-            if self.free_list.is_empty() {
-                self.alloc_list.push(allocation);
-                return Ok(self.alloc_list.len() - 1);
-            } else {
-                let id = self.free_list.pop().unwrap();
-                self.alloc_list[id] = allocation;
-                return Ok(id);
-            }
-        };
-
-        Err(anyhow!("Couldn't allocate vertex buffer"))
+    /// Returns a reference to the sub-buffer that `id` belongs to.
+    /// Used by [`Container`] to satisfy the `TransferDst + Deref<Target = Buffer>`
+    /// constraint required by `StagingBuffer` copy methods.
+    pub(crate) fn sub_buffer(&self, id: VertexAllocId) -> &SubBuffer {
+        &self.buffers[id.buffer]
     }
 
-    pub fn free(&mut self, id: VertexBufferId) {
-        let allocation = self.alloc_list[id];
-        self.allocator.free(allocation);
-        self.free_list.push(id);
-        self.alloc_list[id] = Allocation { offset: 0, size: 0 }
-    }
-
-    pub fn alloc_info(&self, id: VertexBufferId) -> Allocation {
-        self.alloc_list[id]
+    pub unsafe fn destroy(&mut self) {
+        for sub in &mut self.buffers {
+            sub.buffer.destroy();  // Destroys VkBuffer handle only; Buffer holds no DeviceMemory
+        }
+        globals::device().logical().free_memory(self.memory, None);
+        self.memory = vk::DeviceMemory::null();
+        info!("~ Memory (shared)");
     }
 }
 
-impl TransferDst for VertexBuffer {}
-
-impl Deref for VertexBuffer {
-    type Target = Buffer;
-
-    fn deref(&self) -> &Self::Target {
-        &self.buffer
-    }
-}
-
-impl DerefMut for VertexBuffer {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.buffer
-    }
+fn align_up(value: u64, alignment: u64) -> u64 {
+    (value + alignment - 1) & !(alignment - 1)
 }

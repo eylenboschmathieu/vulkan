@@ -3,7 +3,7 @@
 use std::{rc::Rc, time::Instant};
 
 use vulkanalia::vk::PresentModeKHR;
-use blitz::{Blitz, Container, Pos2, Rgba, UV, VERTEX_2D_RGBA, VertexBufferId};
+use blitz::{Blitz, Container, Pos2, Rgba, UV, VERTEX_2D_RGBA, VertexAllocId};
 use winit::window::Window;
 
 use crate::{camera::FpCamera, font::FontAtlas};
@@ -15,7 +15,7 @@ const PADDING: f32 = 10.0;
 pub struct DebugInfo {
     pub enabled: bool,
     atlas: Rc<FontAtlas>,
-    vertex_id: VertexBufferId,
+    vertex_id: VertexAllocId,
     quad_count: usize,
     pub present_mode: PresentModeKHR,
 

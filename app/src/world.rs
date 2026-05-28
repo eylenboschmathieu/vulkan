@@ -24,7 +24,7 @@ impl Sun {
 
     unsafe fn alloc(&mut self, container: &mut Container) -> Result<()> {
         let gold = vec4(1.0, 0.84, 0.0, 1.0);
-        self.mesh = container.alloc_mesh(
+        self.mesh = container.alloc_mesh(blitz::WORLD_VB,
             &[
                 VERTEX_3D_RGBA::new(vec3(-0.5, -0.5, 0.0), gold),
                 VERTEX_3D_RGBA::new(vec3( 0.5, -0.5, 0.0), gold),

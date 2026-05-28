@@ -57,7 +57,7 @@ impl FpCamera {
             0.0,  0.0, 1.0/2.0, 0.0,
             0.0,  0.0, 1.0/2.0, 1.0,
         );
-        let proj = fix * cgmath::perspective(Deg(90.0), aspect, 0.1, 100.0);
+        let proj = fix * cgmath::perspective(Deg(90.0), aspect, 0.3, 500.0);
 
         CameraUbo { model: Matrix4::from_scale(1.0), view, proj }
     }

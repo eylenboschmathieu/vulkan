@@ -15,7 +15,7 @@ const SLOT_MARGIN_BOTTOM: f32   = 20.0;
 const XH_SIZE:      f32 = 16.0;
 const XH_THICKNESS: f32 = 2.0;
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Clone, Copy)]
 enum MenuState {
     None,
     Main,
@@ -29,6 +29,7 @@ pub enum UiAction {
     Test(String),
     CloseMenu,
     ExitApp,
+    BackToMain,
     OpenKeybinds,
     OpenGameOptions,
     OpenSystemOptions,
@@ -307,6 +308,13 @@ pub struct Ui {
     state: MenuState,
     hovered_node: Option<usize>,
     dirty_nodes: Vec<usize>,
+
+    // Sub-menu container node indices
+    main_container:   usize,
+    game_container:   usize,
+    system_container: usize,
+    keybind_container: usize,
+    hotbar_container: usize,
 }
 
 impl Ui {
@@ -325,6 +333,12 @@ impl Ui {
             hovered_node: None,
             dirty_nodes: Vec::new(),
             tree: UiTree::default(area),
+
+            main_container:    0,
+            game_container:    0,
+            system_container:  0,
+            keybind_container: 0,
+            hotbar_container:  0,
         };
         this.generate_tree(area.width as f32, area.height as f32);
         this
@@ -394,7 +408,7 @@ impl Ui {
                         let render_data = match &self.tree.nodes[child_idx] {
                             UiNode::Panel(p)  => Some((p.color, p.uv_min, p.uv_max)),
                             UiNode::Button(b) => Some((b.color, b.uv_min, b.uv_max)),
-                            _                 => None,
+                            _ => None,
                         };
 
                         if let Some((color, [u0, v0], [u1, v1])) = render_data {
@@ -466,92 +480,113 @@ impl Ui {
         self.dirty_nodes.clear();
 
         let white              = self.font_atlas.white_uv;
+        let panel_color        = Rgba::new(0.8, 0.8, 0.8, 0.2);
         let button_color       = Rgba::new(0.5, 0.5, 0.5, 0.4);
         let button_hover_color = Rgba::new(0.65, 0.65, 0.65, 0.5);
+        let panel_w            = screen_width / 2.0;
 
-        // Main menu panel
-        let mut menu = PanelNode::new(Rect { x: 0.0, y: 0.0, width: screen_width / 2.0, height: screen_height });
-        menu.color = Rgba::new(0.8, 0.8, 0.8, 0.2);
-        menu.uv_min = white;
-        menu.uv_max = white;
-        menu.base.visible = false;
-        let menu_idx = self.tree.add_child(UiNode::Panel(menu), 0);
+        let make_panel = |visible: bool| -> PanelNode {
+            let mut p = PanelNode::new(Rect { x: 0.0, y: 0.0, width: panel_w, height: screen_height });
+            p.color       = panel_color;
+            p.uv_min      = white;
+            p.uv_max      = white;
+            p.base.visible = visible;
+            p
+        };
 
-        // Hotbar
-        let total_w = HOTBAR_SLOTS as f32 * (SLOT_SIZE + SLOT_GAP) + SLOT_GAP;
-        let x0 = (screen_width - total_w) / 2.0;
-        let y0 = screen_height - SLOT_SIZE - SLOT_MARGIN_BOTTOM - SLOT_GAP;
-        let mut hotbar = PanelNode::new(Rect { x: x0, y: y0, width: total_w, height: SLOT_SIZE + SLOT_GAP });
-        hotbar.color   = Rgba::new(0.8, 0.8, 0.8, 0.2);
-        hotbar.uv_min  = white;
-        hotbar.uv_max  = white;
-        let hotbar_idx = self.tree.add_child(UiNode::Panel(hotbar), 0);
+        let make_button = |rect: Rect, action: UiAction| -> ButtonNode {
+            let mut b = ButtonNode::new(rect);
+            b.on_release  = Some(action);
+            b.color       = button_color;
+            b.hover_color = Some(button_hover_color);
+            b.uv_min      = white;
+            b.uv_max      = white;
+            b
+        };
 
-        // Menu buttons
-        let mut resume = ButtonNode::new(Rect { x: 64.0, y: 200.0, width: 400.0, height: 48.0 });
-        resume.on_release  = Some(UiAction::CloseMenu);
-        resume.color       = button_color;
-        resume.hover_color = Some(button_hover_color);
-        resume.uv_min      = white;
-        resume.uv_max      = white;
-        let resume_idx = self.tree.add_child(UiNode::Button(resume), menu_idx);
+        // ── Main menu ────────────────────────────────────────────────────────
+        let main_idx = self.tree.add_child(UiNode::Panel(make_panel(false)), 0);
+        self.main_container = main_idx;
+        self.tree.add_label(main_idx, 64.0, 120.0, "Main Menu");
 
+        let resume_idx = self.tree.add_child(UiNode::Button(make_button(
+            Rect { x: 64.0, y: 200.0, width: 400.0, height: 48.0 }, UiAction::CloseMenu)), main_idx);
         self.tree.add_label(resume_idx, 64.0, 0.0, "Resume");
 
-        let mut game_opts = ButtonNode::new(Rect { x: 64.0, y: 296.0, width: 400.0, height: 48.0 });
-        game_opts.on_release  = Some(UiAction::Test("GameOptions".to_owned()));
-        game_opts.color       = button_color;
-        game_opts.hover_color = Some(button_hover_color);
-        game_opts.uv_min      = white;
-        game_opts.uv_max      = white;
-        let game_options_idx = self.tree.add_child(UiNode::Button(game_opts), menu_idx);
+        let b_idx = self.tree.add_child(UiNode::Button(make_button(
+            Rect { x: 64.0, y: 296.0, width: 400.0, height: 48.0 }, UiAction::OpenGameOptions)), main_idx);
+        self.tree.add_label(b_idx, 64.0, 0.0, "Game Options");
 
-        self.tree.add_label(game_options_idx, 64.0, 0.0, "Game Options");
+        let b_idx = self.tree.add_child(UiNode::Button(make_button(
+            Rect { x: 64.0, y: 392.0, width: 400.0, height: 48.0 }, UiAction::OpenSystemOptions)), main_idx);
+        self.tree.add_label(b_idx, 64.0, 0.0, "System Options");
 
-        let mut sys_opts = ButtonNode::new(Rect { x: 64.0, y: 392.0, width: 400.0, height: 48.0 });
-        sys_opts.on_release  = Some(UiAction::Test("SystemOptions".to_owned()));
-        sys_opts.color       = button_color;
-        sys_opts.hover_color = Some(button_hover_color);
-        sys_opts.uv_min      = white;
-        sys_opts.uv_max      = white;
-        let system_options_idx= self.tree.add_child(UiNode::Button(sys_opts), menu_idx);
+        let b_idx = self.tree.add_child(UiNode::Button(make_button(
+            Rect { x: 64.0, y: 488.0, width: 400.0, height: 48.0 }, UiAction::OpenKeybinds)), main_idx);
+        self.tree.add_label(b_idx, 64.0, 0.0, "Keybinds");
 
-        self.tree.add_label(system_options_idx, 64.0, 0.0, "System Options");
+        let b_idx = self.tree.add_child(UiNode::Button(make_button(
+            Rect { x: 64.0, y: 584.0, width: 400.0, height: 48.0 }, UiAction::ExitApp)), main_idx);
+        self.tree.add_label(b_idx, 64.0, 0.0, "Quit");
 
-        let mut keybinds = ButtonNode::new(Rect { x: 64.0, y: 488.0, width: 400.0, height: 48.0 });
-        keybinds.on_pressed  = Some(UiAction::Test("Keybindings".to_owned()));
-        keybinds.color       = button_color;
-        keybinds.hover_color = Some(button_hover_color);
-        keybinds.uv_min      = white;
-        keybinds.uv_max      = white;
-        let keybinds_idx = self.tree.add_child(UiNode::Button(keybinds), menu_idx);
+        // ── Game Options ─────────────────────────────────────────────────────
+        let game_idx = self.tree.add_child(UiNode::Panel(make_panel(false)), 0);
+        self.game_container = game_idx;
+        self.tree.add_label(game_idx, 64.0, 120.0, "Game Options");
 
-        self.tree.add_label(keybinds_idx, 64.0, 0.0, "Keybinds");
+        let b_idx = self.tree.add_child(UiNode::Button(make_button(
+            Rect { x: 64.0, y: 200.0, width: 400.0, height: 48.0 }, UiAction::BackToMain)), game_idx);
+        self.tree.add_label(b_idx, 64.0, 0.0, "Back");
 
-        let mut quit = ButtonNode::new(Rect { x: 64.0, y: 584.0, width: 400.0, height: 48.0 });
-        quit.on_release  = Some(UiAction::ExitApp);
-        quit.color       = button_color;
-        quit.hover_color = Some(button_hover_color);
-        quit.uv_min      = white;
-        quit.uv_max      = white;
-        let quit_idx= self.tree.add_child(UiNode::Button(quit), menu_idx);
+        // ── System Options ───────────────────────────────────────────────────
+        let sys_idx = self.tree.add_child(UiNode::Panel(make_panel(false)), 0);
+        self.system_container = sys_idx;
+        self.tree.add_label(sys_idx, 64.0, 120.0, "System Options");
 
-        self.tree.add_label(quit_idx, 64.0, 0.0, "Quit");
+        let b_idx = self.tree.add_child(UiNode::Button(make_button(
+            Rect { x: 64.0, y: 200.0, width: 400.0, height: 48.0 }, UiAction::BackToMain)), sys_idx);
+        self.tree.add_label(b_idx, 64.0, 0.0, "Back");
 
-        // Hotbar slots
+        // ── Keybinds ─────────────────────────────────────────────────────────
+        let keybind_idx = self.tree.add_child(UiNode::Panel(make_panel(false)), 0);
+        self.keybind_container = keybind_idx;
+        self.tree.add_label(keybind_idx, 64.0, 120.0, "Keybinds");
+
+        let b_idx = self.tree.add_child(UiNode::Button(make_button(
+            Rect { x: 64.0, y: 200.0, width: 400.0, height: 48.0 }, UiAction::BackToMain)), keybind_idx);
+        self.tree.add_label(b_idx, 64.0, 0.0, "Back");
+
+        // ── Hotbar ───────────────────────────────────────────────────────────
+        let total_w = HOTBAR_SLOTS as f32 * (SLOT_SIZE + SLOT_GAP) + SLOT_GAP;
+        let x0      = (screen_width - total_w) / 2.0;
+        let y0      = screen_height - SLOT_SIZE - SLOT_MARGIN_BOTTOM - SLOT_GAP;
+        let mut hotbar = PanelNode::new(Rect { x: x0, y: y0, width: total_w, height: SLOT_SIZE + SLOT_GAP });
+        hotbar.color  = panel_color;
+        hotbar.uv_min = white;
+        hotbar.uv_max = white;
+        let hotbar_idx = self.tree.add_child(UiNode::Panel(hotbar), 0);
+        self.hotbar_container = hotbar_idx;
+
         for i in 0..HOTBAR_SLOTS {
             let x = i as f32 * (SLOT_SIZE + SLOT_GAP) + SLOT_GAP;
             let mut slot = ButtonNode::new(Rect { x, y: SLOT_GAP / 2.0, width: SLOT_SIZE, height: SLOT_SIZE });
-            slot.color   = Rgba::new(0.0, 0.0, 0.0, 0.6);
-            slot.uv_min  = white;
-            slot.uv_max  = white;
+            slot.color  = Rgba::new(0.0, 0.0, 0.0, 0.6);
+            slot.uv_min = white;
+            slot.uv_max = white;
             self.tree.add_child(UiNode::Button(slot), hotbar_idx);
         }
 
-        // Reapply menu visibility in case the tree was rebuilt mid-session
+        // Reapply visibility in case the tree was rebuilt mid-session
         if self.state != MenuState::None {
-            self.tree.nodes[menu_idx].base_mut().visible = true;
-            self.tree.nodes[hotbar_idx].base_mut().visible = false;
+            let visible_idx = match self.state {
+                MenuState::None          => unreachable!(),
+                MenuState::Main          => self.main_container,
+                MenuState::GameOptions   => self.game_container,
+                MenuState::SystemOptions => self.system_container,
+                MenuState::Keybinds      => self.keybind_container,
+            };
+            self.tree.nodes[visible_idx].base_mut().visible = true;
+            self.tree.nodes[self.hotbar_container].base_mut().visible = false;
         }
     }
 
@@ -559,17 +594,24 @@ impl Ui {
         self.dirty = true;
         if self.state == MenuState::None {
             self.state = MenuState::Main;
-            self.tree.nodes[1].base_mut().visible = true;
-            self.tree.nodes[2].base_mut().visible = false;
+            self.tree.nodes[self.main_container].base_mut().visible = true;
+            self.tree.nodes[self.hotbar_container].base_mut().visible = false;
             window.set_cursor_grab(CursorGrabMode::None)
                 .expect("Failed to free cursor");
             window.set_cursor_position(LogicalPosition::new(self.mouse_store.0, self.mouse_store.1))
                 .expect("Failed to set cursor position");
             window.set_cursor_visible(true);
         } else {
+            let current_idx = match self.state {
+                MenuState::None          => unreachable!(),
+                MenuState::Main          => self.main_container,
+                MenuState::GameOptions   => self.game_container,
+                MenuState::SystemOptions => self.system_container,
+                MenuState::Keybinds      => self.keybind_container,
+            };
+            self.tree.nodes[current_idx].base_mut().visible = false;
+            self.tree.nodes[self.hotbar_container].base_mut().visible = true;
             self.state = MenuState::None;
-            self.tree.nodes[1].base_mut().visible = false;
-            self.tree.nodes[2].base_mut().visible = true;
             window.set_cursor_grab(CursorGrabMode::Locked)
                 .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined))
                 .expect("Failed to grab cursor");
@@ -612,25 +654,15 @@ impl Ui {
 
         if let Some(idx) = hit {
             if let UiNode::Button(b) = &self.tree.nodes[idx] {
-                if input.is_pressed(Action::PrimaryAction) {
-                    if let Some(action) = &b.on_pressed {
-                        match action {
-                            UiAction::Test(s)           => println!("{s}"),
-                            UiAction::OpenKeybinds      => println!("Keybinds"),
-                            UiAction::OpenGameOptions   => println!("Game Options"),
-                            UiAction::OpenSystemOptions => println!("System Options"),
-                            UiAction::CloseMenu | UiAction::ExitApp => return Some(action.clone()),
-                        }
-                    }
-                }
                 if input.is_released(Action::PrimaryAction) {
                     if let Some(action) = &b.on_release {
                         match action {
-                            UiAction::Test(s)           => println!("{s}"),
-                            UiAction::OpenKeybinds      => println!("Keybinds"),
-                            UiAction::OpenGameOptions   => println!("Game Options"),
-                            UiAction::OpenSystemOptions => println!("System Options"),
+                            UiAction::OpenKeybinds      => self.navigate(MenuState::Keybinds),
+                            UiAction::OpenGameOptions   => self.navigate(MenuState::GameOptions),
+                            UiAction::OpenSystemOptions => self.navigate(MenuState::SystemOptions),
+                            UiAction::BackToMain        => self.navigate(MenuState::Main),
                             UiAction::CloseMenu | UiAction::ExitApp => return Some(action.clone()),
+                            UiAction::Test(s) => println!("{s}"),
                         }
                     }
                 }
@@ -638,5 +670,31 @@ impl Ui {
         }
 
         None
+    }
+
+    fn navigate(&mut self, new_state: MenuState) {
+        // Swap the hovered button's color back before the layout changes.
+        // Do NOT push to dirty_nodes — flush_all supersedes flush_dirty here,
+        // and stale vertex_offset values from the old layout would corrupt the new buffer.
+        if let Some(old) = self.hovered_node.take() {
+            if let UiNode::Button(b) = &mut self.tree.nodes[old] {
+                if let Some(hc) = b.hover_color.as_mut() {
+                    std::mem::swap(&mut b.color, hc);
+                }
+            }
+        }
+        self.dirty_nodes.clear();
+
+        let idx_for = |state: MenuState| match state {
+            MenuState::None          => unreachable!(),
+            MenuState::Main          => self.main_container,
+            MenuState::GameOptions   => self.game_container,
+            MenuState::SystemOptions => self.system_container,
+            MenuState::Keybinds      => self.keybind_container,
+        };
+        self.tree.nodes[idx_for(self.state)].base_mut().visible = false;
+        self.tree.nodes[idx_for(new_state)].base_mut().visible = true;
+        self.state = new_state;
+        self.dirty = true;
     }
 }

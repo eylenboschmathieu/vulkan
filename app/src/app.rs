@@ -84,8 +84,9 @@ impl App {
 
         if self.ui.menu_opened() {
             match self.ui.handle_input(&self.input) {
-                Some(UiAction::CloseMenu) => self.ui.toggle_menu(window),
-                Some(UiAction::ExitApp)   => return Some(AppEvent::Exit),
+                Some(UiAction::CloseMenu)      => self.ui.toggle_menu(window),
+                Some(UiAction::ExitApp)        => return Some(AppEvent::Exit),
+                Some(UiAction::ApplySettings)  => self.blitz.set_vsync(self.ui.pending.vsync),
                 _ => {}
             }
         } else {
@@ -136,6 +137,7 @@ impl App {
             self.debug.draw(&mut self.blitz);
             self.blitz.end_render(window)?;
         } else {
+            self.debug.present_mode = self.blitz.get_present_mode();
             let window_area = window.inner_size();
             self.ui.generate_tree(window_area.width as f32, window_area.height as f32);
             self.ui.dirty = true;

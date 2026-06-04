@@ -37,9 +37,16 @@ impl Default for PendingSettings {
     }
 }
 
+/// Binds a [`CheckboxNode`] to a specific setting in [`PendingSettings`].
+/// The checkbox's selected state is kept in sync automatically.
+#[derive(Debug, Clone, Copy)]
+pub enum SettingKey {
+    Vsync,
+}
+
 #[derive(Clone, Debug)]
 pub enum UiAction {
-    Test(String),
+
     CloseMenu,
     ExitApp,
     BackToMain,
@@ -296,6 +303,7 @@ pub struct CheckboxNode {
     pub uv_max:         [f32; 2],
     pub selected:       bool,
     pub hovered:        bool,
+    pub setting:        Option<SettingKey>,
     pub interaction:    Interaction,
 }
 
@@ -309,6 +317,7 @@ impl CheckboxNode {
             uv_min:         [0.0, 0.0],
             uv_max:         [0.0, 0.0],
             selected:       false,
+            setting:        None,
             hovered:        false,
             interaction:    Interaction::default(),
         }
@@ -447,7 +456,6 @@ pub struct Ui {
     keybind_container:  usize,
     world_container:    usize,
     title_container:    usize,
-    vsync_checkbox_idx: usize,
 
     pub pending: PendingSettings,
 }
@@ -475,7 +483,6 @@ impl Ui {
             keybind_container:  0,
             world_container:    0,
             title_container:    0,
-            vsync_checkbox_idx: 0,
             pending:            PendingSettings::default(),
         };
         this.generate_tree(area.width as f32, area.height as f32);
@@ -670,31 +677,31 @@ impl Ui {
         let resume_idx = self.tree.add_child(UiNode::Button(make_button(
             Rect { x: 64.0, y: 200.0, width: 400.0, height: 48.0 }, UiAction::CloseMenu)), main_idx);
         let mut label = make_label("Resume");
-        label.base.set_position(Anchor::TopLeft, 64.0, 0.0);
+        label.base.set_position(Anchor::Left, 10.0, 0.0);
         self.tree.add_child(UiNode::Label(label), resume_idx);
 
         let b_idx = self.tree.add_child(UiNode::Button(make_button(
             Rect { x: 64.0, y: 296.0, width: 400.0, height: 48.0 }, UiAction::OpenGameOptions)), main_idx);
         let mut label = make_label("Game Options");
-        label.base.set_position(Anchor::TopLeft, 64.0, 0.0);
+        label.base.set_position(Anchor::Left, 10.0, 0.0);
         self.tree.add_child(UiNode::Label(label), b_idx);
 
         let b_idx = self.tree.add_child(UiNode::Button(make_button(
             Rect { x: 64.0, y: 392.0, width: 400.0, height: 48.0 }, UiAction::OpenSystemOptions)), main_idx);
         let mut label = make_label("System Options");
-        label.base.set_position(Anchor::TopLeft, 64.0, 0.0);
+        label.base.set_position(Anchor::Left, 10.0, 0.0);
         self.tree.add_child(UiNode::Label(label), b_idx);
 
         let b_idx = self.tree.add_child(UiNode::Button(make_button(
             Rect { x: 64.0, y: 488.0, width: 400.0, height: 48.0 }, UiAction::OpenKeybinds)), main_idx);
         let mut label = make_label("Keybinds");
-        label.base.set_position(Anchor::TopLeft, 64.0, 0.0);
+        label.base.set_position(Anchor::Left, 10.0, 0.0);
         self.tree.add_child(UiNode::Label(label), b_idx);
 
         let b_idx = self.tree.add_child(UiNode::Button(make_button(
             Rect { x: 64.0, y: 584.0, width: 400.0, height: 48.0 }, UiAction::ExitApp)), main_idx);
         let mut label = make_label("Quit");
-        label.base.set_position(Anchor::TopLeft, 64.0, 0.0);
+        label.base.set_position(Anchor::Left, 10.0, 0.0);
         self.tree.add_child(UiNode::Label(label), b_idx);
 
         // ── Game Options ─────────────────────────────────────────────────────
@@ -707,7 +714,7 @@ impl Ui {
         let b_idx = self.tree.add_child(UiNode::Button(make_button(
             Rect { x: 64.0, y: 200.0, width: 400.0, height: 48.0 }, UiAction::BackToMain)), game_idx);
         let mut label = make_label("Back");
-        label.base.set_position(Anchor::TopLeft, 64.0, 0.0);
+        label.base.set_position(Anchor::Left, 10.0, 0.0);
         self.tree.add_child(UiNode::Label(label), b_idx);
 
         // ── System Options ───────────────────────────────────────────────────
@@ -735,19 +742,20 @@ impl Ui {
         checkbox.hover_color = Some(button_hover_color);
         checkbox.uv_min      = white;
         checkbox.uv_max      = white;
+        checkbox.setting             = Some(SettingKey::Vsync);
         checkbox.interaction.on_release = Some(UiAction::ToggleVsync);
-        self.vsync_checkbox_idx = self.tree.add_child(UiNode::Checkbox(checkbox), row_idx);
+        self.tree.add_child(UiNode::Checkbox(checkbox), row_idx);
 
         let b_idx = self.tree.add_child(UiNode::Button(make_button(
             Rect { x: 64.0, y: 296.0, width: 400.0, height: 48.0 }, UiAction::ApplySettings)), sys_idx);
         let mut label = make_label("Accept");
-        label.base.set_position(Anchor::TopLeft, 64.0, 0.0);
+        label.base.set_position(Anchor::Left, 10.0, 0.0);
         self.tree.add_child(UiNode::Label(label), b_idx);
 
         let b_idx = self.tree.add_child(UiNode::Button(make_button(
             Rect { x: 64.0, y: 392.0, width: 400.0, height: 48.0 }, UiAction::BackToMain)), sys_idx);
         let mut label = make_label("Back");
-        label.base.set_position(Anchor::TopLeft, 64.0, 0.0);
+        label.base.set_position(Anchor::Left, 10.0, 0.0);
         self.tree.add_child(UiNode::Label(label), b_idx);
 
         // ── Keybinds ─────────────────────────────────────────────────────────
@@ -760,7 +768,7 @@ impl Ui {
         let b_idx = self.tree.add_child(UiNode::Button(make_button(
             Rect { x: 64.0, y: 200.0, width: 400.0, height: 48.0 }, UiAction::BackToMain)), keybind_idx);
         let mut label = make_label("Back");
-        label.base.set_position(Anchor::TopLeft, 64.0, 0.0);
+        label.base.set_position(Anchor::Left, 10.0, 0.0);
         self.tree.add_child(UiNode::Label(label), b_idx);
 
         // ── World UI ─────────────────────────────────────────────────────────
@@ -813,7 +821,7 @@ impl Ui {
         start_btn.uv_max      = white;
         let start_idx = self.tree.add_child(UiNode::Button(start_btn), title_idx);
         let mut label = make_label("Start");
-        label.base.set_position(Anchor::TopLeft, 64.0, 0.0);
+        label.base.set_position(Anchor::Left, 10.0, 0.0);
         self.tree.add_child(UiNode::Label(label), start_idx);
 
         let mut quit_btn = ButtonNode::new();
@@ -826,7 +834,7 @@ impl Ui {
         quit_btn.uv_max      = white;
         let quit_idx = self.tree.add_child(UiNode::Button(quit_btn), title_idx);
         let mut label = make_label("Quit");
-        label.base.set_position(Anchor::TopLeft, 64.0, 0.0);
+        label.base.set_position(Anchor::Left, 10.0, 0.0);
         self.tree.add_child(UiNode::Label(label), quit_idx);
 
         // Reapply visibility in case the tree was rebuilt mid-session
@@ -890,6 +898,27 @@ impl Ui {
         self.state == MenuState::Title
     }
 
+    /// Resets pending settings to the currently applied values so the settings
+    /// menu always shows the real state when opened.
+    pub fn sync_pending(&mut self, settings: PendingSettings) {
+        self.pending = settings;
+        self.sync_nodes_from_pending();
+    }
+
+    /// Walks all nodes and syncs any checkbox bound via [`SettingKey`] to the
+    /// corresponding value in [`pending`].
+    fn sync_nodes_from_pending(&mut self) {
+        for node in &mut self.tree.nodes {
+            if let UiNode::Checkbox(c) = node {
+                if let Some(key) = c.setting {
+                    c.selected = match key {
+                        SettingKey::Vsync => self.pending.vsync,
+                    };
+                }
+            }
+        }
+    }
+
     pub fn handle_input(&mut self, input: &InputManager) -> Option<UiAction> {
         if self.state == MenuState::World { return None; }
 
@@ -948,20 +977,18 @@ impl Ui {
                     UiAction::OpenGameOptions   => self.navigate(MenuState::GameOptions),
                     UiAction::OpenSystemOptions => self.navigate(MenuState::SystemOptions),
                     UiAction::BackToMain        => self.navigate(MenuState::Main),
-                    UiAction::ToggleVsync => {
+                    UiAction::ToggleVsync       => {
                         self.pending.vsync = !self.pending.vsync;
-                        let idx = self.vsync_checkbox_idx;
                         if let UiNode::Checkbox(c) = &mut self.tree.nodes[idx] {
                             c.selected = self.pending.vsync;
                         }
                         self.dirty_nodes.push(idx);
                     },
-                    UiAction::ApplySettings => {
+                    UiAction::ApplySettings     => {
                         self.navigate(MenuState::Main);
                         return Some(UiAction::ApplySettings);
                     }
                     UiAction::CloseMenu | UiAction::ExitApp => return Some(action),
-                    UiAction::Test(s) => println!("{s}"),
                 }
             }
         }
@@ -996,6 +1023,7 @@ impl Ui {
         self.tree.nodes[idx_for(self.state)].base_mut().visible = false;
         self.tree.nodes[idx_for(new_state)].base_mut().visible = true;
         self.state = new_state;
+        self.sync_nodes_from_pending();
         self.dirty = true;
     }
 }

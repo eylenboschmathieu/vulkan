@@ -7,7 +7,7 @@ use anyhow::Result;
 use log::*;
 use winit::{event::ElementState, window::Window};
 
-use crate::{camera::FpCamera, debug::DebugInfo, font::FontManager, input::{Action, Input, InputManager}, ui::{Ui, UiAction}, world::World};
+use crate::{camera::FpCamera, debug::DebugInfo, font::FontManager, input::{Action, Input, InputManager}, ui::{Ui, UiAction, PendingSettings}, world::World};
 
 pub enum AppEvent {
     Exit,
@@ -76,6 +76,9 @@ impl App {
 
         if self.input.is_pressed(Action::ToggleMenu) && !self.ui.is_title_screen() {
             self.ui.toggle_menu(window);
+            if self.ui.menu_opened() {
+                self.ui.sync_pending(PendingSettings { vsync: self.blitz.vsync() });
+            }
         }
 
         if self.input.is_pressed(Action::ToggleDebug) {
@@ -86,7 +89,7 @@ impl App {
             match self.ui.handle_input(&self.input) {
                 Some(UiAction::CloseMenu)      => self.ui.toggle_menu(window),
                 Some(UiAction::ExitApp)        => return Some(AppEvent::Exit),
-                Some(UiAction::ApplySettings)  => self.blitz.set_vsync(self.ui.pending.vsync),
+                Some(UiAction::ApplySettings)  => self.apply_settings(),
                 _ => {}
             }
         } else {
@@ -95,6 +98,10 @@ impl App {
         
         self.input.state.clear();
         None
+    }
+
+    fn apply_settings(&mut self) {
+        self.blitz.set_vsync(self.ui.pending.vsync);
     }
 
     /// Advance simulation by `delta` seconds.

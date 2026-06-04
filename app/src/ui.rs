@@ -17,7 +17,8 @@ const XH_THICKNESS: f32 = 2.0;
 
 #[derive(PartialEq, Debug, Clone, Copy)]
 enum MenuState {
-    None,
+    World,
+    Title,
     Main,
     GameOptions,
     SystemOptions,
@@ -86,9 +87,35 @@ pub enum Overflow {
     Clip,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Anchor {
+    TopLeft,    Top,    TopRight,
+    Left,       Center, Right,
+    BottomLeft, Bottom, BottomRight,
+}
+
+impl Anchor {
+    /// Returns the (x, y) fractional position of this anchor within a rect.
+    /// e.g. TopLeft = (0, 0), Center = (0.5, 0.5), BottomRight = (1, 1).
+    fn fractions(self) -> (f32, f32) {
+        match self {
+            Anchor::TopLeft     => (0.0, 0.0),
+            Anchor::Top         => (0.5, 0.0),
+            Anchor::TopRight    => (1.0, 0.0),
+            Anchor::Left        => (0.0, 0.5),
+            Anchor::Center      => (0.5, 0.5),
+            Anchor::Right       => (1.0, 0.5),
+            Anchor::BottomLeft  => (0.0, 1.0),
+            Anchor::Bottom      => (0.5, 1.0),
+            Anchor::BottomRight => (1.0, 1.0),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct NodeBase {
     pub bounds: Rect,
+    pub anchor: Anchor,
     pub parent: Option<usize>,
     pub children: Vec<usize>,
     pub visible: bool,
@@ -96,8 +123,52 @@ pub struct NodeBase {
 }
 
 impl NodeBase {
-    pub fn new(bounds: Rect) -> Self {
-        Self { bounds, parent: None, children: Vec::new(), visible: true, vertex_offset: 0 }
+    pub fn new() -> Self {
+        Self {
+            bounds: Rect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 },
+            anchor: Anchor::TopLeft,
+            parent: None,
+            children: Vec::new(),
+            visible: true,
+            vertex_offset: 0,
+        }
+    }
+
+    /// Sets the anchor point and position offset from it.
+    /// `x` and `y` are offsets from the chosen anchor point on the parent;
+    /// the same point on the node is used as the attachment, so e.g.
+    /// `Center + (0, 0)` truly centers the node within its parent.
+    pub fn set_position(&mut self, anchor: Anchor, x: f32, y: f32) {
+        self.anchor   = anchor;
+        self.bounds.x = x;
+        self.bounds.y = y;
+    }
+
+    pub fn set_width(&mut self, width: f32) {
+        self.bounds.width = width;
+    }
+
+    pub fn set_height(&mut self, height: f32) {
+        self.bounds.height = height;
+    }
+
+    pub fn set_size(&mut self, width: f32, height: f32) {
+        self.bounds.width  = width;
+        self.bounds.height = height;
+    }
+
+    /// Computes the node's screen-space [`Edges`] relative to its parent's edges,
+    /// respecting the anchor. The same anchor point on both parent and node is used
+    /// as the attachment, so `Center + (0, 0)` truly centers the node.
+    pub fn resolve(&self, parent: &Edges) -> Edges {
+        let (ax, ay)  = self.anchor.fractions();
+        let parent_w  = parent.right  - parent.left;
+        let parent_h  = parent.bottom - parent.top;
+        let ref_x     = parent.left + ax * parent_w  + self.bounds.x;
+        let ref_y     = parent.top  + ay * parent_h  + self.bounds.y;
+        let left      = ref_x - ax * self.bounds.width;
+        let top       = ref_y - ay * self.bounds.height;
+        Edges { left, right: left + self.bounds.width, top, bottom: top + self.bounds.height }
     }
 }
 
@@ -108,8 +179,8 @@ pub struct ContainerNode {
 }
 
 impl ContainerNode {
-    pub fn new(bounds: Rect) -> Self {
-        Self { base: NodeBase::new(bounds) }
+    pub fn new() -> Self {
+        Self { base: NodeBase::new() }
     }
 }
 
@@ -123,9 +194,9 @@ pub struct PanelNode {
 }
 
 impl PanelNode {
-    pub fn new(bounds: Rect) -> Self {
+    pub fn new() -> Self {
         Self {
-            base: NodeBase::new(bounds),
+            base: NodeBase::new(),
             color: Rgba::new(0.0, 0.0, 0.0, 0.0),
             uv_min: [0.0, 0.0],
             uv_max: [0.0, 0.0],
@@ -148,9 +219,9 @@ pub struct ButtonNode {
 }
 
 impl ButtonNode {
-    pub fn new(bounds: Rect) -> Self {
+    pub fn new() -> Self {
         Self {
-            base: NodeBase::new(bounds),
+            base: NodeBase::new(),
             color: Rgba::new(0.0, 0.0, 0.0, 0.0),
             hover_color: None,
             uv_min: [0.0, 0.0],
@@ -173,11 +244,12 @@ pub struct CheckboxNode {
 }
 
 impl CheckboxNode {
-    pub fn new(bounds: Rect) -> Self {
-        let button_size = bounds.height;
+    pub fn new(size: f32) -> Self {
+        let mut button = ButtonNode::new();
+        button.base.set_size(size, size);
         Self {
-            container: ContainerNode::new(bounds),
-            button: ButtonNode::new(Rect {x: 0.0, y: 0.0, width: button_size, height: button_size }),
+            container: ContainerNode::new(),
+            button,
             selected_color: Rgba::new(0.0, 0.0, 1.0, 0.5),
             selected: false,
         }
@@ -198,9 +270,9 @@ pub struct LabelNode {
 }
 
 impl LabelNode {
-    pub fn new(bounds: Rect, text: impl Into<String>) -> Self {
+    pub fn new(text: impl Into<String>) -> Self {
         Self {
-            base: NodeBase::new(bounds),
+            base: NodeBase::new(),
             text: text.into(),
             color: Rgba::new(0.0, 0.0, 0.0, 1.0),
         }
@@ -247,11 +319,12 @@ pub struct UiTree {
 
 impl UiTree {
     pub fn default(area: PhysicalSize<u32>) -> Self {
+        let mut ui_parent = ContainerNode::new();
+        ui_parent.base.set_size(area.width as f32, area.height as f32);
+
         Self {
             root: 0,
-            nodes: vec![UiNode::Container(ContainerNode::new(
-                Rect { x: 0.0, y: 0.0, width: area.width as f32, height: area.height as f32 },
-            ))],
+            nodes: vec![UiNode::Container(ui_parent)],
         }
     }
 
@@ -264,19 +337,19 @@ impl UiTree {
     }
 
     /// Adds a text label as a child of a Panel or Button. Panics for other node types.
-    pub fn add_label(&mut self, parent_idx: usize, x: f32, y: f32, text: impl Into<String>) -> usize {
+    pub fn add_label(&mut self, parent_idx: usize, text: impl Into<String>) -> usize {
         assert!(
             matches!(&self.nodes[parent_idx], UiNode::Container(_) | UiNode::Panel(_) | UiNode::Button(_)),
-            "add_label: only Panel and Button nodes can contain labels"
+            "add_label: only Container, Panel, and Button nodes can contain labels"
         );
-        self.add_child(UiNode::Label(LabelNode::new(Rect { x, y, width: 0.0, height: 0.0 }, text)), parent_idx)
+        self.add_child(UiNode::Label(LabelNode::new(text)), parent_idx)
     }
 
     pub fn hit_test(&self, mx: f32, my: f32, node_idx: usize, parent_edges: &Edges) -> Option<usize> {
         let node = &self.nodes[node_idx];
         if !node.base().visible { return None; }
 
-        let edges = node.base().bounds.edges(parent_edges);
+        let edges = node.base().resolve(parent_edges);
         if !edges.contains(mx, my) { return None; }
 
         for &child_idx in &node.base().children {
@@ -310,11 +383,12 @@ pub struct Ui {
     dirty_nodes: Vec<usize>,
 
     // Sub-menu container node indices
-    main_container:   usize,
+    menu_container:   usize,
     game_container:   usize,
     system_container: usize,
     keybind_container: usize,
-    hotbar_container: usize,
+    world_container:   usize,
+    title_container:   usize,
 }
 
 impl Ui {
@@ -329,16 +403,17 @@ impl Ui {
             font_atlas: atlas,
             hotbar_size: (0, 0),
             mouse_store: mouse,
-            state: MenuState::None,
+            state: MenuState::Title,
             hovered_node: None,
             dirty_nodes: Vec::new(),
             tree: UiTree::default(area),
 
-            main_container:    0,
+            menu_container:    0,
             game_container:    0,
             system_container:  0,
             keybind_container: 0,
-            hotbar_container:  0,
+            world_container:   0,
+            title_container:   0,
         };
         this.generate_tree(area.width as f32, area.height as f32);
         this
@@ -346,11 +421,12 @@ impl Ui {
 
     pub unsafe fn flush_all(&mut self, container: &mut Container, screen: (f32, f32)) {
         self.dirty = false;
+        self.dirty_nodes.clear();
         let atlas = &*self.font_atlas;
         let mut verts: Vec<VERTEX_2D_RGBA> = Vec::new();
 
         // Crosshair
-        if self.state == MenuState::None {
+        if self.state == MenuState::World {
             let cx = screen.0 / 2.0;
             let cy = screen.1 / 2.0;
             let xh_color = Rgba::new(1.0, 1.0, 1.0, 0.1);
@@ -366,7 +442,7 @@ impl Ui {
             verts.push(VERTEX_2D_RGBA::new(Pos2 { x: cx - XH_THICKNESS, y: cy + XH_SIZE      }, w, xh_color));
         }
 
-        let root_edges = self.tree.nodes[0].base().bounds.edges(&Edges { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0 });
+        let root_edges = self.tree.nodes[0].base().resolve(&Edges { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0 });
         let mut stack: Vec<(usize, Edges)> = vec![(0, root_edges)];
 
         while !stack.is_empty() {
@@ -376,7 +452,7 @@ impl Ui {
                 let child_idx = self.tree.nodes[node_idx].base().children[i];
                 if !self.tree.nodes[child_idx].base().visible { continue; }
 
-                let e = self.tree.nodes[child_idx].base().bounds.edges(&parent_edges);
+                let e = self.tree.nodes[child_idx].base().resolve(&parent_edges);
 
                 match &self.tree.nodes[child_idx] {
                     UiNode::Label(l) => {
@@ -458,7 +534,7 @@ impl Ui {
             Some(p) => self.node_edges(p),
             None    => Edges { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0 },
         };
-        node.base().bounds.edges(&parent_edges)
+        node.base().resolve(&parent_edges)
     }
 
     pub unsafe fn draw(&self, blitz: &mut Blitz) {
@@ -470,11 +546,12 @@ impl Ui {
     }
 
     pub fn generate_tree(&mut self, screen_width: f32, screen_height: f32) {
+        let mut ui_parent = ContainerNode::new();
+        ui_parent.base.set_size(screen_width, screen_height);
+
         self.tree = UiTree {
             root: 0,
-            nodes: vec![UiNode::Container(ContainerNode::new(
-                Rect { x: 0.0, y: 0.0, width: screen_width, height: screen_height },
-            ))],
+            nodes: vec![UiNode::Container(ui_parent)],
         };
         self.hovered_node = None;
         self.dirty_nodes.clear();
@@ -486,16 +563,18 @@ impl Ui {
         let panel_w            = screen_width / 2.0;
 
         let make_panel = |visible: bool| -> PanelNode {
-            let mut p = PanelNode::new(Rect { x: 0.0, y: 0.0, width: panel_w, height: screen_height });
+            let mut p = PanelNode::new();
+            p.base.visible = visible;
+            p.base.set_size(panel_w, screen_height);
             p.color       = panel_color;
             p.uv_min      = white;
             p.uv_max      = white;
-            p.base.visible = visible;
             p
         };
 
         let make_button = |rect: Rect, action: UiAction| -> ButtonNode {
-            let mut b = ButtonNode::new(rect);
+            let mut b = ButtonNode::new();
+            b.base.bounds = rect;
             b.on_release  = Some(action);
             b.color       = button_color;
             b.hover_color = Some(button_hover_color);
@@ -506,112 +585,164 @@ impl Ui {
 
         // ── Main menu ────────────────────────────────────────────────────────
         let main_idx = self.tree.add_child(UiNode::Panel(make_panel(false)), 0);
-        self.main_container = main_idx;
-        self.tree.add_label(main_idx, 64.0, 120.0, "Main Menu");
+        self.menu_container = main_idx;
+        self.tree.add_label(main_idx, "Main Menu");
 
         let resume_idx = self.tree.add_child(UiNode::Button(make_button(
             Rect { x: 64.0, y: 200.0, width: 400.0, height: 48.0 }, UiAction::CloseMenu)), main_idx);
-        self.tree.add_label(resume_idx, 64.0, 0.0, "Resume");
+        { let _l = self.tree.add_label(resume_idx, "Resume"); self.tree.nodes[_l].base_mut().set_position(Anchor::TopLeft, 64.0, 0.0); }
 
         let b_idx = self.tree.add_child(UiNode::Button(make_button(
             Rect { x: 64.0, y: 296.0, width: 400.0, height: 48.0 }, UiAction::OpenGameOptions)), main_idx);
-        self.tree.add_label(b_idx, 64.0, 0.0, "Game Options");
+        { let _l = self.tree.add_label(b_idx, "Game Options"); self.tree.nodes[_l].base_mut().set_position(Anchor::TopLeft, 64.0, 0.0); }
 
         let b_idx = self.tree.add_child(UiNode::Button(make_button(
             Rect { x: 64.0, y: 392.0, width: 400.0, height: 48.0 }, UiAction::OpenSystemOptions)), main_idx);
-        self.tree.add_label(b_idx, 64.0, 0.0, "System Options");
+        { let _l = self.tree.add_label(b_idx, "System Options"); self.tree.nodes[_l].base_mut().set_position(Anchor::TopLeft, 64.0, 0.0); }
 
         let b_idx = self.tree.add_child(UiNode::Button(make_button(
             Rect { x: 64.0, y: 488.0, width: 400.0, height: 48.0 }, UiAction::OpenKeybinds)), main_idx);
-        self.tree.add_label(b_idx, 64.0, 0.0, "Keybinds");
+        { let _l = self.tree.add_label(b_idx, "Keybinds"); self.tree.nodes[_l].base_mut().set_position(Anchor::TopLeft, 64.0, 0.0); }
 
         let b_idx = self.tree.add_child(UiNode::Button(make_button(
             Rect { x: 64.0, y: 584.0, width: 400.0, height: 48.0 }, UiAction::ExitApp)), main_idx);
-        self.tree.add_label(b_idx, 64.0, 0.0, "Quit");
+        { let _l = self.tree.add_label(b_idx, "Quit"); self.tree.nodes[_l].base_mut().set_position(Anchor::TopLeft, 64.0, 0.0); }
 
         // ── Game Options ─────────────────────────────────────────────────────
         let game_idx = self.tree.add_child(UiNode::Panel(make_panel(false)), 0);
         self.game_container = game_idx;
-        self.tree.add_label(game_idx, 64.0, 120.0, "Game Options");
+        self.tree.add_label(game_idx, "Game Options");
 
         let b_idx = self.tree.add_child(UiNode::Button(make_button(
             Rect { x: 64.0, y: 200.0, width: 400.0, height: 48.0 }, UiAction::BackToMain)), game_idx);
-        self.tree.add_label(b_idx, 64.0, 0.0, "Back");
+        { let _l = self.tree.add_label(b_idx, "Back"); self.tree.nodes[_l].base_mut().set_position(Anchor::TopLeft, 64.0, 0.0); }
 
         // ── System Options ───────────────────────────────────────────────────
         let sys_idx = self.tree.add_child(UiNode::Panel(make_panel(false)), 0);
         self.system_container = sys_idx;
-        self.tree.add_label(sys_idx, 64.0, 120.0, "System Options");
+        self.tree.add_label(sys_idx, "System Options");
 
         let b_idx = self.tree.add_child(UiNode::Button(make_button(
             Rect { x: 64.0, y: 200.0, width: 400.0, height: 48.0 }, UiAction::BackToMain)), sys_idx);
-        self.tree.add_label(b_idx, 64.0, 0.0, "Back");
+        { let _l = self.tree.add_label(b_idx, "Back"); self.tree.nodes[_l].base_mut().set_position(Anchor::TopLeft, 64.0, 0.0); }
 
         // ── Keybinds ─────────────────────────────────────────────────────────
         let keybind_idx = self.tree.add_child(UiNode::Panel(make_panel(false)), 0);
         self.keybind_container = keybind_idx;
-        self.tree.add_label(keybind_idx, 64.0, 120.0, "Keybinds");
+        self.tree.add_label(keybind_idx, "Keybinds");
 
         let b_idx = self.tree.add_child(UiNode::Button(make_button(
             Rect { x: 64.0, y: 200.0, width: 400.0, height: 48.0 }, UiAction::BackToMain)), keybind_idx);
-        self.tree.add_label(b_idx, 64.0, 0.0, "Back");
+        { let _l = self.tree.add_label(b_idx, "Back"); self.tree.nodes[_l].base_mut().set_position(Anchor::TopLeft, 64.0, 0.0); }
 
-        // ── Hotbar ───────────────────────────────────────────────────────────
+        // ── World UI ─────────────────────────────────────────────────────────
+        let mut world = ContainerNode::new();
+        world.base.set_size(screen_width, screen_height);
+        let world_idx = self.tree.add_child(UiNode::Container(world), 0);
+        self.world_container = world_idx;
+
         let total_w = HOTBAR_SLOTS as f32 * (SLOT_SIZE + SLOT_GAP) + SLOT_GAP;
-        let x0      = (screen_width - total_w) / 2.0;
-        let y0      = screen_height - SLOT_SIZE - SLOT_MARGIN_BOTTOM - SLOT_GAP;
-        let mut hotbar = PanelNode::new(Rect { x: x0, y: y0, width: total_w, height: SLOT_SIZE + SLOT_GAP });
+        let mut hotbar = PanelNode::new();
+        hotbar.base.set_position(Anchor::Bottom, 0.0, -SLOT_MARGIN_BOTTOM);
+        hotbar.base.set_size(total_w, SLOT_SIZE + SLOT_GAP);
         hotbar.color  = panel_color;
         hotbar.uv_min = white;
         hotbar.uv_max = white;
-        let hotbar_idx = self.tree.add_child(UiNode::Panel(hotbar), 0);
-        self.hotbar_container = hotbar_idx;
+        let hotbar_idx = self.tree.add_child(UiNode::Panel(hotbar), world_idx);
 
         for i in 0..HOTBAR_SLOTS {
             let x = i as f32 * (SLOT_SIZE + SLOT_GAP) + SLOT_GAP;
-            let mut slot = ButtonNode::new(Rect { x, y: SLOT_GAP / 2.0, width: SLOT_SIZE, height: SLOT_SIZE });
+            let mut slot = ButtonNode::new();
+            slot.base.set_position(Anchor::TopLeft, x, SLOT_GAP / 2.0);
+            slot.base.set_size(SLOT_SIZE, SLOT_SIZE);
             slot.color  = Rgba::new(0.0, 0.0, 0.0, 0.6);
             slot.uv_min = white;
             slot.uv_max = white;
             self.tree.add_child(UiNode::Button(slot), hotbar_idx);
         }
 
+        // ── Title screen ─────────────────────────────────────────────────────
+        let mut title = PanelNode::new();
+        title.base.set_size(screen_width, screen_height);
+        title.color  = Rgba::new(0.0, 0.0, 0.0, 1.0);
+        title.uv_min = white;
+        title.uv_max = white;
+        title.base.visible = false;
+        let title_idx = self.tree.add_child(UiNode::Panel(title), 0);
+        self.title_container = title_idx;
+
+        let mut title_label = LabelNode::new("Playground");
+        title_label.base.set_position(Anchor::Top, 0.0, 80.0);
+        self.tree.add_child(UiNode::Label(title_label), title_idx);
+
+        let mut start_btn = ButtonNode::new();
+        start_btn.base.set_position(Anchor::Center, 0.0, 0.0);
+        start_btn.base.set_size(200.0, 48.0);
+        start_btn.on_release  = Some(UiAction::CloseMenu);
+        start_btn.color       = Rgba::new(1.0, 1.0, 1.0, 1.0);
+        start_btn.hover_color = Some(Rgba::new(0.2, 0.5, 1.0, 1.0));
+        start_btn.uv_min      = white;
+        start_btn.uv_max      = white;
+        let start_idx = self.tree.add_child(UiNode::Button(start_btn), title_idx);
+        { let _l = self.tree.add_label(start_idx, "Start"); self.tree.nodes[_l].base_mut().set_position(Anchor::TopLeft, 64.0, 0.0); }
+
+        let mut quit_btn = ButtonNode::new();
+        quit_btn.base.set_position(Anchor::Center, 0.0, 64.0);
+        quit_btn.base.set_size(200.0, 48.0);
+        quit_btn.on_release  = Some(UiAction::ExitApp);
+        quit_btn.color       = Rgba::new(1.0, 1.0, 1.0, 1.0);
+        quit_btn.hover_color = Some(Rgba::new(0.2, 0.5, 1.0, 1.0));
+        quit_btn.uv_min      = white;
+        quit_btn.uv_max      = white;
+        let quit_idx = self.tree.add_child(UiNode::Button(quit_btn), title_idx);
+        { let _l = self.tree.add_label(quit_idx, "Quit"); self.tree.nodes[_l].base_mut().set_position(Anchor::TopLeft, 64.0, 0.0); }
+
         // Reapply visibility in case the tree was rebuilt mid-session
-        if self.state != MenuState::None {
+        if self.state != MenuState::World {
             let visible_idx = match self.state {
-                MenuState::None          => unreachable!(),
-                MenuState::Main          => self.main_container,
+                MenuState::World         => self.world_container,
+                MenuState::Title         => self.title_container,
+                MenuState::Main          => self.menu_container,
                 MenuState::GameOptions   => self.game_container,
                 MenuState::SystemOptions => self.system_container,
                 MenuState::Keybinds      => self.keybind_container,
             };
             self.tree.nodes[visible_idx].base_mut().visible = true;
-            self.tree.nodes[self.hotbar_container].base_mut().visible = false;
+            self.tree.nodes[self.world_container].base_mut().visible = false;
         }
     }
 
     pub fn toggle_menu(&mut self, window: &Window) {
         self.dirty = true;
-        if self.state == MenuState::None {
+        if self.state == MenuState::World {
             self.state = MenuState::Main;
-            self.tree.nodes[self.main_container].base_mut().visible = true;
-            self.tree.nodes[self.hotbar_container].base_mut().visible = false;
+            self.tree.nodes[self.menu_container].base_mut().visible = true;
+            self.tree.nodes[self.world_container].base_mut().visible = false;
             window.set_cursor_grab(CursorGrabMode::None)
                 .expect("Failed to free cursor");
             window.set_cursor_position(LogicalPosition::new(self.mouse_store.0, self.mouse_store.1))
                 .expect("Failed to set cursor position");
             window.set_cursor_visible(true);
         } else {
+            if let Some(old) = self.hovered_node.take() {
+                if let UiNode::Button(b) = &mut self.tree.nodes[old] {
+                    if let Some(hc) = b.hover_color.as_mut() {
+                        std::mem::swap(&mut b.color, hc);
+                    }
+                }
+            }
+
             let current_idx = match self.state {
-                MenuState::None          => unreachable!(),
-                MenuState::Main          => self.main_container,
+                MenuState::World         => self.world_container,
+                MenuState::Title         => self.title_container,
+                MenuState::Main          => self.menu_container,
                 MenuState::GameOptions   => self.game_container,
                 MenuState::SystemOptions => self.system_container,
                 MenuState::Keybinds      => self.keybind_container,
             };
             self.tree.nodes[current_idx].base_mut().visible = false;
-            self.tree.nodes[self.hotbar_container].base_mut().visible = true;
-            self.state = MenuState::None;
+            self.tree.nodes[self.world_container].base_mut().visible = true;
+            self.state = MenuState::World;
             window.set_cursor_grab(CursorGrabMode::Locked)
                 .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined))
                 .expect("Failed to grab cursor");
@@ -620,11 +751,15 @@ impl Ui {
     }
 
     pub fn menu_opened(&self) -> bool {
-        self.state != MenuState::None
+        self.state != MenuState::World
+    }
+
+    pub fn is_title_screen(&self) -> bool {
+        self.state == MenuState::Title
     }
 
     pub fn handle_input(&mut self, input: &InputManager) -> Option<UiAction> {
-        if self.state == MenuState::None { return None; }
+        if self.state == MenuState::World { return None; }
 
         let cursor = input.cursor();
         let hit = self.tree.hit_test(
@@ -683,11 +818,11 @@ impl Ui {
                 }
             }
         }
-        self.dirty_nodes.clear();
 
         let idx_for = |state: MenuState| match state {
-            MenuState::None          => unreachable!(),
-            MenuState::Main          => self.main_container,
+            MenuState::World         => self.world_container,
+            MenuState::Title         => self.title_container,
+            MenuState::Main          => self.menu_container,
             MenuState::GameOptions   => self.game_container,
             MenuState::SystemOptions => self.system_container,
             MenuState::Keybinds      => self.keybind_container,

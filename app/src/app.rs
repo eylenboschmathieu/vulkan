@@ -6,7 +6,6 @@ use cgmath::point3;
 use anyhow::Result;
 use log::*;
 use winit::{event::ElementState, window::Window};
-use blitz::*;
 
 use crate::{camera::FpCamera, debug::DebugInfo, font::FontManager, input::{Action, Input, InputManager}, ui::{Ui, UiAction}, world::World};
 
@@ -75,7 +74,7 @@ impl App {
             return Some(AppEvent::Exit);
         }
 
-        if self.input.is_pressed(Action::ToggleMenu) {
+        if self.input.is_pressed(Action::ToggleMenu) && !self.ui.is_title_screen() {
             self.ui.toggle_menu(window);
         }
 
@@ -130,7 +129,9 @@ impl App {
         })?;
 
         if self.blitz.start_render(window)? {
-            self.world.draw(&mut self.blitz, &self.camera)?;
+            if !self.ui.is_title_screen() {
+                self.world.draw(&mut self.blitz, &self.camera)?;
+            }
             self.ui.draw(&mut self.blitz);
             self.debug.draw(&mut self.blitz);
             self.blitz.end_render(window)?;

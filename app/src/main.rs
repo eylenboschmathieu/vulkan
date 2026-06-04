@@ -41,11 +41,6 @@ fn main() -> Result<()> {
 
     let mut app: App = unsafe { App::new(&window)? };
 
-    window.set_cursor_grab(CursorGrabMode::Locked)
-        .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined))
-        .expect("Failed to grab cursor");
-    window.set_cursor_visible(false);
-
     let mut minimized: bool = false;
     let mut tick = Instant::now();
 

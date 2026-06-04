@@ -25,6 +25,18 @@ enum MenuState {
     Keybinds,
 }
 
+/// Settings staged in the UI and applied when the user hits Accept.
+#[derive(Debug, Clone)]
+pub struct PendingSettings {
+    pub vsync: bool,
+}
+
+impl Default for PendingSettings {
+    fn default() -> Self {
+        Self { vsync: true }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum UiAction {
     Test(String),
@@ -34,6 +46,8 @@ pub enum UiAction {
     OpenKeybinds,
     OpenGameOptions,
     OpenSystemOptions,
+    ToggleVsync,
+    ApplySettings,
 }
 
 #[derive(Debug)]
@@ -269,24 +283,42 @@ impl ButtonNode {
     }
 }
 
-/// Interactive checkbox button. Labelable.
+/// Toggleable checkbox with distinct unselected, selected, and hovered colours.
 #[derive(Debug)]
 pub struct CheckboxNode {
-    container: ContainerNode,
-    button: ButtonNode,
-    selected_color: Rgba,
-    selected: bool,
+    pub base:           NodeBase,
+    pub color:          Rgba,        // unselected colour
+    pub selected_color: Rgba,        // selected colour
+    pub hover_color:    Option<Rgba>,
+    pub uv_min:         [f32; 2],
+    pub uv_max:         [f32; 2],
+    pub selected:       bool,
+    pub hovered:        bool,
+    pub interaction:    Interaction,
 }
 
 impl CheckboxNode {
-    pub fn new(size: f32) -> Self {
-        let mut button = ButtonNode::new();
-        button.base.set_size(size, size);
+    pub fn new() -> Self {
         Self {
-            container: ContainerNode::new(),
-            button,
-            selected_color: Rgba::new(0.0, 1.0, 0.0, 0.5),
-            selected: false,
+            base:           NodeBase::new(),
+            color:          Rgba::new(0.5, 0.5, 0.5, 0.4),
+            selected_color: Rgba::new(0.2, 0.7, 0.3, 0.7),
+            hover_color:    None,
+            uv_min:         [0.0, 0.0],
+            uv_max:         [0.0, 0.0],
+            selected:       false,
+            hovered:        false,
+            interaction:    Interaction::default(),
+        }
+    }
+
+    pub fn display_color(&self) -> Rgba {
+        if self.hovered {
+            self.hover_color.unwrap_or(if self.selected { self.selected_color } else { self.color })
+        } else if self.selected {
+            self.selected_color
+        } else {
+            self.color
         }
     }
 }
@@ -316,6 +348,7 @@ pub enum UiNode {
     Container(ContainerNode),
     Panel(PanelNode),
     Button(ButtonNode),
+    Checkbox(CheckboxNode),
     Label(LabelNode),
 }
 
@@ -325,6 +358,7 @@ impl UiNode {
             UiNode::Container(n) => &n.base,
             UiNode::Panel(n)     => &n.base,
             UiNode::Button(n)    => &n.base,
+            UiNode::Checkbox(n)  => &n.base,
             UiNode::Label(n)     => &n.base,
         }
     }
@@ -334,6 +368,7 @@ impl UiNode {
             UiNode::Container(n) => &mut n.base,
             UiNode::Panel(n)     => &mut n.base,
             UiNode::Button(n)    => &mut n.base,
+            UiNode::Checkbox(n)  => &mut n.base,
             UiNode::Label(n)     => &mut n.base,
         }
     }
@@ -407,9 +442,12 @@ pub struct Ui {
     menu_container:   usize,
     game_container:   usize,
     system_container: usize,
-    keybind_container: usize,
-    world_container:   usize,
-    title_container:   usize,
+    keybind_container:  usize,
+    world_container:    usize,
+    title_container:    usize,
+    vsync_checkbox_idx: usize,
+
+    pub pending: PendingSettings,
 }
 
 impl Ui {
@@ -429,12 +467,14 @@ impl Ui {
             dirty_nodes: Vec::new(),
             tree: UiTree::default(area),
 
-            menu_container:    0,
-            game_container:    0,
-            system_container:  0,
-            keybind_container: 0,
-            world_container:   0,
-            title_container:   0,
+            menu_container:     0,
+            game_container:     0,
+            system_container:   0,
+            keybind_container:  0,
+            world_container:    0,
+            title_container:    0,
+            vsync_checkbox_idx: 0,
+            pending:            PendingSettings::default(),
         };
         this.generate_tree(area.width as f32, area.height as f32);
         this
@@ -504,7 +544,8 @@ impl Ui {
                     _ => {
                         let render_data = match &self.tree.nodes[child_idx] {
                             UiNode::Panel(p)  => Some((p.color, p.uv_min, p.uv_max)),
-                            UiNode::Button(b) => Some((b.color, b.uv_min, b.uv_max)),
+                            UiNode::Button(b)   => Some((b.color,             b.uv_min, b.uv_max)),
+                            UiNode::Checkbox(c) => Some((c.display_color(), c.uv_min, c.uv_max)),
                             _ => None,
                         };
 
@@ -525,13 +566,14 @@ impl Ui {
         self.quad_count = verts.len() / 4;
         container.stage_vertex_update(self.vertex_id, &verts);
     }
-
+    
     pub unsafe fn flush_dirty(&mut self, container: &mut Container) {
         let dirty: Vec<usize> = self.dirty_nodes.drain(..).collect();
         for node_idx in dirty {
             let render_data = match &self.tree.nodes[node_idx] {
                 UiNode::Panel(p)  => Some((p.color, p.uv_min, p.uv_max)),
-                UiNode::Button(b) => Some((b.color, b.uv_min, b.uv_max)),
+                UiNode::Button(b)   => Some((b.color,             b.uv_min, b.uv_max)),
+                            UiNode::Checkbox(c) => Some((c.display_color(), c.uv_min, c.uv_max)),
                 _                 => None,
             };
 
@@ -607,7 +649,9 @@ impl Ui {
         // ── Main menu ────────────────────────────────────────────────────────
         let main_idx = self.tree.add_child(UiNode::Panel(make_panel(false)), 0);
         self.menu_container = main_idx;
-        self.tree.add_child(UiNode::Label(LabelNode::new("Main Menu")), main_idx);
+        let mut main_label = UiNode::Label(LabelNode::new("Main Menu"));
+        main_label.base_mut().set_position(Anchor::TopLeft, 100.0, 100.0);
+        self.tree.add_child(main_label, main_idx);
 
         let resume_idx = self.tree.add_child(UiNode::Button(make_button(
             Rect { x: 64.0, y: 200.0, width: 400.0, height: 48.0 }, UiAction::CloseMenu)), main_idx);
@@ -642,7 +686,9 @@ impl Ui {
         // ── Game Options ─────────────────────────────────────────────────────
         let game_idx = self.tree.add_child(UiNode::Panel(make_panel(false)), 0);
         self.game_container = game_idx;
-        self.tree.add_child(UiNode::Label(LabelNode::new("Game Options")), game_idx);
+        let mut game_label = UiNode::Label(LabelNode::new("Game Options"));
+        game_label.base_mut().set_position(Anchor::TopLeft, 100.0, 100.0);
+        self.tree.add_child(game_label, game_idx);
 
         let b_idx = self.tree.add_child(UiNode::Button(make_button(
             Rect { x: 64.0, y: 200.0, width: 400.0, height: 48.0 }, UiAction::BackToMain)), game_idx);
@@ -653,10 +699,38 @@ impl Ui {
         // ── System Options ───────────────────────────────────────────────────
         let sys_idx = self.tree.add_child(UiNode::Panel(make_panel(false)), 0);
         self.system_container = sys_idx;
-        self.tree.add_child(UiNode::Label(LabelNode::new("System Options")), sys_idx);
+        let mut system_label = UiNode::Label(LabelNode::new("System Options"));
+        system_label.base_mut().set_position(Anchor::TopLeft, 100.0, 100.0);
+        self.tree.add_child(system_label, sys_idx);
+
+        // V-Sync row
+        let mut row = ContainerNode::new();
+        row.base.set_position(Anchor::TopLeft, 64.0, 200.0);
+        row.base.set_size(400.0, 48.0);
+        let row_idx = self.tree.add_child(UiNode::Container(row), sys_idx);
+
+        let mut vsync_label = LabelNode::new("V-Sync");
+        vsync_label.base.set_position(Anchor::Left, 0.0, 0.0);
+        self.tree.add_child(UiNode::Label(vsync_label), row_idx);
+
+        let mut checkbox = CheckboxNode::new();
+        checkbox.base.set_position(Anchor::TopRight, 0.0, 0.0);
+        checkbox.base.set_size(48.0, 48.0);
+        checkbox.selected    = self.pending.vsync;
+        checkbox.hover_color = Some(button_hover_color);
+        checkbox.uv_min      = white;
+        checkbox.uv_max      = white;
+        checkbox.interaction.on_release = Some(UiAction::ToggleVsync);
+        self.vsync_checkbox_idx = self.tree.add_child(UiNode::Checkbox(checkbox), row_idx);
 
         let b_idx = self.tree.add_child(UiNode::Button(make_button(
-            Rect { x: 64.0, y: 200.0, width: 400.0, height: 48.0 }, UiAction::BackToMain)), sys_idx);
+            Rect { x: 64.0, y: 296.0, width: 400.0, height: 48.0 }, UiAction::ApplySettings)), sys_idx);
+        let mut label = LabelNode::new("Accept");
+        label.base.set_position(Anchor::TopLeft, 64.0, 0.0);
+        self.tree.add_child(UiNode::Label(label), b_idx);
+
+        let b_idx = self.tree.add_child(UiNode::Button(make_button(
+            Rect { x: 64.0, y: 392.0, width: 400.0, height: 48.0 }, UiAction::BackToMain)), sys_idx);
         let mut label = LabelNode::new("Back");
         label.base.set_position(Anchor::TopLeft, 64.0, 0.0);
         self.tree.add_child(UiNode::Label(label), b_idx);
@@ -664,7 +738,9 @@ impl Ui {
         // ── Keybinds ─────────────────────────────────────────────────────────
         let keybind_idx = self.tree.add_child(UiNode::Panel(make_panel(false)), 0);
         self.keybind_container = keybind_idx;
-        self.tree.add_child(UiNode::Label(LabelNode::new("Keybinds")), keybind_idx);
+        let mut keybind_label = UiNode::Label(LabelNode::new("Keybinds"));
+        keybind_label.base_mut().set_position(Anchor::TopLeft, 100.0, 100.0);
+        self.tree.add_child(keybind_label, keybind_idx);
 
         let b_idx = self.tree.add_child(UiNode::Button(make_button(
             Rect { x: 64.0, y: 200.0, width: 400.0, height: 48.0 }, UiAction::BackToMain)), keybind_idx);
@@ -810,37 +886,67 @@ impl Ui {
 
         if hit != self.hovered_node {
             if let Some(old) = self.hovered_node {
-                if let UiNode::Button(b) = &mut self.tree.nodes[old] {
-                    if let Some(hc) = b.hover_color.as_mut() {
-                        std::mem::swap(&mut b.color, hc);
+                match &mut self.tree.nodes[old] {
+                    UiNode::Button(b) => {
+                        if let Some(hc) = b.hover_color.as_mut() {
+                            std::mem::swap(&mut b.color, hc);
+                            self.dirty_nodes.push(old);
+                        }
+                    }
+                    UiNode::Checkbox(c) => {
+                        c.hovered = false;
                         self.dirty_nodes.push(old);
                     }
+                    _ => {}
                 }
             }
             if let Some(new) = hit {
-                if let UiNode::Button(b) = &mut self.tree.nodes[new] {
-                    if let Some(hc) = b.hover_color.as_mut() {
-                        std::mem::swap(&mut b.color, hc);
+                match &mut self.tree.nodes[new] {
+                    UiNode::Button(b) => {
+                        if let Some(hc) = b.hover_color.as_mut() {
+                            std::mem::swap(&mut b.color, hc);
+                            self.dirty_nodes.push(new);
+                        }
+                    }
+                    UiNode::Checkbox(c) => {
+                        c.hovered = true;
                         self.dirty_nodes.push(new);
                     }
+                    _ => {}
                 }
             }
             self.hovered_node = hit;
         }
 
         if let Some(idx) = hit {
-            if let UiNode::Button(b) = &self.tree.nodes[idx] {
-                if input.is_released(Action::PrimaryAction) {
-                    if let Some(action) = &b.interaction.on_release {
-                        match action {
-                            UiAction::OpenKeybinds      => self.navigate(MenuState::Keybinds),
-                            UiAction::OpenGameOptions   => self.navigate(MenuState::GameOptions),
-                            UiAction::OpenSystemOptions => self.navigate(MenuState::SystemOptions),
-                            UiAction::BackToMain        => self.navigate(MenuState::Main),
-                            UiAction::CloseMenu | UiAction::ExitApp => return Some(action.clone()),
-                            UiAction::Test(s) => println!("{s}"),
+            let action = if input.is_released(Action::PrimaryAction) {
+                match &self.tree.nodes[idx] {
+                    UiNode::Button(b)   => b.interaction.on_release.clone(),
+                    UiNode::Checkbox(c) => c.interaction.on_release.clone(),
+                    _ => None,
+                }
+            } else { None };
+
+            if let Some(action) = action {
+                match action {
+                    UiAction::OpenKeybinds      => self.navigate(MenuState::Keybinds),
+                    UiAction::OpenGameOptions   => self.navigate(MenuState::GameOptions),
+                    UiAction::OpenSystemOptions => self.navigate(MenuState::SystemOptions),
+                    UiAction::BackToMain        => self.navigate(MenuState::Main),
+                    UiAction::ToggleVsync => {
+                        self.pending.vsync = !self.pending.vsync;
+                        let idx = self.vsync_checkbox_idx;
+                        if let UiNode::Checkbox(c) = &mut self.tree.nodes[idx] {
+                            c.selected = self.pending.vsync;
                         }
+                        self.dirty_nodes.push(idx);
+                    },
+                    UiAction::ApplySettings => {
+                        self.navigate(MenuState::Main);
+                        return Some(UiAction::ApplySettings);
                     }
+                    UiAction::CloseMenu | UiAction::ExitApp => return Some(action),
+                    UiAction::Test(s) => println!("{s}"),
                 }
             }
         }
@@ -853,10 +959,14 @@ impl Ui {
         // Do NOT push to dirty_nodes — flush_all supersedes flush_dirty here,
         // and stale vertex_offset values from the old layout would corrupt the new buffer.
         if let Some(old) = self.hovered_node.take() {
-            if let UiNode::Button(b) = &mut self.tree.nodes[old] {
-                if let Some(hc) = b.hover_color.as_mut() {
-                    std::mem::swap(&mut b.color, hc);
+            match &mut self.tree.nodes[old] {
+                UiNode::Button(b) => {
+                    if let Some(hc) = b.hover_color.as_mut() {
+                        std::mem::swap(&mut b.color, hc);
+                    }
                 }
+                UiNode::Checkbox(c) => c.hovered = false,
+                _ => {}
             }
         }
 

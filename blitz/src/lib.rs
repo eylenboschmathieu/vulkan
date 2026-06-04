@@ -273,7 +273,7 @@ impl Blitz {
                 false
             },
             _ => {
-                self.fps_limit = fps.map(|f| Duration::from_secs_f64(1.0 / f.clamp(1, 999) as f64));
+                self.fps_limit = fps.map(|f| Duration::from_secs_f64(1.0 / f.clamp(30, 999) as f64));
                 true
             }
         }
@@ -453,6 +453,12 @@ impl Blitz {
 
         globals::commands_mut().allocate_graphics_buffers(self.swapchain.framebuffer_count())?;
 
+        if self.vsync {
+            self.set_fps_limit(None);
+        } else {
+            self.set_fps_limit(Some(9999));
+        }
+
         Ok(())
     }
 }
@@ -490,6 +496,8 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
     if INITIALIZED.swap(true, Ordering::SeqCst) {
         return Err(anyhow!("Vulkan already initialized"));
     }
+
+    const VSYNC: bool = true;
 
     info!("Blitz::init");
 
@@ -536,7 +544,7 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
     let textures = resources::image::Textures::new()?;
     globals::init_textures(textures);
 
-    let mut swapchain = Swapchain::new(window, false)?;
+    let mut swapchain = Swapchain::new(window, VSYNC)?;
     globals::commands_mut().allocate_graphics_buffers(FRAMES_IN_FLIGHT)?;
 
     let camera = Camera::new(swapchain.extent())?;
@@ -565,7 +573,7 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
         ui:          QuadLayer::default(),
         debug:       QuadLayer::default(),
         sky_color: [0.22, 0.48, 0.72, 1.0],
-        vsync: false,
+        vsync: VSYNC,
         vsync_dirty: false,
         resize_dirty: false,
         window_refresh_rate,

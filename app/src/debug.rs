@@ -18,6 +18,7 @@ pub struct DebugInfo {
     vertex_id: VertexAllocId,
     quad_count: usize,
     pub present_mode: PresentModeKHR,
+    pub ui_quad_count: usize,
 
     fps: f32,
     frame_count: u32,
@@ -32,6 +33,7 @@ impl DebugInfo {
             vertex_id: blitz.debug_vertex_id(),
             quad_count: 0,
             present_mode: blitz.get_present_mode(),
+            ui_quad_count: 0,
             fps: 0.0,
             frame_count: 0,
             fps_timer: Instant::now(),
@@ -78,6 +80,10 @@ impl DebugInfo {
         };
         let present_mode_text = format!("Present mode: {}", present_mode_text);
         Self::emit_text(&mut verts, atlas, &present_mode_text, PADDING, 32.0, white);
+
+        // UI quad count
+        let ui_quad_count_text = format!("UI quad count: {}", self.ui_quad_count);
+        Self::emit_text(&mut verts, atlas, &ui_quad_count_text, PADDING, 54.0, white);
 
         // FPS — top right
         let fps_text = format!("{:.0} fps", self.fps);

@@ -120,6 +120,7 @@ impl App {
             }
             if self.ui.dirty {
                 self.ui.flush_all(container, (size.width as f32, size.height as f32));
+                self.debug.ui_quad_count = self.ui.quad_count()
             } else if self.ui.has_dirty_nodes() {
                 self.ui.flush_dirty(container);
             }
@@ -140,7 +141,6 @@ impl App {
             self.debug.present_mode = self.blitz.get_present_mode();
             let window_area = window.inner_size();
             self.ui.generate_tree(window_area.width as f32, window_area.height as f32);
-            self.ui.dirty = true;
         }
 
         self.debug.on_frame();

@@ -115,11 +115,13 @@ impl FontAtlas {
                 }
             }
 
+            let hw = 0.5 / atlas_width as f32;
+            let hh = 0.5 / atlas_height as f32;
             glyphs.insert(*c, GlyphInfo {
-                uv_min: [cursor_x as f32 / atlas_width as f32, 0.0],
+                uv_min: [cursor_x as f32 / atlas_width as f32 + hw, hh],
                 uv_max: [
-                    (cursor_x + metrics.width as u32) as f32 / atlas_width as f32,
-                    metrics.height as f32 / atlas_height as f32,
+                    (cursor_x + metrics.width as u32) as f32 / atlas_width as f32 - hw,
+                    metrics.height as f32 / atlas_height as f32 - hh,
                 ],
                 width: metrics.width as u32,
                 height: metrics.height as u32,

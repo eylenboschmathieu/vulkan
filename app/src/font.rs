@@ -50,12 +50,13 @@ impl FontManager {
 
 #[derive(Debug)]
 pub struct FontAtlas {
-    pub texture_id: TextureId,
-    pub glyphs: HashMap<char, GlyphInfo>,
-    pub white_uv: [f32; 2],
+    pub texture_id:  TextureId,
+    pub glyphs:      HashMap<char, GlyphInfo>,
+    pub white_uv:    [f32; 2],
     pub line_height: f32,
-    pub font_name: Option<String>,
-    pub font_size: f32,
+    pub cap_height:  f32,  // Height of uppercase letters — used for vertical centering
+    pub font_name:   Option<String>,
+    pub font_size:   f32,
 }
 
 impl FontAtlas {
@@ -65,21 +66,22 @@ impl FontAtlas {
 
         let characters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()_+-=[]{}|;':\",./<>? ";
 
-        let (data, width, height, glyphs, white_uv) = FontAtlas::build_font(&font, characters, font_size);
+        let (data, width, height, glyphs, white_uv, cap_height) = FontAtlas::build_font(&font, characters, font_size);
 
         let texture_id = container.alloc_font_atlas(data, width, height)?;
 
         Ok(Self {
             font_size,
-            font_name: font.name().map(|s| s.to_string()),
+            font_name:   font.name().map(|s| s.to_string()),
             texture_id,
             glyphs,
             white_uv,
             line_height: height as f32,
+            cap_height,
         })
     }
 
-    pub fn build_font(font: &Font, characters: &str, font_size: f32) -> (Vec<u8>, u32, u32, HashMap<char, GlyphInfo>, [f32; 2]) {
+    pub fn build_font(font: &Font, characters: &str, font_size: f32) -> (Vec<u8>, u32, u32, HashMap<char, GlyphInfo>, [f32; 2], f32) {
         let rasterized: Vec<(char, fontdue::Metrics, Vec<u8>)> = characters
             .chars()
             .map(|c| {
@@ -135,6 +137,11 @@ impl FontAtlas {
 
         let white_uv = [0.5 / atlas_width as f32, 0.5 / atlas_height as f32];
 
-        (atlas_data, atlas_width, atlas_height, glyphs, white_uv)
+        let cap_height = rasterized.iter()
+            .filter(|(c, _, _)| c.is_uppercase())
+            .map(|(_, m, _)| (m.ymin + m.height as i32).max(0) as f32)
+            .fold(0.0f32, f32::max);
+
+        (atlas_data, atlas_width, atlas_height, glyphs, white_uv, cap_height)
     }
 }

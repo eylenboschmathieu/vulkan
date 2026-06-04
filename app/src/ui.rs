@@ -635,10 +635,10 @@ impl Ui {
         self.dirty_nodes.clear();
 
         let white              = self.font_atlas.white_uv;
-        let line_height        = self.font_atlas.line_height;
-        let make_label         = |text: &str| -> LabelNode {
+        let cap_height = self.font_atlas.cap_height;
+        let make_label = |text: &str| -> LabelNode {
             let mut l = LabelNode::new(text);
-            l.base.set_height(line_height);
+            l.base.set_height(cap_height);
             l
         };
         let panel_color        = Rgba::new(0.8, 0.8, 0.8, 0.2);
@@ -821,7 +821,7 @@ impl Ui {
         start_btn.uv_max      = white;
         let start_idx = self.tree.add_child(UiNode::Button(start_btn), title_idx);
         let mut label = make_label("Start");
-        label.base.set_position(Anchor::Left, 10.0, 0.0);
+        label.base.set_position(Anchor::Left, 64.0, 0.0);
         self.tree.add_child(UiNode::Label(label), start_idx);
 
         let mut quit_btn = ButtonNode::new();
@@ -834,7 +834,7 @@ impl Ui {
         quit_btn.uv_max      = white;
         let quit_idx = self.tree.add_child(UiNode::Button(quit_btn), title_idx);
         let mut label = make_label("Quit");
-        label.base.set_position(Anchor::Left, 10.0, 0.0);
+        label.base.set_position(Anchor::Left, 64.0, 0.0);
         self.tree.add_child(UiNode::Label(label), quit_idx);
 
         // Reapply visibility in case the tree was rebuilt mid-session

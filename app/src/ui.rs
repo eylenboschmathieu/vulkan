@@ -248,6 +248,8 @@ impl PanelNode {
             uv_max: [0.0, 0.0],
         }
     }
+
+    pub fn set_color(&mut self, color: Rgba) { self.color = color; }
 }
 
 /// Holds the four interaction callbacks shared by any interactive node type.
@@ -480,6 +482,10 @@ impl Ui {
         this
     }
 
+    pub fn quad_count(&self) -> usize {
+        self.quad_count
+    }
+
     pub unsafe fn flush_all(&mut self, container: &mut Container, screen: (f32, f32)) {
         self.dirty = false;
         self.dirty_nodes.clear();
@@ -518,7 +524,7 @@ impl Ui {
                 match &self.tree.nodes[child_idx] {
                     UiNode::Label(l) => {
                         let mut cursor_x = e.left;
-                        let baseline_y   = e.top + atlas.line_height;
+                        let baseline_y   = e.bottom;
                         let color        = l.color;
                         let text         = l.text.clone();
 
@@ -573,7 +579,7 @@ impl Ui {
             let render_data = match &self.tree.nodes[node_idx] {
                 UiNode::Panel(p)  => Some((p.color, p.uv_min, p.uv_max)),
                 UiNode::Button(b)   => Some((b.color,             b.uv_min, b.uv_max)),
-                            UiNode::Checkbox(c) => Some((c.display_color(), c.uv_min, c.uv_max)),
+                UiNode::Checkbox(c) => Some((c.display_color(), c.uv_min, c.uv_max)),
                 _                 => None,
             };
 
@@ -609,6 +615,8 @@ impl Ui {
     }
 
     pub fn generate_tree(&mut self, screen_width: f32, screen_height: f32) {
+        self.dirty = true;
+
         let mut ui_parent = ContainerNode::new();
         ui_parent.base.set_size(screen_width, screen_height);
 
@@ -620,6 +628,12 @@ impl Ui {
         self.dirty_nodes.clear();
 
         let white              = self.font_atlas.white_uv;
+        let line_height        = self.font_atlas.line_height;
+        let make_label         = |text: &str| -> LabelNode {
+            let mut l = LabelNode::new(text);
+            l.base.set_height(line_height);
+            l
+        };
         let panel_color        = Rgba::new(0.8, 0.8, 0.8, 0.2);
         let button_color       = Rgba::new(0.5, 0.5, 0.5, 0.4);
         let button_hover_color = Rgba::new(0.65, 0.65, 0.65, 0.5);
@@ -649,73 +663,74 @@ impl Ui {
         // ── Main menu ────────────────────────────────────────────────────────
         let main_idx = self.tree.add_child(UiNode::Panel(make_panel(false)), 0);
         self.menu_container = main_idx;
-        let mut main_label = UiNode::Label(LabelNode::new("Main Menu"));
+        let mut main_label = UiNode::Label(make_label("Main Menu"));
         main_label.base_mut().set_position(Anchor::TopLeft, 100.0, 100.0);
         self.tree.add_child(main_label, main_idx);
 
         let resume_idx = self.tree.add_child(UiNode::Button(make_button(
             Rect { x: 64.0, y: 200.0, width: 400.0, height: 48.0 }, UiAction::CloseMenu)), main_idx);
-        let mut label = LabelNode::new("Resume");
+        let mut label = make_label("Resume");
         label.base.set_position(Anchor::TopLeft, 64.0, 0.0);
         self.tree.add_child(UiNode::Label(label), resume_idx);
 
         let b_idx = self.tree.add_child(UiNode::Button(make_button(
             Rect { x: 64.0, y: 296.0, width: 400.0, height: 48.0 }, UiAction::OpenGameOptions)), main_idx);
-        let mut label = LabelNode::new("Game Options");
+        let mut label = make_label("Game Options");
         label.base.set_position(Anchor::TopLeft, 64.0, 0.0);
         self.tree.add_child(UiNode::Label(label), b_idx);
 
         let b_idx = self.tree.add_child(UiNode::Button(make_button(
             Rect { x: 64.0, y: 392.0, width: 400.0, height: 48.0 }, UiAction::OpenSystemOptions)), main_idx);
-        let mut label = LabelNode::new("System Options");
+        let mut label = make_label("System Options");
         label.base.set_position(Anchor::TopLeft, 64.0, 0.0);
         self.tree.add_child(UiNode::Label(label), b_idx);
 
         let b_idx = self.tree.add_child(UiNode::Button(make_button(
             Rect { x: 64.0, y: 488.0, width: 400.0, height: 48.0 }, UiAction::OpenKeybinds)), main_idx);
-        let mut label = LabelNode::new("Keybinds");
+        let mut label = make_label("Keybinds");
         label.base.set_position(Anchor::TopLeft, 64.0, 0.0);
         self.tree.add_child(UiNode::Label(label), b_idx);
 
         let b_idx = self.tree.add_child(UiNode::Button(make_button(
             Rect { x: 64.0, y: 584.0, width: 400.0, height: 48.0 }, UiAction::ExitApp)), main_idx);
-        let mut label = LabelNode::new("Quit");
+        let mut label = make_label("Quit");
         label.base.set_position(Anchor::TopLeft, 64.0, 0.0);
         self.tree.add_child(UiNode::Label(label), b_idx);
 
         // ── Game Options ─────────────────────────────────────────────────────
         let game_idx = self.tree.add_child(UiNode::Panel(make_panel(false)), 0);
         self.game_container = game_idx;
-        let mut game_label = UiNode::Label(LabelNode::new("Game Options"));
+        let mut game_label = UiNode::Label(make_label("Game Options"));
         game_label.base_mut().set_position(Anchor::TopLeft, 100.0, 100.0);
         self.tree.add_child(game_label, game_idx);
 
         let b_idx = self.tree.add_child(UiNode::Button(make_button(
             Rect { x: 64.0, y: 200.0, width: 400.0, height: 48.0 }, UiAction::BackToMain)), game_idx);
-        let mut label = LabelNode::new("Back");
+        let mut label = make_label("Back");
         label.base.set_position(Anchor::TopLeft, 64.0, 0.0);
         self.tree.add_child(UiNode::Label(label), b_idx);
 
         // ── System Options ───────────────────────────────────────────────────
         let sys_idx = self.tree.add_child(UiNode::Panel(make_panel(false)), 0);
         self.system_container = sys_idx;
-        let mut system_label = UiNode::Label(LabelNode::new("System Options"));
+        let mut system_label = UiNode::Label(make_label("System Options"));
         system_label.base_mut().set_position(Anchor::TopLeft, 100.0, 100.0);
         self.tree.add_child(system_label, sys_idx);
 
         // V-Sync row
-        let mut row = ContainerNode::new();
+        let mut row = PanelNode::new();
         row.base.set_position(Anchor::TopLeft, 64.0, 200.0);
         row.base.set_size(400.0, 48.0);
-        let row_idx = self.tree.add_child(UiNode::Container(row), sys_idx);
+        row.set_color(Rgba { x: 0.0, y: 0.0, z: 0.0, w: 0.2 });
+        let row_idx = self.tree.add_child(UiNode::Panel(row), sys_idx);
 
-        let mut vsync_label = LabelNode::new("V-Sync");
-        vsync_label.base.set_position(Anchor::Left, 0.0, 0.0);
+        let mut vsync_label = make_label("V-Sync");
+        vsync_label.base.set_position(Anchor::Left, 8.0, 0.0);
         self.tree.add_child(UiNode::Label(vsync_label), row_idx);
 
         let mut checkbox = CheckboxNode::new();
-        checkbox.base.set_position(Anchor::TopRight, 0.0, 0.0);
-        checkbox.base.set_size(48.0, 48.0);
+        checkbox.base.set_position(Anchor::Right, -8.0, 0.0);
+        checkbox.base.set_size(32.0, 32.0);
         checkbox.selected    = self.pending.vsync;
         checkbox.hover_color = Some(button_hover_color);
         checkbox.uv_min      = white;
@@ -725,26 +740,26 @@ impl Ui {
 
         let b_idx = self.tree.add_child(UiNode::Button(make_button(
             Rect { x: 64.0, y: 296.0, width: 400.0, height: 48.0 }, UiAction::ApplySettings)), sys_idx);
-        let mut label = LabelNode::new("Accept");
+        let mut label = make_label("Accept");
         label.base.set_position(Anchor::TopLeft, 64.0, 0.0);
         self.tree.add_child(UiNode::Label(label), b_idx);
 
         let b_idx = self.tree.add_child(UiNode::Button(make_button(
             Rect { x: 64.0, y: 392.0, width: 400.0, height: 48.0 }, UiAction::BackToMain)), sys_idx);
-        let mut label = LabelNode::new("Back");
+        let mut label = make_label("Back");
         label.base.set_position(Anchor::TopLeft, 64.0, 0.0);
         self.tree.add_child(UiNode::Label(label), b_idx);
 
         // ── Keybinds ─────────────────────────────────────────────────────────
         let keybind_idx = self.tree.add_child(UiNode::Panel(make_panel(false)), 0);
         self.keybind_container = keybind_idx;
-        let mut keybind_label = UiNode::Label(LabelNode::new("Keybinds"));
+        let mut keybind_label = UiNode::Label(make_label("Keybinds"));
         keybind_label.base_mut().set_position(Anchor::TopLeft, 100.0, 100.0);
         self.tree.add_child(keybind_label, keybind_idx);
 
         let b_idx = self.tree.add_child(UiNode::Button(make_button(
             Rect { x: 64.0, y: 200.0, width: 400.0, height: 48.0 }, UiAction::BackToMain)), keybind_idx);
-        let mut label = LabelNode::new("Back");
+        let mut label = make_label("Back");
         label.base.set_position(Anchor::TopLeft, 64.0, 0.0);
         self.tree.add_child(UiNode::Label(label), b_idx);
 
@@ -784,7 +799,7 @@ impl Ui {
         let title_idx = self.tree.add_child(UiNode::Panel(title), 0);
         self.title_container = title_idx;
 
-        let mut title_label = LabelNode::new("Playground");
+        let mut title_label = make_label("Playground");
         title_label.base.set_position(Anchor::Top, 0.0, 80.0);
         self.tree.add_child(UiNode::Label(title_label), title_idx);
 
@@ -797,7 +812,7 @@ impl Ui {
         start_btn.uv_min      = white;
         start_btn.uv_max      = white;
         let start_idx = self.tree.add_child(UiNode::Button(start_btn), title_idx);
-        let mut label = LabelNode::new("Start");
+        let mut label = make_label("Start");
         label.base.set_position(Anchor::TopLeft, 64.0, 0.0);
         self.tree.add_child(UiNode::Label(label), start_idx);
 
@@ -810,7 +825,7 @@ impl Ui {
         quit_btn.uv_min      = white;
         quit_btn.uv_max      = white;
         let quit_idx = self.tree.add_child(UiNode::Button(quit_btn), title_idx);
-        let mut label = LabelNode::new("Quit");
+        let mut label = make_label("Quit");
         label.base.set_position(Anchor::TopLeft, 64.0, 0.0);
         self.tree.add_child(UiNode::Label(label), quit_idx);
 

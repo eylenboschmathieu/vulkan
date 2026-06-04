@@ -250,6 +250,8 @@ impl Blitz {
         self.resize_dirty = true;
     }
 
+    pub fn vsync(&self) -> bool { self.vsync }
+
     pub fn set_vsync(&mut self, vsync: bool) {
         if self.vsync != vsync {
             self.vsync = vsync;

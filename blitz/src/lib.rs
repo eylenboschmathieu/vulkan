@@ -207,6 +207,7 @@ pub struct Blitz {
     vsync_dirty: bool,
     resize_dirty: bool,
     window_refresh_rate: u32,  // Physical refresh rate of the monitor
+    fps_cap: u32,              // Last software frame rate cap requested via `set_fps_limit`
     fps_limit: Option<Duration>,
     frame_start: Instant,
     _entry: Entry, // must be last: dropped last, keeping libvulkan loaded while all other fields clean up
@@ -261,12 +262,18 @@ impl Blitz {
         }
     }
 
+    /// The software frame rate cap last requested via [`Self::set_fps_limit`], in FPS.
+    pub fn fps_cap(&self) -> u32 { self.fps_cap }
+
     /// Set a software frame rate cap. Returns `false` if the cap was ignored.
     ///
     /// With `FIFO` the driver already blocks at vblank, so a software cap is redundant.
     /// With `FIFO_LATEST_READY` the cap is always pinned to the monitor refresh rate —
     /// any value passed in is ignored, since frames rendered faster than that are discarded anyway.
     pub fn set_fps_limit(&mut self, fps: Option<u32>) -> bool {
+        if let Some(f) = fps {
+            self.fps_cap = f.clamp(30, 999);
+        }
         match self.swapchain.present_mode() {
             vk::PresentModeKHR::FIFO => false,
             vk::PresentModeKHR::FIFO_LATEST_READY => {
@@ -457,7 +464,7 @@ impl Blitz {
         if self.vsync {
             self.set_fps_limit(None);
         } else {
-            self.set_fps_limit(Some(9999));
+            self.set_fps_limit(Some(self.fps_cap));
         }
 
         Ok(())
@@ -578,6 +585,7 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
         vsync_dirty: false,
         resize_dirty: false,
         window_refresh_rate,
+        fps_cap: 60,
         fps_limit: None,
         frame_start: Instant::now(),
     };

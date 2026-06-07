@@ -1,11 +1,15 @@
 #![allow(dead_code, unsafe_op_in_unsafe_fn)]
 
+mod nodes;
+
 use std::rc::Rc;
 
+use anyhow::{anyhow, Result};
 use blitz::{Blitz, Container, Pos2, Rgba, UV, VERTEX_2D_RGBA, VertexAllocId};
 use winit::{dpi::{LogicalPosition, PhysicalSize}, window::{CursorGrabMode, Window}};
 
 use crate::{font::FontAtlas, input::{Action, InputManager}};
+use nodes::*;
 
 const HOTBAR_SLOTS:       usize = 10;
 const SLOT_SIZE:          f32   = 48.0;
@@ -15,7 +19,7 @@ const SLOT_MARGIN_BOTTOM: f32   = 20.0;
 const XH_SIZE:      f32 = 16.0;
 const XH_THICKNESS: f32 = 2.0;
 
-#[derive(PartialEq, Debug, Clone, Copy)]
+#[derive(PartialEq, Clone, Copy)]
 enum MenuState {
     World,
     Title,
@@ -26,27 +30,20 @@ enum MenuState {
 }
 
 /// Settings staged in the UI and applied when the user hits Accept.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PendingSettings {
     pub vsync: bool,
+    pub fps_cap: u32,
 }
 
 impl Default for PendingSettings {
     fn default() -> Self {
-        Self { vsync: true }
+        Self { vsync: true, fps_cap: 60 }
     }
 }
 
-/// Binds a [`CheckboxNode`] to a specific setting in [`PendingSettings`].
-/// The checkbox's selected state is kept in sync automatically.
-#[derive(Debug, Clone, Copy)]
-pub enum SettingKey {
-    Vsync,
-}
-
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub enum UiAction {
-
     CloseMenu,
     ExitApp,
     BackToMain,
@@ -57,7 +54,7 @@ pub enum UiAction {
     ApplySettings,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct Rect {
     pub x: f32,
     pub y: f32,
@@ -76,7 +73,7 @@ impl Rect {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Edges {
     pub left: f32,
     pub right: f32,
@@ -100,377 +97,8 @@ impl Edges {
     }
 }
 
-// ── Node types ───────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Overflow {
-    Visible,
-    Clip,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Anchor {
-    TopLeft,    Top,    TopRight,
-    Left,       Center, Right,
-    BottomLeft, Bottom, BottomRight,
-}
-
-impl Anchor {
-    /// Returns the (x, y) fractional position of this anchor within a rect.
-    /// e.g. TopLeft = (0, 0), Center = (0.5, 0.5), BottomRight = (1, 1).
-    fn fractions(self) -> (f32, f32) {
-        match self {
-            Anchor::TopLeft     => (0.0, 0.0),
-            Anchor::Top         => (0.5, 0.0),
-            Anchor::TopRight    => (1.0, 0.0),
-            Anchor::Left        => (0.0, 0.5),
-            Anchor::Center      => (0.5, 0.5),
-            Anchor::Right       => (1.0, 0.5),
-            Anchor::BottomLeft  => (0.0, 1.0),
-            Anchor::Bottom      => (0.5, 1.0),
-            Anchor::BottomRight => (1.0, 1.0),
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct NodeBase {
-    pub bounds:      Rect,
-    pub src_anchor:  Anchor,        // Attachment point on this node
-    pub target:      Option<usize>, // Node to anchor to; None = parent
-    pub dst_anchor:  Anchor,        // Attachment point on the target node
-    pub parent:        Option<usize>,
-    pub children:      Vec<usize>,
-    pub visible:       bool,
-    pub vertex_offset: usize,
-}
-
-impl NodeBase {
-    pub fn new() -> Self {
-        Self {
-            bounds:      Rect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 },
-            src_anchor:  Anchor::TopLeft,
-            target:      None,
-            dst_anchor:  Anchor::TopLeft,
-            parent:      None,
-            children:    Vec::new(),
-            visible:       true,
-            vertex_offset: 0,
-        }
-    }
-
-    /// Positions the node symmetrically relative to its parent: both the
-    /// attachment point on this node and the reference point on the parent
-    /// use the same anchor, so e.g. `Center + (0, 0)` truly centres the node.
-    pub fn set_position(&mut self, anchor: Anchor, x: f32, y: f32) {
-        self.src_anchor         = anchor;
-        self.dst_anchor = anchor;
-        self.target        = None;
-        self.bounds.x      = x;
-        self.bounds.y      = y;
-    }
-
-    /// Positions the node relative to an arbitrary sibling or ancestor.
-    /// `src_anchor` is the attachment point on this node; `dst_anchor` is the
-    /// reference point on the target node.
-    pub fn set_position_anchored_to(&mut self, src_anchor: Anchor, target: usize, dst_anchor: Anchor, x: f32, y: f32) {
-        self.src_anchor         = src_anchor;
-        self.target        = Some(target);
-        self.dst_anchor = dst_anchor;
-        self.bounds.x      = x;
-        self.bounds.y      = y;
-    }
-
-    pub fn set_width(&mut self, width: f32) {
-        self.bounds.width = width;
-    }
-
-    pub fn set_height(&mut self, height: f32) {
-        self.bounds.height = height;
-    }
-
-    pub fn set_size(&mut self, width: f32, height: f32) {
-        self.bounds.width  = width;
-        self.bounds.height = height;
-    }
-
-    /// Computes the node's screen-space [`Edges`].
-    /// When `target` is `None` the node is positioned relative to `parent_edges`.
-    /// When `target` is `Some(idx)` the node is positioned relative to that
-    /// node's absolute edges, computed by walking its parent chain.
-    pub fn resolve(&self, parent_edges: &Edges, nodes: &[UiNode]) -> Edges {
-        let ref_edges = match self.target {
-            None      => parent_edges.clone(),
-            Some(idx) => node_absolute_edges(idx, nodes),
-        };
-        let (px, py) = self.src_anchor.fractions();
-        let (tx, ty) = self.dst_anchor.fractions();
-        let ref_w    = ref_edges.right  - ref_edges.left;
-        let ref_h    = ref_edges.bottom - ref_edges.top;
-        let ref_x    = ref_edges.left + tx * ref_w  + self.bounds.x;
-        let ref_y    = ref_edges.top  + ty * ref_h  + self.bounds.y;
-        let left     = ref_x - px * self.bounds.width;
-        let top      = ref_y - py * self.bounds.height;
-        Edges { left, right: left + self.bounds.width, top, bottom: top + self.bounds.height }
-    }
-}
-
-/// Computes the absolute screen-space edges of `idx` by walking its parent chain.
-fn node_absolute_edges(idx: usize, nodes: &[UiNode]) -> Edges {
-    let node = &nodes[idx];
-    let parent_edges = match node.base().parent {
-        None    => Edges { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0 },
-        Some(p) => node_absolute_edges(p, nodes),
-    };
-    node.base().resolve(&parent_edges, nodes)
-}
-
-/// Invisible grouping node — children only, no quad rendered.
-#[derive(Debug)]
-pub struct ContainerNode {
-    pub base: NodeBase,
-}
-
-impl ContainerNode {
-    pub fn new() -> Self {
-        Self { base: NodeBase::new() }
-    }
-}
-
-/// Visible background panel. Labelable.
-#[derive(Debug)]
-pub struct PanelNode {
-    pub base: NodeBase,
-    pub color: Rgba,
-    pub uv_min: [f32; 2],
-    pub uv_max: [f32; 2],
-}
-
-impl PanelNode {
-    pub fn new() -> Self {
-        Self {
-            base: NodeBase::new(),
-            color: Rgba::new(0.0, 0.0, 0.0, 0.0),
-            uv_min: [0.0, 0.0],
-            uv_max: [0.0, 0.0],
-        }
-    }
-
-    pub fn set_color(&mut self, color: Rgba) { self.color = color; }
-}
-
-/// Holds the four interaction callbacks shared by any interactive node type.
-#[derive(Debug, Default)]
-pub struct Interaction {
-    pub on_pressed: Option<UiAction>,
-    pub on_release: Option<UiAction>,
-    pub on_enter:   Option<UiAction>,
-    pub on_leave:   Option<UiAction>,
-}
-
-/// Interactive button. Labelable.
-#[derive(Debug)]
-pub struct ButtonNode {
-    pub base:        NodeBase,
-    pub color:       Rgba,
-    pub hover_color: Option<Rgba>,
-    pub uv_min:      [f32; 2],
-    pub uv_max:      [f32; 2],
-    pub interaction: Interaction,
-}
-
-impl ButtonNode {
-    pub fn new() -> Self {
-        Self {
-            base:        NodeBase::new(),
-            color:       Rgba::new(0.0, 0.0, 0.0, 0.0),
-            hover_color: None,
-            uv_min:      [0.0, 0.0],
-            uv_max:      [0.0, 0.0],
-            interaction: Interaction::default(),
-        }
-    }
-}
-
-/// Toggleable checkbox with distinct unselected, selected, and hovered colours.
-#[derive(Debug)]
-pub struct CheckboxNode {
-    pub base:           NodeBase,
-    pub color:          Rgba,        // unselected colour
-    pub selected_color: Rgba,        // selected colour
-    pub hover_color:    Option<Rgba>,
-    pub uv_min:         [f32; 2],
-    pub uv_max:         [f32; 2],
-    pub selected:       bool,
-    pub hovered:        bool,
-    pub setting:        Option<SettingKey>,
-    pub interaction:    Interaction,
-}
-
-impl CheckboxNode {
-    pub fn new() -> Self {
-        Self {
-            base:           NodeBase::new(),
-            color:          Rgba::new(0.5, 0.5, 0.5, 0.4),
-            selected_color: Rgba::new(0.2, 0.7, 0.3, 0.7),
-            hover_color:    None,
-            uv_min:         [0.0, 0.0],
-            uv_max:         [0.0, 0.0],
-            selected:       false,
-            setting:        None,
-            hovered:        false,
-            interaction:    Interaction::default(),
-        }
-    }
-
-    pub fn display_color(&self) -> Rgba {
-        if self.hovered {
-            self.hover_color.unwrap_or(if self.selected { self.selected_color } else { self.color })
-        } else if self.selected {
-            self.selected_color
-        } else {
-            self.color
-        }
-    }
-}
-
-/// Drag gesture state: tracks whether a drag is active and the cursor
-/// position / value captured when it began, so deltas can be computed
-/// without accumulating drift.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct Draggable {
-    pub is_dragging:  bool,
-    pub start_cursor: (f32, f32),
-    pub start_value:  f32,
-}
-
-impl Draggable {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn start(&mut self, cursor: (f32, f32), value: f32) {
-        self.is_dragging  = true;
-        self.start_cursor = cursor;
-        self.start_value  = value;
-    }
-
-    pub fn stop(&mut self) {
-        self.is_dragging = false;
-    }
-}
-
-/// Slider
-#[derive(Debug)]
-pub struct SliderNode {
-    panel: PanelNode,
-    min_value: u32,
-    max_value: u32,
-    value: u32,
-    step_size: u32,
-    drag: Draggable,
-    thumb_idx: Option<usize>,
-    label_idx: Option<usize>,
-}
-
-impl SliderNode {
-    pub fn new() -> Self {
-        let mut this = Self {
-            panel: PanelNode::new(),
-            min_value: 0,
-            max_value: 0,
-            value: 0,
-            step_size: 1,
-            drag: Draggable::new(),
-            thumb_idx: None,
-            label_idx: None,
-        };
-
-        this.panel.base.set_size(200.0, 32.0);
-        this.panel.set_color(Rgba { x: 0.0, y: 0.0, z: 0.0, w: 0.5 });
-
-        this
-    }
-
-    pub fn get_label(&self) -> Option<usize> {
-        self.label_idx
-    }
-
-    pub fn get_thumb(&self) -> Option<usize> {
-        self.thumb_idx
-    }
-
-    pub fn set_min_max(&mut self, min: u32, max: u32) {
-        self.min_value = min;
-        self.max_value = max;
-    }
-
-    pub fn set_label(&mut self, idx: Option<usize>) {
-        self.label_idx = idx;
-    }
-
-    pub fn set_thumb(&mut self, idx: Option<usize>) {
-        self.thumb_idx = idx;
-    }
-}
-
-/// Text label. Not interactive, not labelable itself.
-#[derive(Debug)]
-pub struct LabelNode {
-    pub base: NodeBase,
-    pub text: String,
-    pub color: Rgba,
-}
-
-impl LabelNode {
-    pub fn new(text: impl Into<String>) -> Self {
-        Self {
-            base: NodeBase::new(),
-            text: text.into(),
-            color: Rgba::new(0.0, 0.0, 0.0, 1.0),
-        }
-    }
-}
-
-// ── UiNode enum ──────────────────────────────────────────────────────────────
-
-#[derive(Debug)]
-pub enum UiNode {
-    Container(ContainerNode),
-    Panel(PanelNode),
-    Button(ButtonNode),
-    Checkbox(CheckboxNode),
-    Label(LabelNode),
-    Slider(SliderNode),
-}
-
-impl UiNode {
-    pub fn base(&self) -> &NodeBase {
-        match self {
-            UiNode::Container(n) => &n.base,
-            UiNode::Panel(n)     => &n.base,
-            UiNode::Button(n)    => &n.base,
-            UiNode::Checkbox(n)  => &n.base,
-            UiNode::Label(n)     => &n.base,
-            UiNode::Slider(n)    => &n.panel.base,
-        }
-    }
-
-    pub fn base_mut(&mut self) -> &mut NodeBase {
-        match self {
-            UiNode::Container(n) => &mut n.base,
-            UiNode::Panel(n)     => &mut n.base,
-            UiNode::Button(n)    => &mut n.base,
-            UiNode::Checkbox(n)  => &mut n.base,
-            UiNode::Label(n)     => &mut n.base,
-            UiNode::Slider(n)    => &mut n.panel.base,
-        }
-    }
-}
-
 // ── UiTree ───────────────────────────────────────────────────────────────────
 
-#[derive(Debug)]
 pub struct UiTree {
     pub nodes: Vec<UiNode>,
     pub root: usize,
@@ -485,6 +113,19 @@ impl UiTree {
             root: 0,
             nodes: vec![UiNode::Container(ui_parent)],
         }
+    }
+
+    /// Looks up `idx` and extracts it as a `&T`, erroring instead of panicking
+    /// when the index is out of bounds or the node isn't a `T`.
+    fn get_node<T: UiNodeVariant>(&self, idx: usize) -> Result<&T> {
+        let node = self.nodes.get(idx).ok_or_else(|| anyhow!("UI node index {idx} out of bounds"))?;
+        T::from_node(node).ok_or_else(|| anyhow!("UI node {idx} is not a {}", T::NAME))
+    }
+
+    /// Mutable counterpart of [`get_node`](Self::get_node).
+    fn get_node_mut<T: UiNodeVariant>(&mut self, idx: usize) -> Result<&mut T> {
+        let node = self.nodes.get_mut(idx).ok_or_else(|| anyhow!("UI node index {idx} out of bounds"))?;
+        T::from_node_mut(node).ok_or_else(|| anyhow!("UI node {idx} is not a {}", T::NAME))
     }
 
     pub fn add_child(&mut self, mut node: UiNode, parent_idx: usize) -> usize {
@@ -518,7 +159,6 @@ impl UiTree {
 
 // ── Ui ───────────────────────────────────────────────────────────────────────
 
-#[derive(Debug)]
 pub struct Ui {
     pub dirty: bool,
     quad_count: usize,
@@ -530,6 +170,7 @@ pub struct Ui {
     tree: UiTree,
     state: MenuState,
     hovered_node: Option<usize>,
+    dragging_slider: Option<usize>,
     dirty_nodes: Vec<usize>,
 
     // Sub-menu container node indices
@@ -540,11 +181,15 @@ pub struct Ui {
     world_container:    usize,
     title_container:    usize,
 
+    // Index of the slider bound to the frame rate cap, so drags can mirror
+    // its value into `pending.fps_cap` live.
+    fps_slider_idx: usize,
+
     pub pending: PendingSettings,
 }
 
 impl Ui {
-    pub fn new(window: &Window, blitz: &Blitz, atlas: Rc<FontAtlas>) -> Self {
+    pub fn new(window: &Window, blitz: &Blitz, atlas: Rc<FontAtlas>) -> Result<Self> {
         let area = window.inner_size();
         let mouse = ((area.width / 2) as f32, (area.height / 2) as f32);
 
@@ -557,6 +202,7 @@ impl Ui {
             mouse_store: mouse,
             state: MenuState::Title,
             hovered_node: None,
+            dragging_slider: None,
             dirty_nodes: Vec::new(),
             tree: UiTree::default(area),
 
@@ -566,10 +212,11 @@ impl Ui {
             keybind_container:  0,
             world_container:    0,
             title_container:    0,
+            fps_slider_idx:     0,
             pending:            PendingSettings::default(),
         };
-        this.generate_tree(area.width as f32, area.height as f32);
-        this
+        this.generate_tree(area.width as f32, area.height as f32)?;
+        Ok(this)
     }
 
     // ── Node creation helpers ────────────────────────────────────────────────
@@ -578,73 +225,78 @@ impl Ui {
     // Everything else — bounds, color, action, text, ... — is configured by
     // the caller afterwards through the returned node's own setters/fields.
 
-    fn create_container(&mut self, parent: usize) -> (usize, &mut ContainerNode) {
+    fn create_container(&mut self, parent: usize) -> Result<(usize, &mut ContainerNode)> {
         let idx = self.tree.add_child(UiNode::Container(ContainerNode::new()), parent);
-        let UiNode::Container(c) = &mut self.tree.nodes[idx] else { unreachable!() };
-        (idx, c)
+        let c = self.tree.get_node_mut::<ContainerNode>(idx)?;
+        Ok((idx, c))
     }
 
-    fn create_panel(&mut self, parent: usize) -> (usize, &mut PanelNode) {
+    fn create_panel(&mut self, parent: usize) -> Result<(usize, &mut PanelNode)> {
         let white = self.font_atlas.white_uv;
         let mut p = PanelNode::new();
         p.uv_min = white;
         p.uv_max = white;
         let idx = self.tree.add_child(UiNode::Panel(p), parent);
-        let UiNode::Panel(p) = &mut self.tree.nodes[idx] else { unreachable!() };
-        (idx, p)
+        let p = self.tree.get_node_mut::<PanelNode>(idx)?;
+        Ok((idx, p))
     }
 
-    fn create_button(&mut self, parent: usize) -> (usize, &mut ButtonNode) {
+    fn create_button(&mut self, parent: usize) -> Result<(usize, &mut ButtonNode)> {
         let white = self.font_atlas.white_uv;
         let mut b = ButtonNode::new();
         b.uv_min = white;
         b.uv_max = white;
         let idx = self.tree.add_child(UiNode::Button(b), parent);
-        let UiNode::Button(b) = &mut self.tree.nodes[idx] else { unreachable!() };
-        (idx, b)
+        let b = self.tree.get_node_mut::<ButtonNode>(idx)?;
+        Ok((idx, b))
     }
 
-    fn create_label(&mut self, parent: usize) -> (usize, &mut LabelNode) {
+    fn create_label(&mut self, parent: usize) -> Result<(usize, &mut LabelNode)> {
         let cap_height = self.font_atlas.cap_height;
         let mut l = LabelNode::new("");
         l.base.set_height(cap_height);
         let idx = self.tree.add_child(UiNode::Label(l), parent);
-        let UiNode::Label(l) = &mut self.tree.nodes[idx] else { unreachable!() };
-        (idx, l)
+        let l = self.tree.get_node_mut::<LabelNode>(idx)?;
+        Ok((idx, l))
     }
 
-    fn create_checkbox(&mut self, parent: usize) -> (usize, &mut CheckboxNode) {
+    fn create_checkbox(&mut self, parent: usize) -> Result<(usize, &mut CheckboxNode)> {
         let white = self.font_atlas.white_uv;
         let mut c = CheckboxNode::new();
         c.uv_min = white;
         c.uv_max = white;
         let idx = self.tree.add_child(UiNode::Checkbox(c), parent);
-        let UiNode::Checkbox(c) = &mut self.tree.nodes[idx] else { unreachable!() };
-        (idx, c)
+        let c = self.tree.get_node_mut::<CheckboxNode>(idx)?;
+        Ok((idx, c))
     }
 
     /// Also creates the slider's thumb (panel) and value label as children
     /// and wires their indices back into the returned `SliderNode`.
-    fn create_slider(&mut self, parent: usize) -> (usize, &mut SliderNode) {
+    fn create_slider(&mut self, parent: usize) -> Result<(usize, &mut SliderNode)> {
         let white = self.font_atlas.white_uv;
         let mut slider = SliderNode::new();
         slider.panel.uv_min = white;
         slider.panel.uv_max = white;
+        let label_text  = slider.display_text();
+        let label_width = self.label_width(&label_text);
         let slider_idx = self.tree.add_child(UiNode::Slider(slider), parent);
 
-        let (thumb_idx, thumb) = self.create_panel(slider_idx);
+        let (thumb_idx, thumb) = self.create_panel(slider_idx)?;
         thumb.base.set_size(16.0, 32.0);
         thumb.set_color(Rgba::new(0.8, 0.8, 0.8, 0.9));
 
-        let (label_idx, label) = self.create_label(slider_idx);
-        label.text = "0".to_string();
+        let (label_idx, label) = self.create_label(parent)?;
+        label.text = label_text;
+        label.base.set_width(label_width);
+        label.base.set_position_anchored_to(Anchor::Right, slider_idx, Anchor::Left, -8.0, 0.0);
 
-        let UiNode::Slider(s) = &mut self.tree.nodes[slider_idx] else { unreachable!() };
+        let s = self.tree.get_node_mut::<SliderNode>(slider_idx)?;
         s.set_thumb(Some(thumb_idx));
         s.set_label(Some(label_idx));
-        (slider_idx, s)
+        Ok((slider_idx, s))
     }
 
+    // Used for the debug menu to indicate quad size of the ui
     pub fn quad_count(&self) -> usize {
         self.quad_count
     }
@@ -740,28 +392,64 @@ impl Ui {
     pub unsafe fn flush_dirty(&mut self, container: &mut Container) {
         let dirty: Vec<usize> = self.dirty_nodes.drain(..).collect();
         for node_idx in dirty {
-            let render_data = match &self.tree.nodes[node_idx] {
-                UiNode::Panel(p)  => Some((p.color, p.uv_min, p.uv_max)),
-                UiNode::Button(b)   => Some((b.color,             b.uv_min, b.uv_max)),
-                UiNode::Checkbox(c) => Some((c.display_color(), c.uv_min, c.uv_max)),
-                UiNode::Slider(s)   => Some((s.panel.color,       s.panel.uv_min, s.panel.uv_max)),
-                _                 => None,
-            };
+            match &self.tree.nodes[node_idx] {
+                UiNode::Label(l) => {
+                    let text  = l.text.clone();
+                    let color = l.color;
+                    let atlas = &*self.font_atlas;
 
-            if let Some((color, [u0, v0], [u1, v1])) = render_data {
-                let e      = self.node_edges(node_idx);
-                let offset = self.tree.nodes[node_idx].base().vertex_offset;
-                let vertices = [
-                    VERTEX_2D_RGBA::new(Pos2 { x: e.left,  y: e.top    }, UV::new(u0, v0), color),
-                    VERTEX_2D_RGBA::new(Pos2 { x: e.right, y: e.top    }, UV::new(u1, v0), color),
-                    VERTEX_2D_RGBA::new(Pos2 { x: e.right, y: e.bottom }, UV::new(u1, v1), color),
-                    VERTEX_2D_RGBA::new(Pos2 { x: e.left,  y: e.bottom }, UV::new(u0, v1), color),
-                ];
-                container.stage_vertex_update_at(self.vertex_id, offset, &vertices);
+                    let e          = self.node_edges(node_idx);
+                    let offset     = self.tree.nodes[node_idx].base().vertex_offset;
+                    let mut cursor_x = e.left;
+                    let baseline_y   = e.bottom;
+                    let mut vertices = Vec::new();
+
+                    for c in text.chars() {
+                        let Some(g) = atlas.glyphs.get(&c) else { cursor_x += 8.0; continue };
+                        let [u0, v0] = g.uv_min;
+                        let [u1, v1] = g.uv_max;
+                        let left     = cursor_x + g.bearing_x;
+                        let right    = left + g.width as f32;
+                        let top      = baseline_y - g.bearing_y - g.height as f32;
+                        let bottom   = baseline_y - g.bearing_y;
+
+                        vertices.push(VERTEX_2D_RGBA::new(Pos2 { x: left,  y: top    }, UV::new(u0, v0), color));
+                        vertices.push(VERTEX_2D_RGBA::new(Pos2 { x: right, y: top    }, UV::new(u1, v0), color));
+                        vertices.push(VERTEX_2D_RGBA::new(Pos2 { x: right, y: bottom }, UV::new(u1, v1), color));
+                        vertices.push(VERTEX_2D_RGBA::new(Pos2 { x: left,  y: bottom }, UV::new(u0, v1), color));
+
+                        cursor_x += g.advance;
+                    }
+
+                    container.stage_vertex_update_at(self.vertex_id, offset, &vertices);
+                }
+                _ => {
+                    let render_data = match &self.tree.nodes[node_idx] {
+                        UiNode::Panel(p)  => Some((p.color, p.uv_min, p.uv_max)),
+                        UiNode::Button(b)   => Some((b.color,             b.uv_min, b.uv_max)),
+                        UiNode::Checkbox(c) => Some((c.display_color(), c.uv_min, c.uv_max)),
+                        UiNode::Slider(s)   => Some((s.panel.color,       s.panel.uv_min, s.panel.uv_max)),
+                        _                 => None,
+                    };
+
+                    if let Some((color, [u0, v0], [u1, v1])) = render_data {
+                        let e      = self.node_edges(node_idx);
+                        let offset = self.tree.nodes[node_idx].base().vertex_offset;
+                        let vertices = [
+                            VERTEX_2D_RGBA::new(Pos2 { x: e.left,  y: e.top    }, UV::new(u0, v0), color),
+                            VERTEX_2D_RGBA::new(Pos2 { x: e.right, y: e.top    }, UV::new(u1, v0), color),
+                            VERTEX_2D_RGBA::new(Pos2 { x: e.right, y: e.bottom }, UV::new(u1, v1), color),
+                            VERTEX_2D_RGBA::new(Pos2 { x: e.left,  y: e.bottom }, UV::new(u0, v1), color),
+                        ];
+                        container.stage_vertex_update_at(self.vertex_id, offset, &vertices);
+                    }
+                }
             }
         }
     }
 
+    /// Computes the absolute screen-space [`Edges`] of `node_idx` by walking
+    /// its parent chain and resolving each node's position in turn.
     fn node_edges(&self, node_idx: usize) -> Edges {
         let node = &self.tree.nodes[node_idx];
         let parent_edges = match node.base().parent {
@@ -769,6 +457,68 @@ impl Ui {
             None    => Edges { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0 },
         };
         node.base().resolve(&parent_edges, &self.tree.nodes)
+    }
+
+    /// Sums glyph advances to get the rendered width of `text`.
+    fn label_width(&self, text: &str) -> f32 {
+        text.chars().map(|c| self.font_atlas.glyphs.get(&c).map_or(8.0, |g| g.advance)).sum()
+    }
+
+    /// Resolves a hit on a slider's panel or thumb to the slider's own index.
+    fn slider_at(&self, idx: usize) -> Option<usize> {
+        match &self.tree.nodes[idx] {
+            UiNode::Slider(_) => Some(idx),
+            _ => {
+                let parent = self.tree.nodes[idx].base().parent?;
+                match &self.tree.nodes[parent] {
+                    UiNode::Slider(s) if s.get_thumb() == Some(idx) => Some(parent),
+                    _ => None,
+                }
+            }
+        }
+    }
+
+    /// Repositions the thumb and refreshes the value label to match the
+    /// slider's current value. Marks both as dirty for re-rendering.
+    fn layout_slider(&mut self, slider_idx: usize) -> Result<()> {
+        let (text, thumb_idx, label_idx) = {
+            let s = self.tree.get_node::<SliderNode>(slider_idx)?;
+            (s.display_text(), s.get_thumb(), s.get_label())
+        };
+
+        if let Some(thumb_idx) = thumb_idx {
+            let thumb_width = self.tree.nodes[thumb_idx].base().bounds.width;
+            let x_offset = {
+                let s = self.tree.get_node::<SliderNode>(slider_idx)?;
+                s.thumb_offset(thumb_width)
+            };
+            let thumb = self.tree.get_node_mut::<PanelNode>(thumb_idx)?;
+            thumb.base.set_position(Anchor::Left, x_offset, 0.0);
+            self.dirty_nodes.push(thumb_idx);
+        }
+
+        if let Some(label_idx) = label_idx {
+            let label = self.tree.get_node_mut::<LabelNode>(label_idx)?;
+            label.text = text;
+            self.dirty_nodes.push(label_idx);
+        }
+
+        Ok(())
+    }
+
+    /// Recomputes the slider's value from the cursor position relative to
+    /// where the drag started, then re-lays-out the thumb and label.
+    fn drag_slider(&mut self, slider_idx: usize, cursor: (f32, f32)) -> Result<()> {
+        let new_value = {
+            let s = self.tree.get_node::<SliderNode>(slider_idx)?;
+            let thumb_width = s.get_thumb().map_or(0.0, |idx| self.tree.nodes[idx].base().bounds.width);
+            s.value_from_drag(cursor, thumb_width)
+        };
+
+        let s = self.tree.get_node_mut::<SliderNode>(slider_idx)?;
+        s.set_value(new_value);
+
+        self.layout_slider(slider_idx)
     }
 
     pub unsafe fn draw(&self, blitz: &mut Blitz) {
@@ -779,7 +529,7 @@ impl Ui {
         !self.dirty_nodes.is_empty()
     }
 
-    pub fn generate_tree(&mut self, screen_width: f32, screen_height: f32) {
+    pub fn generate_tree(&mut self, screen_width: f32, screen_height: f32) -> Result<()> {
         self.dirty = true;
 
         let mut ui_parent = ContainerNode::new();
@@ -800,231 +550,284 @@ impl Ui {
         let menu_rect          = Rect { x: 0.0, y: 0.0, width: panel_w, height: screen_height };
 
         // ── Main menu ────────────────────────────────────────────────────────
-        let (main_idx, panel) = self.create_panel(0);
+        let (main_idx, panel) = self.create_panel(0)?;
         panel.base.bounds  = menu_rect;
         panel.color        = panel_color;
         panel.base.visible = false;
         self.menu_container = main_idx;
 
-        let (_, label) = self.create_label(main_idx);
+        let (_, label) = self.create_label(main_idx)?;
         label.text = "Main Menu".to_string();
         label.base.set_position(Anchor::TopLeft, 100.0, 100.0);
 
-        let (resume_idx, btn) = self.create_button(main_idx);
+        let (resume_idx, btn) = self.create_button(main_idx)?;
         btn.base.bounds            = Rect { x: 64.0, y: 200.0, width: 400.0, height: 48.0 };
         btn.color                  = button_color;
         btn.hover_color            = Some(button_hover_color);
         btn.interaction.on_release = Some(UiAction::CloseMenu);
-        let (_, label) = self.create_label(resume_idx);
+        let (_, label) = self.create_label(resume_idx)?;
         label.text = "Resume".to_string();
         label.base.set_position(Anchor::Left, 10.0, 0.0);
 
-        let (b_idx, btn) = self.create_button(main_idx);
+        let (b_idx, btn) = self.create_button(main_idx)?;
         btn.base.bounds            = Rect { x: 64.0, y: 296.0, width: 400.0, height: 48.0 };
         btn.color                  = button_color;
         btn.hover_color            = Some(button_hover_color);
         btn.interaction.on_release = Some(UiAction::OpenGameOptions);
-        let (_, label) = self.create_label(b_idx);
+        let (_, label) = self.create_label(b_idx)?;
         label.text = "Game Options".to_string();
         label.base.set_position(Anchor::Left, 10.0, 0.0);
 
-        let (b_idx, btn) = self.create_button(main_idx);
+        let (b_idx, btn) = self.create_button(main_idx)?;
         btn.base.bounds            = Rect { x: 64.0, y: 392.0, width: 400.0, height: 48.0 };
         btn.color                  = button_color;
         btn.hover_color            = Some(button_hover_color);
         btn.interaction.on_release = Some(UiAction::OpenSystemOptions);
-        let (_, label) = self.create_label(b_idx);
+        let (_, label) = self.create_label(b_idx)?;
         label.text = "System Options".to_string();
         label.base.set_position(Anchor::Left, 10.0, 0.0);
 
-        let (b_idx, btn) = self.create_button(main_idx);
+        let (b_idx, btn) = self.create_button(main_idx)?;
         btn.base.bounds            = Rect { x: 64.0, y: 488.0, width: 400.0, height: 48.0 };
         btn.color                  = button_color;
         btn.hover_color            = Some(button_hover_color);
         btn.interaction.on_release = Some(UiAction::OpenKeybinds);
-        let (_, label) = self.create_label(b_idx);
+        let (_, label) = self.create_label(b_idx)?;
         label.text = "Keybinds".to_string();
         label.base.set_position(Anchor::Left, 10.0, 0.0);
 
-        let (b_idx, btn) = self.create_button(main_idx);
+        let (b_idx, btn) = self.create_button(main_idx)?;
         btn.base.bounds            = Rect { x: 64.0, y: 584.0, width: 400.0, height: 48.0 };
         btn.color                  = button_color;
         btn.hover_color            = Some(button_hover_color);
         btn.interaction.on_release = Some(UiAction::ExitApp);
-        let (_, label) = self.create_label(b_idx);
+        let (_, label) = self.create_label(b_idx)?;
         label.text = "Quit".to_string();
         label.base.set_position(Anchor::Left, 10.0, 0.0);
 
         // ── Game Options ─────────────────────────────────────────────────────
-        let (game_idx, panel) = self.create_panel(0);
+        let (game_idx, panel) = self.create_panel(0)?;
         panel.base.bounds  = menu_rect;
         panel.color        = panel_color;
         panel.base.visible = false;
         self.game_container = game_idx;
 
-        let (_, label) = self.create_label(game_idx);
+        let (_, label) = self.create_label(game_idx)?;
         label.text = "Game Options".to_string();
         label.base.set_position(Anchor::TopLeft, 100.0, 100.0);
 
-        let (b_idx, btn) = self.create_button(game_idx);
+        let (b_idx, btn) = self.create_button(game_idx)?;
         btn.base.bounds            = Rect { x: 64.0, y: 200.0, width: 400.0, height: 48.0 };
         btn.color                  = button_color;
         btn.hover_color            = Some(button_hover_color);
         btn.interaction.on_release = Some(UiAction::BackToMain);
-        let (_, label) = self.create_label(b_idx);
+        let (_, label) = self.create_label(b_idx)?;
         label.text = "Back".to_string();
         label.base.set_position(Anchor::Left, 10.0, 0.0);
 
         // ── System Options ───────────────────────────────────────────────────
-        let (sys_idx, panel) = self.create_panel(0);
+        let (sys_idx, panel) = self.create_panel(0)?;
         panel.base.bounds  = menu_rect;
         panel.color        = panel_color;
         panel.base.visible = false;
         self.system_container = sys_idx;
 
-        let (_, label) = self.create_label(sys_idx);
+        let (_, label) = self.create_label(sys_idx)?;
         label.text = "System Options".to_string();
         label.base.set_position(Anchor::TopLeft, 100.0, 100.0);
 
         // V-Sync row
-        let (row_idx, panel) = self.create_panel(sys_idx);
+        let (row_idx, panel) = self.create_panel(sys_idx)?;
         panel.base.bounds = Rect { x: 64.0, y: 200.0, width: 400.0, height: 48.0 };
         panel.color       = row_color;
-        let (_, label) = self.create_label(row_idx);
+        let (_, label) = self.create_label(row_idx)?;
         label.text = "V-Sync".to_string();
         label.base.set_position(Anchor::Left, 8.0, 0.0);
 
         let vsync_selected = self.pending.vsync;
-        let (_, checkbox) = self.create_checkbox(row_idx);
+        let (vsync_checkbox_idx, checkbox) = self.create_checkbox(row_idx)?;
         checkbox.base.set_position(Anchor::Right, -8.0, 0.0);
         checkbox.base.set_size(32.0, 32.0);
         checkbox.selected               = vsync_selected;
         checkbox.hover_color            = Some(button_hover_color);
-        checkbox.setting                = Some(SettingKey::Vsync);
         checkbox.interaction.on_release = Some(UiAction::ToggleVsync);
 
         // Slider row
-        let (slider_row_idx, panel) = self.create_panel(sys_idx);
+        let (slider_row_idx, panel) = self.create_panel(sys_idx)?;
         panel.base.bounds = Rect { x: 64.0, y: 296.0, width: 400.0, height: 48.0 };
         panel.color       = row_color;
-        let (_, label) = self.create_label(slider_row_idx);
+        let (_, label) = self.create_label(slider_row_idx)?;
         label.text = "Framerate".to_string();
         label.base.set_position(Anchor::Left, 8.0, 0.0);
 
-        let (_, slider) = self.create_slider(slider_row_idx);
+        let fps_cap = self.pending.fps_cap;
+        let (slider_idx, slider) = self.create_slider(slider_row_idx)?;
         slider.panel.base.set_position(Anchor::Right, -8.0, 0.0);
-        slider.set_min_max(30, 999);
-        slider.step_size = 1;
+        slider.set_min_max(60, 999);
+        slider.step_size = 8;
+        slider.set_value(fps_cap);
+        self.fps_slider_idx = slider_idx;
+        self.layout_slider(slider_idx)?;
 
-        let (b_idx, btn) = self.create_button(sys_idx);
+        let (b_idx, btn) = self.create_button(sys_idx)?;
         btn.base.bounds            = Rect { x: 64.0, y: 392.0, width: 400.0, height: 48.0 };
         btn.color                  = button_color;
         btn.hover_color            = Some(button_hover_color);
         btn.interaction.on_release = Some(UiAction::ApplySettings);
-        let (_, label) = self.create_label(b_idx);
+        let (_, label) = self.create_label(b_idx)?;
         label.text = "Accept".to_string();
         label.base.set_position(Anchor::Left, 10.0, 0.0);
 
-        let (b_idx, btn) = self.create_button(sys_idx);
+        let (b_idx, btn) = self.create_button(sys_idx)?;
         btn.base.bounds            = Rect { x: 64.0, y: 488.0, width: 400.0, height: 48.0 };
         btn.color                  = button_color;
         btn.hover_color            = Some(button_hover_color);
         btn.interaction.on_release = Some(UiAction::BackToMain);
-        let (_, label) = self.create_label(b_idx);
+        let (_, label) = self.create_label(b_idx)?;
         label.text = "Back".to_string();
         label.base.set_position(Anchor::Left, 10.0, 0.0);
 
+        // Re-syncs the V-Sync checkbox and frame rate slider from `pending`
+        // whenever this menu is shown, so they always reflect the values
+        // staged when the settings menu was opened.
+        self.tree.nodes[sys_idx].base_mut().on_show = Some(Box::new(move |ui| {
+            if let Ok(checkbox) = ui.tree.get_node_mut::<CheckboxNode>(vsync_checkbox_idx) {
+                checkbox.selected = ui.pending.vsync;
+                ui.dirty_nodes.push(vsync_checkbox_idx);
+            }
+            if let Ok(slider) = ui.tree.get_node_mut::<SliderNode>(slider_idx) {
+                slider.set_value(ui.pending.fps_cap);
+            }
+            let _ = ui.layout_slider(slider_idx);
+        }));
+
         // ── Keybinds ─────────────────────────────────────────────────────────
-        let (keybind_idx, panel) = self.create_panel(0);
+        let (keybind_idx, panel) = self.create_panel(0)?;
         panel.base.bounds  = menu_rect;
         panel.color        = panel_color;
         panel.base.visible = false;
         self.keybind_container = keybind_idx;
 
-        let (_, label) = self.create_label(keybind_idx);
+        let (_, label) = self.create_label(keybind_idx)?;
         label.text = "Keybinds".to_string();
         label.base.set_position(Anchor::TopLeft, 100.0, 100.0);
 
-        let (b_idx, btn) = self.create_button(keybind_idx);
+        let (b_idx, btn) = self.create_button(keybind_idx)?;
         btn.base.bounds            = Rect { x: 64.0, y: 200.0, width: 400.0, height: 48.0 };
         btn.color                  = button_color;
         btn.hover_color            = Some(button_hover_color);
         btn.interaction.on_release = Some(UiAction::BackToMain);
-        let (_, label) = self.create_label(b_idx);
+        let (_, label) = self.create_label(b_idx)?;
         label.text = "Back".to_string();
         label.base.set_position(Anchor::Left, 10.0, 0.0);
 
         // ── World UI ─────────────────────────────────────────────────────────
-        let (world_idx, world) = self.create_container(0);
+        let (world_idx, world) = self.create_container(0)?;
         world.base.set_size(screen_width, screen_height);
         self.world_container = world_idx;
 
         let total_w = HOTBAR_SLOTS as f32 * (SLOT_SIZE + SLOT_GAP) + SLOT_GAP;
-        let (hotbar_idx, hotbar) = self.create_panel(world_idx);
+        let (hotbar_idx, hotbar) = self.create_panel(world_idx)?;
         hotbar.base.set_position(Anchor::Bottom, 0.0, -SLOT_MARGIN_BOTTOM);
         hotbar.base.set_size(total_w, SLOT_SIZE + SLOT_GAP);
         hotbar.color = panel_color;
 
         for i in 0..HOTBAR_SLOTS {
             let x = i as f32 * (SLOT_SIZE + SLOT_GAP) + SLOT_GAP;
-            let (_, slot) = self.create_button(hotbar_idx);
+            let (_, slot) = self.create_button(hotbar_idx)?;
             slot.base.set_position(Anchor::TopLeft, x, SLOT_GAP / 2.0);
             slot.base.set_size(SLOT_SIZE, SLOT_SIZE);
             slot.color = Rgba::new(0.0, 0.0, 0.0, 0.6);
         }
 
         // ── Title screen ─────────────────────────────────────────────────────
-        let (title_idx, title) = self.create_panel(0);
+        let (title_idx, title) = self.create_panel(0)?;
         title.base.set_size(screen_width, screen_height);
         title.color        = Rgba::new(0.0, 0.0, 0.0, 1.0);
         title.base.visible = false;
         self.title_container = title_idx;
 
-        let (_, label) = self.create_label(title_idx);
+        let (_, label) = self.create_label(title_idx)?;
         label.text = "Playground".to_string();
         label.base.set_position(Anchor::Top, 0.0, 80.0);
 
-        let (start_idx, start_btn) = self.create_button(title_idx);
+        let (start_idx, start_btn) = self.create_button(title_idx)?;
         start_btn.base.set_position(Anchor::Center, 0.0, 0.0);
         start_btn.base.set_size(200.0, 48.0);
         start_btn.color                  = Rgba::new(1.0, 1.0, 1.0, 1.0);
         start_btn.hover_color            = Some(Rgba::new(0.2, 0.5, 1.0, 1.0));
         start_btn.interaction.on_release = Some(UiAction::CloseMenu);
-        let (_, label) = self.create_label(start_idx);
+        let (_, label) = self.create_label(start_idx)?;
         label.text = "Start".to_string();
         label.base.set_position(Anchor::Left, 64.0, 0.0);
 
-        let (quit_idx, quit_btn) = self.create_button(title_idx);
+        let (quit_idx, quit_btn) = self.create_button(title_idx)?;
         quit_btn.base.set_position(Anchor::Center, 0.0, 64.0);
         quit_btn.base.set_size(200.0, 48.0);
         quit_btn.color                  = Rgba::new(1.0, 1.0, 1.0, 1.0);
         quit_btn.hover_color            = Some(Rgba::new(0.2, 0.5, 1.0, 1.0));
         quit_btn.interaction.on_release = Some(UiAction::ExitApp);
-        let (_, label) = self.create_label(quit_idx);
+        let (_, label) = self.create_label(quit_idx)?;
         label.text = "Quit".to_string();
         label.base.set_position(Anchor::Left, 64.0, 0.0);
 
         // Reapply visibility in case the tree was rebuilt mid-session
         if self.state != MenuState::World {
-            let visible_idx = match self.state {
-                MenuState::World         => self.world_container,
-                MenuState::Title         => self.title_container,
-                MenuState::Main          => self.menu_container,
-                MenuState::GameOptions   => self.game_container,
-                MenuState::SystemOptions => self.system_container,
-                MenuState::Keybinds      => self.keybind_container,
-            };
+            let visible_idx = self.container_for(self.state);
             self.tree.nodes[visible_idx].base_mut().visible = true;
             self.tree.nodes[self.world_container].base_mut().visible = false;
         }
+
+        Ok(())
     }
 
-    pub fn toggle_menu(&mut self, window: &Window) {
+    /// Maps a [`MenuState`] to the index of the container node it displays.
+    fn container_for(&self, state: MenuState) -> usize {
+        match state {
+            MenuState::World         => self.world_container,
+            MenuState::Title         => self.title_container,
+            MenuState::Main          => self.menu_container,
+            MenuState::GameOptions   => self.game_container,
+            MenuState::SystemOptions => self.system_container,
+            MenuState::Keybinds      => self.keybind_container,
+        }
+    }
+
+    /// Takes a lifecycle callback out of `node_idx`, invokes it with
+    /// `&mut self`, then restores it. The take/restore dance works around
+    /// Rust's aliasing rules: the callback is borrowed out of `self.tree`, so
+    /// it can't stay borrowed while also receiving `&mut self`.
+    ///
+    /// Operates on `NodeBase` rather than a concrete node type since menu
+    /// screens are backed by different node types (`PanelNode`, `ContainerNode`).
+    fn fire_callback(
+        &mut self,
+        node_idx: usize,
+        select: impl Fn(&mut NodeBase) -> &mut Option<Box<dyn FnMut(&mut Ui)>>,
+    ) -> Result<()> {
+        let base = self.tree.nodes[node_idx].base_mut();
+        let Some(mut callback) = select(base).take() else { return Ok(()) };
+        callback(self);
+        let base = self.tree.nodes[node_idx].base_mut();
+        *select(base) = Some(callback);
+        Ok(())
+    }
+
+    /// Switches between the world view and the menu, firing `on_hide`/`on_show`
+    /// on the containers being left/entered.
+    pub fn toggle_menu(&mut self, window: &Window) -> Result<()> {
         self.dirty = true;
         if self.state == MenuState::World {
+            let old_idx = self.world_container;
+            let new_idx = self.menu_container;
+
+            self.tree.nodes[old_idx].base_mut().visible = false;
+            self.fire_callback(old_idx, |c| &mut c.on_hide)?;
+
+            self.tree.nodes[new_idx].base_mut().visible = true;
             self.state = MenuState::Main;
-            self.tree.nodes[self.menu_container].base_mut().visible = true;
-            self.tree.nodes[self.world_container].base_mut().visible = false;
+            self.fire_callback(new_idx, |c| &mut c.on_show)?;
+
             window.set_cursor_grab(CursorGrabMode::None)
                 .expect("Failed to free cursor");
             window.set_cursor_position(LogicalPosition::new(self.mouse_store.0, self.mouse_store.1))
@@ -1039,22 +842,22 @@ impl Ui {
                 }
             }
 
-            let current_idx = match self.state {
-                MenuState::World         => self.world_container,
-                MenuState::Title         => self.title_container,
-                MenuState::Main          => self.menu_container,
-                MenuState::GameOptions   => self.game_container,
-                MenuState::SystemOptions => self.system_container,
-                MenuState::Keybinds      => self.keybind_container,
-            };
-            self.tree.nodes[current_idx].base_mut().visible = false;
-            self.tree.nodes[self.world_container].base_mut().visible = true;
+            let old_idx = self.container_for(self.state);
+            let new_idx = self.world_container;
+
+            self.tree.nodes[old_idx].base_mut().visible = false;
+            self.fire_callback(old_idx, |c| &mut c.on_hide)?;
+
+            self.tree.nodes[new_idx].base_mut().visible = true;
             self.state = MenuState::World;
+            self.fire_callback(new_idx, |c| &mut c.on_show)?;
+
             window.set_cursor_grab(CursorGrabMode::Locked)
                 .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined))
                 .expect("Failed to grab cursor");
             window.set_cursor_visible(false);
         }
+        Ok(())
     }
 
     pub fn menu_opened(&self) -> bool {
@@ -1066,30 +869,31 @@ impl Ui {
     }
 
     /// Resets pending settings to the currently applied values so the settings
-    /// menu always shows the real state when opened.
+    /// menu always shows the real state when opened. Per-menu containers pick
+    /// these up themselves via their `on_show` callback.
     pub fn sync_pending(&mut self, settings: PendingSettings) {
         self.pending = settings;
-        self.sync_nodes_from_pending();
     }
 
-    /// Walks all nodes and syncs any checkbox bound via [`SettingKey`] to the
-    /// corresponding value in [`pending`].
-    fn sync_nodes_from_pending(&mut self) {
-        for node in &mut self.tree.nodes {
-            if let UiNode::Checkbox(c) = node {
-                if let Some(key) = c.setting {
-                    c.selected = match key {
-                        SettingKey::Vsync => self.pending.vsync,
-                    };
-                }
-            }
-        }
-    }
-
-    pub fn handle_input(&mut self, input: &InputManager) -> Option<UiAction> {
-        if self.state == MenuState::World { return None; }
+    pub fn handle_input(&mut self, input: &InputManager) -> Result<Option<UiAction>> {
+        if self.state == MenuState::World { return Ok(None); }
 
         let cursor = input.cursor();
+
+        if let Some(slider_idx) = self.dragging_slider {
+            if input.is_held(Action::PrimaryAction) {
+                self.drag_slider(slider_idx, cursor)?;
+                if slider_idx == self.fps_slider_idx {
+                    self.pending.fps_cap = self.tree.get_node::<SliderNode>(slider_idx)?.value;
+                }
+            } else {
+                let s = self.tree.get_node_mut::<SliderNode>(slider_idx)?;
+                s.drag.stop();
+                self.dragging_slider = None;
+            }
+            return Ok(None);
+        }
+
         let hit = self.tree.hit_test(
             cursor.0, cursor.1, 0,
             &Edges { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0 },
@@ -1130,6 +934,15 @@ impl Ui {
         }
 
         if let Some(idx) = hit {
+            if input.is_pressed(Action::PrimaryAction) {
+                if let Some(slider_idx) = self.slider_at(idx) {
+                    let s = self.tree.get_node_mut::<SliderNode>(slider_idx)?;
+                    let value = s.value as f32;
+                    s.drag.start(cursor, value);
+                    self.dragging_slider = Some(slider_idx);
+                }
+            }
+
             let action = if input.is_released(Action::PrimaryAction) {
                 match &self.tree.nodes[idx] {
                     UiNode::Button(b)   => b.interaction.on_release.clone(),
@@ -1140,10 +953,10 @@ impl Ui {
 
             if let Some(action) = action {
                 match action {
-                    UiAction::OpenKeybinds      => self.navigate(MenuState::Keybinds),
-                    UiAction::OpenGameOptions   => self.navigate(MenuState::GameOptions),
-                    UiAction::OpenSystemOptions => self.navigate(MenuState::SystemOptions),
-                    UiAction::BackToMain        => self.navigate(MenuState::Main),
+                    UiAction::OpenKeybinds      => self.navigate(MenuState::Keybinds)?,
+                    UiAction::OpenGameOptions   => self.navigate(MenuState::GameOptions)?,
+                    UiAction::OpenSystemOptions => self.navigate(MenuState::SystemOptions)?,
+                    UiAction::BackToMain        => self.navigate(MenuState::Main)?,
                     UiAction::ToggleVsync       => {
                         self.pending.vsync = !self.pending.vsync;
                         if let UiNode::Checkbox(c) = &mut self.tree.nodes[idx] {
@@ -1152,18 +965,20 @@ impl Ui {
                         self.dirty_nodes.push(idx);
                     },
                     UiAction::ApplySettings     => {
-                        self.navigate(MenuState::Main);
-                        return Some(UiAction::ApplySettings);
+                        self.navigate(MenuState::Main)?;
+                        return Ok(Some(UiAction::ApplySettings));
                     }
-                    UiAction::CloseMenu | UiAction::ExitApp => return Some(action),
+                    UiAction::CloseMenu | UiAction::ExitApp => return Ok(Some(action)),
                 }
             }
         }
 
-        None
+        Ok(None)
     }
 
-    fn navigate(&mut self, new_state: MenuState) {
+    /// Switches the visible menu screen, firing `on_hide` on the screen being
+    /// left and `on_show` on the screen being entered.
+    fn navigate(&mut self, new_state: MenuState) -> Result<()> {
         // Swap the hovered button's color back before the layout changes.
         // Do NOT push to dirty_nodes — flush_all supersedes flush_dirty here,
         // and stale vertex_offset values from the old layout would corrupt the new buffer.
@@ -1179,18 +994,17 @@ impl Ui {
             }
         }
 
-        let idx_for = |state: MenuState| match state {
-            MenuState::World         => self.world_container,
-            MenuState::Title         => self.title_container,
-            MenuState::Main          => self.menu_container,
-            MenuState::GameOptions   => self.game_container,
-            MenuState::SystemOptions => self.system_container,
-            MenuState::Keybinds      => self.keybind_container,
-        };
-        self.tree.nodes[idx_for(self.state)].base_mut().visible = false;
-        self.tree.nodes[idx_for(new_state)].base_mut().visible = true;
+        let old_idx = self.container_for(self.state);
+        let new_idx = self.container_for(new_state);
+
+        self.tree.nodes[old_idx].base_mut().visible = false;
+        self.fire_callback(old_idx, |c| &mut c.on_hide)?;
+
+        self.tree.nodes[new_idx].base_mut().visible = true;
         self.state = new_state;
-        self.sync_nodes_from_pending();
+        self.fire_callback(new_idx, |c| &mut c.on_show)?;
+
         self.dirty = true;
+        Ok(())
     }
 }

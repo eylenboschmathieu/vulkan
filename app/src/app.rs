@@ -36,7 +36,7 @@ impl App {
         let input = InputManager::new(window);
 
         let world = World::new(&mut blitz)?;
-        let ui = Ui::new(&window, &blitz, Rc::clone(&fonts.ui_atlas));
+        let ui = Ui::new(&window, &blitz, Rc::clone(&fonts.ui_atlas))?;
 
         let camera = FpCamera::new(point3(0.0, 2.0, 0.0), 0.0, 0.0);
 
@@ -74,9 +74,11 @@ impl App {
         }
 
         if self.input.is_pressed(Action::ToggleMenu) && !self.ui.is_title_screen() {
-            self.ui.toggle_menu(window);
+            if let Err(e) = self.ui.toggle_menu(window) {
+                error!("UI toggle error: {e}");
+            }
             if self.ui.menu_opened() {
-                self.ui.sync_pending(PendingSettings { vsync: self.blitz.vsync() });
+                self.ui.sync_pending(PendingSettings { vsync: self.blitz.vsync(), fps_cap: self.blitz.fps_cap() });
             }
         }
 
@@ -86,10 +88,13 @@ impl App {
 
         if self.ui.menu_opened() {
             match self.ui.handle_input(&self.input) {
-                Some(UiAction::CloseMenu)      => self.ui.toggle_menu(window),
-                Some(UiAction::ExitApp)        => return Some(AppEvent::Exit),
-                Some(UiAction::ApplySettings)  => self.apply_settings(),
-                _ => {}
+                Ok(Some(UiAction::CloseMenu)) => if let Err(e) = self.ui.toggle_menu(window) {
+                    error!("UI toggle error: {e}");
+                },
+                Ok(Some(UiAction::ExitApp))       => return Some(AppEvent::Exit),
+                Ok(Some(UiAction::ApplySettings)) => self.apply_settings(),
+                Ok(_) => {}
+                Err(e) => error!("UI input error: {e}"),
             }
         } else {
             self.world.handle_input(&self.input, &self.camera);
@@ -101,6 +106,7 @@ impl App {
 
     fn apply_settings(&mut self) {
         self.blitz.set_vsync(self.ui.pending.vsync);
+        self.blitz.set_fps_limit(Some(self.ui.pending.fps_cap));
     }
 
     /// Advance simulation by `delta` seconds.
@@ -146,7 +152,7 @@ impl App {
         } else {
             self.debug.present_mode = self.blitz.get_present_mode();
             let window_area = window.inner_size();
-            self.ui.generate_tree(window_area.width as f32, window_area.height as f32);
+            self.ui.generate_tree(window_area.width as f32, window_area.height as f32)?;
         }
 
         self.debug.on_frame();

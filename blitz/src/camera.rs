@@ -22,7 +22,6 @@ use crate::{
 ///
 /// Allocates one [`CameraUbo`] slot and one descriptor set per frame-in-flight
 /// so the GPU can read frame N while the CPU is writing frame N+1.
-#[derive(Debug)]
 pub(crate) struct Camera {
     descriptor_set_layout: vk::DescriptorSetLayout,
     descriptor_sets: [vk::DescriptorSet; FRAMES_IN_FLIGHT],

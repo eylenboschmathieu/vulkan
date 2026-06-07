@@ -11,7 +11,6 @@ use crate::{camera::FpCamera, font::FontAtlas};
 const PADDING: f32 = 10.0;
 
 /// Displays FPS and camera position as an on-screen overlay.
-#[derive(Debug)]
 pub struct DebugInfo {
     pub enabled: bool,
     atlas: Rc<FontAtlas>,

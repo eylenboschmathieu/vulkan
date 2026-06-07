@@ -4,7 +4,6 @@ use crate::input::{Action, InputManager};
 
 const MOUSE_SENSITIVITY: f32 = 0.2; // degrees per pixel
 
-#[derive(Debug)]
 pub struct FpCamera {
     pub eye:   Point3<f32>,
     pub yaw:   f32, // degrees, horizontal

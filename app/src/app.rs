@@ -15,7 +15,6 @@ pub enum AppEvent {
 
 
 // Our Vulkan app.
-#[derive(Debug)]
 pub struct App {
     blitz: blitz::Blitz,
     debug: DebugInfo,

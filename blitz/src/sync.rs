@@ -12,7 +12,7 @@ use crate::{
 pub(crate) const FRAMES_IN_FLIGHT: usize = 2;
 
 /// Per-frame-in-flight objects that must not be shared between concurrent frames.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 struct FrameSync {
     image_available_semaphore: vk::Semaphore,
     in_flight_fence: vk::Fence,
@@ -23,7 +23,7 @@ struct FrameSync {
 /// `image_available` semaphores are per-frame-in-flight (signalled by `acquire`).
 /// `render_finished` semaphores are per-swapchain-image so the presentation
 /// engine can't re-signal a semaphore that we're still waiting on.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(crate) struct Synchronization {
     frames: Vec<FrameSync>,
     // One per swapchain image: when acquire returns an image, the presentation engine

@@ -10,7 +10,7 @@ use crate::{
     resources::image::DepthBuffer
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(crate) struct Renderpass {
     handle: vk::RenderPass
 }

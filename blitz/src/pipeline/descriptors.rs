@@ -66,7 +66,7 @@ type Mat4 = cgmath::Matrix4<f32>;
 */
 
 /// Typed resource identifier for a descriptor set update.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub enum DescriptorId {
     Uniform(UniformAllocId),
     Texture(usize),
@@ -81,7 +81,6 @@ pub struct DescriptorSetUpdateInfo {
 
 pub type DescriptorSetId = usize;
 
-#[derive(Debug)]
 pub(crate) struct DescriptorPool {
     handle: vk::DescriptorPool,
 }

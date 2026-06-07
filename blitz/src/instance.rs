@@ -66,7 +66,6 @@ extern "system" fn debug_callback(
 pub struct SuitabilityError(pub &'static str);
 
 /// Contains a vulkan instance, and optionally a DebugUtilsMessengerEXT
-#[derive(Debug)]
 pub struct Instance {
     handle: vk_instance,
     surface: vk_surface,
@@ -283,7 +282,7 @@ impl Instance {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct QueueFamilyIndices {
     graphics: u32,
     transfer: u32,
@@ -340,7 +339,7 @@ impl QueueFamilyIndices {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct SwapchainSupport {
     capabilities: vk::SurfaceCapabilitiesKHR,
     formats: Vec<vk::SurfaceFormatKHR>,

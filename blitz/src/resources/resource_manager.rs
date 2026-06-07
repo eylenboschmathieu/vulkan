@@ -15,7 +15,6 @@ use crate::{
     }
 };
 
-#[derive(Debug)]
 pub struct ResourceManager {
     pub(crate) staging_buffer: StagingBuffer,
     pub(crate) index_buffer: IndexBuffer,

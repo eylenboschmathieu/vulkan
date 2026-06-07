@@ -17,7 +17,6 @@ use crate::{
     resources::image::{DepthBuffer, Image}, pipeline::renderpass::Renderpass
 };
 
-#[derive(Debug)]
 pub struct Swapchain {
     handle: SwapchainKHR,
     images: Vec<SwapchainImage>,
@@ -189,7 +188,7 @@ impl Index<usize> for Swapchain {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct SwapchainImage {
     handle: vk::Image,
     view: vk::ImageView,

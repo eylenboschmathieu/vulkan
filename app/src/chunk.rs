@@ -27,7 +27,6 @@ const FACE_DESCS: [FaceDesc; 6] = [
     FaceDesc { normal_axis: 2, positive: false, u_axis: 0, v_axis: 1, u_flip: false }, // -Z (North)
 ];
 
-#[derive(Debug)]
 pub struct Chunk {
     blocks: Blocks,
     mesh: ChunkMesh,
@@ -86,7 +85,6 @@ impl Chunk {
     }
 }
 
-#[derive(Debug)]
 pub struct ChunkMesh {
     mesh: Option<Mesh>,
 }

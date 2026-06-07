@@ -20,7 +20,6 @@ pub struct PipelineDef {
     pub alpha_blend: bool,
 }
 
-#[derive(Debug)]
 pub(crate) struct Pipeline {
     handle: vk::Pipeline,
     layout: vk::PipelineLayout,

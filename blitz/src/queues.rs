@@ -12,7 +12,6 @@ use crate::{
     commands::CommandBuffer, globals, vk::{KhrSwapchainExtensionDeviceCommands, PresentInfoKHR, SubmitInfo}
 };
 
-#[derive(Debug)]
 pub struct Queues {
     graphics: GraphicsQueue,
     transfer: TransferQueue,
@@ -45,7 +44,6 @@ pub trait QueueType {
     unsafe fn submit_transfer(&self, command_buffer: &CommandBuffer, semaphore: Option<vk::Semaphore>) -> Result<()>;
 }
 
-#[derive(Debug)]
 pub struct Queue {
     handle: vk::Queue
 }
@@ -56,7 +54,6 @@ impl Queue {
     }
 }
 
-#[derive(Debug)]
 pub struct GraphicsQueue {
     queue: Queue,
 }
@@ -100,7 +97,6 @@ impl Deref for GraphicsQueue {
     }
 }
 
-#[derive(Debug)]
 pub struct TransferQueue {
     queue: Queue,
 }
@@ -138,7 +134,6 @@ impl Deref for TransferQueue {
     }
 }
 
-#[derive(Debug)]
 pub struct PresentQueue {
     queue: Queue,
 }

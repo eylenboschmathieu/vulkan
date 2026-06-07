@@ -12,7 +12,7 @@ use crate::{
 /// Returned by [`Container::alloc_mesh`] and passed to the `draw_*` methods.
 /// `Default` initialises both IDs to their sentinel values so an unallocated
 /// mesh is obvious rather than silently aliasing slot 0.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct Mesh {
     pub vertices: VertexAllocId,
     pub indices:  IndexAllocId,

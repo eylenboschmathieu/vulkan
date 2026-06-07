@@ -11,7 +11,7 @@ pub type Pos3 = cgmath::Vector3<f32>;
 pub type Rgba = cgmath::Vector4<f32>;
 pub type UV   = cgmath::Vector2<f32>;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum VertexFormat {
     VERTEX_2D_RGBA,
     VERTEX_2D_TEXTURE,
@@ -43,7 +43,7 @@ impl VertexFormat {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct VERTEX_2D_TEXTURE {
     pos: Vec2,
     uv:  Vec2,
@@ -86,7 +86,7 @@ impl VERTEX_2D_TEXTURE {
 // "Technically" we're using a texture, but in reality it's that single texel.
 // The rest are characters in an atlas, not actual textures in the traditional sense.
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct VERTEX_2D_RGBA {
     pos:   Vec2,
     uv:    Vec2,
@@ -134,7 +134,7 @@ impl VERTEX_2D_RGBA {
 
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct VERTEX_3D_RGBA {
     pos:   Vec3,
     color: Vec4,
@@ -174,7 +174,7 @@ impl VERTEX_3D_RGBA {
 
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct VERTEX_3D_RGBA_TEXTURE {
     pos:   Vec3,
     color: Vec4,
@@ -222,7 +222,7 @@ impl VERTEX_3D_RGBA_TEXTURE {
 
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct VERTEX_3D_TEXTURE_ARRAY {
     pos:    Vec3,
     uv:     Vec2,

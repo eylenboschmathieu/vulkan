@@ -19,7 +19,6 @@ use crate::{
 /// - `mesh_color`   — per-object transforms, vertex color only (no texture)
 /// - `chunk`        — voxel chunk geometry sampling a `sampler2DArray` tile atlas
 /// - `ui`           — 2D screen-space quads with alpha blending, no depth test
-#[derive(Debug)]
 pub(crate) struct Pipelines {
     pub mesh_static:  Pipeline,
     pub mesh_dynamic: Pipeline,

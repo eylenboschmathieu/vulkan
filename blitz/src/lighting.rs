@@ -16,7 +16,6 @@ use crate::{
 ///
 /// Mirrors [`Camera`] in structure; separate so lighting data can evolve
 /// independently from camera matrices without touching set 0.
-#[derive(Debug)]
 pub(crate) struct Lighting {
     descriptor_set_layout: vk::DescriptorSetLayout,
     descriptor_sets: [vk::DescriptorSet; FRAMES_IN_FLIGHT],

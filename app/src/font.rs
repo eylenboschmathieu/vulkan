@@ -6,7 +6,6 @@ use anyhow::Result;
 use blitz::{Blitz, Container, TextureId};
 use fontdue::{Font, FontSettings};
 
-#[derive(Debug)]
 pub struct GlyphInfo {
     /// Top-left UV coordinate of this glyph in the font atlas (normalized 0..1).
     pub uv_min: [f32; 2],
@@ -24,7 +23,6 @@ pub struct GlyphInfo {
     pub bearing_y: f32,
 }
 
-#[derive(Debug)]
 pub struct FontManager {
     pub ui_atlas:    Rc<FontAtlas>,
     pub debug_atlas: Rc<FontAtlas>,
@@ -48,7 +46,6 @@ impl FontManager {
     }
 }
 
-#[derive(Debug)]
 pub struct FontAtlas {
     pub texture_id:  TextureId,
     pub glyphs:      HashMap<char, GlyphInfo>,

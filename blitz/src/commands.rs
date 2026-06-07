@@ -11,7 +11,6 @@ use crate::{
     instance::Instance, pipeline::renderpass::Renderpass, queues::{Queue, QueueType}
 };
 
-#[derive(Debug)]
 pub(crate) struct CommandPool {
     handle: vk::CommandPool,
     buffers: Vec<CommandBuffer>,
@@ -103,7 +102,6 @@ impl<'a> IntoIterator for &'a CommandPool {
 }
 
 // Essentially a wrapper to collect command pools
-#[derive(Debug)]
 pub(crate) struct Commands {
     /*
     === Graphics Pool ===
@@ -170,7 +168,7 @@ impl Commands {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub(crate) struct CommandBuffer {
     handle: vk::CommandBuffer,
 }

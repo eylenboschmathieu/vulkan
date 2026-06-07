@@ -3,7 +3,7 @@
 use std::fmt::Display;
 
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq)]
 pub enum BlockType {
     Air   = 0,
     Dirt  = 1,
@@ -13,7 +13,7 @@ pub enum BlockType {
 }
 
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq)]
 pub enum Face {
     EAST   = 0, // +X
     WEST   = 1, // -X
@@ -39,7 +39,14 @@ impl From<usize> for Face {
 
 impl Display for BlockType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
+        let name = match self {
+            BlockType::Air   => "Air",
+            BlockType::Dirt  => "Dirt",
+            BlockType::Stone => "Stone",
+            BlockType::Sand  => "Sand",
+            BlockType::Grass => "Grass",
+        };
+        write!(f, "{name}")
     }
 }
 
@@ -49,7 +56,7 @@ impl Default for BlockType {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Clone, Copy, Default)]
 pub struct Block {
     pub kind: BlockType
 }

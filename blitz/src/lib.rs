@@ -91,7 +91,7 @@ pub const DEBUG_VB: usize = 2;
 
 // ── Render layers ─────────────────────────────────────────────────────────────
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct ColorLayer {
     queue: Vec<(Mesh, cgmath::Matrix4<f32>)>,
 }
@@ -116,7 +116,7 @@ impl ColorLayer {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct ArrayLayer {
     queue: Vec<(Mesh, TextureArrayId)>,
 }
@@ -149,7 +149,7 @@ impl ArrayLayer {
 }
 
 /// A 2D quad layer using the UI pipeline. Shared by the UI and debug overlays.
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct QuadLayer {
     mesh:  Mesh,
     queue: Vec<(usize, usize, TextureId)>,  // (first_quad, quad_count, texture_id)
@@ -191,7 +191,6 @@ impl QuadLayer {
 /// Owns all Vulkan frame-level state: swapchain, render pass, and
 /// synchronisation primitives.  A single instance per process is enforced by
 /// [`INITIALIZED`].  GPU resources are released automatically via `Drop`.
-#[derive(Debug)]
 pub struct Blitz {
     camera: Camera,
     lighting: Lighting,

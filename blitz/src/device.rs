@@ -23,7 +23,7 @@ use crate::{
     },
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Device {
     physical_device: PhysicalDevice,
     logical_device: LogicalDevice,

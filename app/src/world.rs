@@ -11,7 +11,6 @@ use crate::{
     input::{Action, InputManager},
 };
 
-#[derive(Debug)]
 struct Sun {
     angle: f32,
     mesh:  Mesh,
@@ -62,7 +61,6 @@ impl Sun {
     }
 }
 
-#[derive(Debug)]
 pub struct World {
     chunks: HashMap<Vector3<i32>, Chunk>,
     dirty_chunks: Vec<Vector3<i32>>,

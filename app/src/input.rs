@@ -10,7 +10,7 @@ use winit::{self,
     keyboard::KeyCode, window::Window
 };
 
-#[derive(Hash, PartialEq, Eq, Clone, Copy, Debug)]
+#[derive(Hash, PartialEq, Eq, Clone, Copy)]
 pub enum Action {
     MoveForward,
     MoveBackward,
@@ -27,7 +27,7 @@ pub enum Action {
     Quit,
 }
 
-#[derive(Hash, PartialEq, Eq, Clone, Copy, Debug)]
+#[derive(Hash, PartialEq, Eq, Clone, Copy)]
 pub enum Input {
     Keyboard(KeyCode),
     Mouse(MouseButton),
@@ -41,13 +41,11 @@ impl From<MouseButton> for Input {
     fn from(b: MouseButton) -> Self { Input::Mouse(b) }
 }
 
-#[derive(Debug)]
 pub struct Binding {
     pub first: Option<Input>,
     pub second: Option<Input>,
 }
 
-#[derive(Debug)]
 pub struct InputBindings {
     bindings: HashMap<Action, Binding>,
     reverse:  HashMap<Input, Action>,
@@ -121,7 +119,6 @@ impl InputBindings {
     }
 }
 
-#[derive(Debug)]
 pub struct InputState {
     held:     HashSet<Action>,
     pressed:  HashSet<Action>,
@@ -147,7 +144,6 @@ impl InputState {
     }
 }
 
-#[derive(Debug)]
 pub struct InputManager {
     pub bindings: InputBindings,
     pub state:    InputState,

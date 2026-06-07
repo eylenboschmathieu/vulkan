@@ -8,14 +8,13 @@ use vulkanalia::vk::{self, DescriptorSetLayoutBinding, DeviceV1_0, HasBuilder};
 use crate::globals;
 
 
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+#[derive(Clone, Copy, Hash, PartialEq, Eq)]
 pub(crate) struct DescriptorSetLayoutBuildInfo {
     pub(crate) binding: u32,
     pub(crate) descriptor_type: vk::DescriptorType,
     pub(crate) count: u32,
 }
 
-#[derive(Debug)]
 pub(crate) struct DescriptorSetLayout {}
 
 impl DescriptorSetLayout {

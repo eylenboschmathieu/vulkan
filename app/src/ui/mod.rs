@@ -181,8 +181,9 @@ pub struct Ui {
     world_container:    usize,
     title_container:    usize,
 
-    // Index of the slider bound to the frame rate cap, so drags can mirror
-    // its value into `pending.fps_cap` live.
+    // Indices of the System Options controls, so Accept can read their
+    // live (possibly unsaved) values directly when staging `pending`.
+    vsync_checkbox_idx: usize,
     fps_slider_idx: usize,
 
     pub pending: PendingSettings,
@@ -212,6 +213,7 @@ impl Ui {
             keybind_container:  0,
             world_container:    0,
             title_container:    0,
+            vsync_checkbox_idx: 0,
             fps_slider_idx:     0,
             pending:            PendingSettings::default(),
         };
@@ -651,6 +653,7 @@ impl Ui {
         checkbox.selected               = vsync_selected;
         checkbox.hover_color            = Some(button_hover_color);
         checkbox.interaction.on_release = Some(UiAction::ToggleVsync);
+        self.vsync_checkbox_idx = vsync_checkbox_idx;
 
         // Slider row
         let (slider_row_idx, panel) = self.create_panel(sys_idx)?;
@@ -883,9 +886,6 @@ impl Ui {
         if let Some(slider_idx) = self.dragging_slider {
             if input.is_held(Action::PrimaryAction) {
                 self.drag_slider(slider_idx, cursor)?;
-                if slider_idx == self.fps_slider_idx {
-                    self.pending.fps_cap = self.tree.get_node::<SliderNode>(slider_idx)?.value;
-                }
             } else {
                 let s = self.tree.get_node_mut::<SliderNode>(slider_idx)?;
                 s.drag.stop();
@@ -958,13 +958,14 @@ impl Ui {
                     UiAction::OpenSystemOptions => self.navigate(MenuState::SystemOptions)?,
                     UiAction::BackToMain        => self.navigate(MenuState::Main)?,
                     UiAction::ToggleVsync       => {
-                        self.pending.vsync = !self.pending.vsync;
                         if let UiNode::Checkbox(c) = &mut self.tree.nodes[idx] {
-                            c.selected = self.pending.vsync;
+                            c.selected = !c.selected;
                         }
                         self.dirty_nodes.push(idx);
                     },
                     UiAction::ApplySettings     => {
+                        self.pending.vsync   = self.tree.get_node::<CheckboxNode>(self.vsync_checkbox_idx)?.selected;
+                        self.pending.fps_cap = self.tree.get_node::<SliderNode>(self.fps_slider_idx)?.value;
                         self.navigate(MenuState::Main)?;
                         return Ok(Some(UiAction::ApplySettings));
                     }

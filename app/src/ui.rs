@@ -334,6 +334,86 @@ impl CheckboxNode {
     }
 }
 
+/// Drag gesture state: tracks whether a drag is active and the cursor
+/// position / value captured when it began, so deltas can be computed
+/// without accumulating drift.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Draggable {
+    pub is_dragging:  bool,
+    pub start_cursor: (f32, f32),
+    pub start_value:  f32,
+}
+
+impl Draggable {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn start(&mut self, cursor: (f32, f32), value: f32) {
+        self.is_dragging  = true;
+        self.start_cursor = cursor;
+        self.start_value  = value;
+    }
+
+    pub fn stop(&mut self) {
+        self.is_dragging = false;
+    }
+}
+
+/// Slider
+#[derive(Debug)]
+pub struct SliderNode {
+    panel: PanelNode,
+    min_value: u32,
+    max_value: u32,
+    value: u32,
+    step_size: u32,
+    drag: Draggable,
+    thumb_idx: Option<usize>,
+    label_idx: Option<usize>,
+}
+
+impl SliderNode {
+    pub fn new() -> Self {
+        let mut this = Self {
+            panel: PanelNode::new(),
+            min_value: 0,
+            max_value: 0,
+            value: 0,
+            step_size: 1,
+            drag: Draggable::new(),
+            thumb_idx: None,
+            label_idx: None,
+        };
+
+        this.panel.base.set_size(200.0, 32.0);
+        this.panel.set_color(Rgba { x: 0.0, y: 0.0, z: 0.0, w: 0.5 });
+
+        this
+    }
+
+    pub fn get_label(&self) -> Option<usize> {
+        self.label_idx
+    }
+
+    pub fn get_thumb(&self) -> Option<usize> {
+        self.thumb_idx
+    }
+
+    pub fn set_min_max(&mut self, min: u32, max: u32) {
+        self.min_value = min;
+        self.max_value = max;
+    }
+
+    pub fn set_label(&mut self, idx: Option<usize>) {
+        self.label_idx = idx;
+    }
+
+    pub fn set_thumb(&mut self, idx: Option<usize>) {
+        self.thumb_idx = idx;
+    }
+}
+
 /// Text label. Not interactive, not labelable itself.
 #[derive(Debug)]
 pub struct LabelNode {
@@ -361,6 +441,7 @@ pub enum UiNode {
     Button(ButtonNode),
     Checkbox(CheckboxNode),
     Label(LabelNode),
+    Slider(SliderNode),
 }
 
 impl UiNode {
@@ -371,6 +452,7 @@ impl UiNode {
             UiNode::Button(n)    => &n.base,
             UiNode::Checkbox(n)  => &n.base,
             UiNode::Label(n)     => &n.base,
+            UiNode::Slider(n)    => &n.panel.base,
         }
     }
 
@@ -381,6 +463,7 @@ impl UiNode {
             UiNode::Button(n)    => &mut n.base,
             UiNode::Checkbox(n)  => &mut n.base,
             UiNode::Label(n)     => &mut n.base,
+            UiNode::Slider(n)    => &mut n.panel.base,
         }
     }
 }
@@ -540,6 +623,28 @@ impl Ui {
         (idx, c)
     }
 
+    /// Also creates the slider's thumb (panel) and value label as children
+    /// and wires their indices back into the returned `SliderNode`.
+    fn create_slider(&mut self, parent: usize) -> (usize, &mut SliderNode) {
+        let white = self.font_atlas.white_uv;
+        let mut slider = SliderNode::new();
+        slider.panel.uv_min = white;
+        slider.panel.uv_max = white;
+        let slider_idx = self.tree.add_child(UiNode::Slider(slider), parent);
+
+        let (thumb_idx, thumb) = self.create_panel(slider_idx);
+        thumb.base.set_size(16.0, 32.0);
+        thumb.set_color(Rgba::new(0.8, 0.8, 0.8, 0.9));
+
+        let (label_idx, label) = self.create_label(slider_idx);
+        label.text = "0".to_string();
+
+        let UiNode::Slider(s) = &mut self.tree.nodes[slider_idx] else { unreachable!() };
+        s.set_thumb(Some(thumb_idx));
+        s.set_label(Some(label_idx));
+        (slider_idx, s)
+    }
+
     pub fn quad_count(&self) -> usize {
         self.quad_count
     }
@@ -610,6 +715,7 @@ impl Ui {
                             UiNode::Panel(p)  => Some((p.color, p.uv_min, p.uv_max)),
                             UiNode::Button(b)   => Some((b.color,             b.uv_min, b.uv_max)),
                             UiNode::Checkbox(c) => Some((c.display_color(), c.uv_min, c.uv_max)),
+                            UiNode::Slider(s)   => Some((s.panel.color,       s.panel.uv_min, s.panel.uv_max)),
                             _ => None,
                         };
 
@@ -638,6 +744,7 @@ impl Ui {
                 UiNode::Panel(p)  => Some((p.color, p.uv_min, p.uv_max)),
                 UiNode::Button(b)   => Some((b.color,             b.uv_min, b.uv_max)),
                 UiNode::Checkbox(c) => Some((c.display_color(), c.uv_min, c.uv_max)),
+                UiNode::Slider(s)   => Some((s.panel.color,       s.panel.uv_min, s.panel.uv_max)),
                 _                 => None,
             };
 
@@ -796,8 +903,21 @@ impl Ui {
         checkbox.setting                = Some(SettingKey::Vsync);
         checkbox.interaction.on_release = Some(UiAction::ToggleVsync);
 
+        // Slider row
+        let (slider_row_idx, panel) = self.create_panel(sys_idx);
+        panel.base.bounds = Rect { x: 64.0, y: 296.0, width: 400.0, height: 48.0 };
+        panel.color       = row_color;
+        let (_, label) = self.create_label(slider_row_idx);
+        label.text = "Framerate".to_string();
+        label.base.set_position(Anchor::Left, 8.0, 0.0);
+
+        let (_, slider) = self.create_slider(slider_row_idx);
+        slider.panel.base.set_position(Anchor::Right, -8.0, 0.0);
+        slider.set_min_max(30, 999);
+        slider.step_size = 1;
+
         let (b_idx, btn) = self.create_button(sys_idx);
-        btn.base.bounds            = Rect { x: 64.0, y: 296.0, width: 400.0, height: 48.0 };
+        btn.base.bounds            = Rect { x: 64.0, y: 392.0, width: 400.0, height: 48.0 };
         btn.color                  = button_color;
         btn.hover_color            = Some(button_hover_color);
         btn.interaction.on_release = Some(UiAction::ApplySettings);
@@ -806,7 +926,7 @@ impl Ui {
         label.base.set_position(Anchor::Left, 10.0, 0.0);
 
         let (b_idx, btn) = self.create_button(sys_idx);
-        btn.base.bounds            = Rect { x: 64.0, y: 392.0, width: 400.0, height: 48.0 };
+        btn.base.bounds            = Rect { x: 64.0, y: 488.0, width: 400.0, height: 48.0 };
         btn.color                  = button_color;
         btn.hover_color            = Some(button_hover_color);
         btn.interaction.on_release = Some(UiAction::BackToMain);

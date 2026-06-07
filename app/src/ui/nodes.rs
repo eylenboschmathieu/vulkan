@@ -35,6 +35,15 @@ impl Anchor {
     }
 }
 
+/// Callbacks fired as a node becomes or stops being the visible menu screen.
+#[derive(Default)]
+pub struct VisibilityCb {
+    /// Fired right after this node becomes the visible menu screen.
+    pub on_show: Option<Box<dyn FnMut(&mut Ui)>>,
+    /// Fired right before this node stops being the visible menu screen.
+    pub on_hide: Option<Box<dyn FnMut(&mut Ui)>>,
+}
+
 pub struct NodeBase {
     pub bounds:      Rect,
     pub src_anchor:  Anchor,        // Attachment point on this node
@@ -44,10 +53,7 @@ pub struct NodeBase {
     pub children:      Vec<usize>,
     pub visible:       bool,
     pub vertex_offset: usize,
-    /// Fired right after this node becomes the visible menu screen.
-    pub on_show: Option<Box<dyn FnMut(&mut Ui)>>,
-    /// Fired right before this node stops being the visible menu screen.
-    pub on_hide: Option<Box<dyn FnMut(&mut Ui)>>,
+    pub visibility:    VisibilityCb,
 }
 
 impl NodeBase {
@@ -61,8 +67,7 @@ impl NodeBase {
             children:    Vec::new(),
             visible:       true,
             vertex_offset: 0,
-            on_show: None,
-            on_hide: None,
+            visibility:    VisibilityCb::default(),
         }
     }
 
@@ -168,7 +173,7 @@ impl PanelNode {
 
 /// Holds the four interaction callbacks shared by any interactive node type.
 #[derive(Default)]
-pub struct Interaction {
+pub struct InteractionCb {
     pub on_pressed: Option<UiAction>,
     pub on_release: Option<UiAction>,
     pub on_enter:   Option<UiAction>,
@@ -182,7 +187,7 @@ pub struct ButtonNode {
     pub hover_color: Option<Rgba>,
     pub uv_min:      [f32; 2],
     pub uv_max:      [f32; 2],
-    pub interaction: Interaction,
+    pub interaction: InteractionCb,
 }
 
 impl ButtonNode {
@@ -193,7 +198,7 @@ impl ButtonNode {
             hover_color: None,
             uv_min:      [0.0, 0.0],
             uv_max:      [0.0, 0.0],
-            interaction: Interaction::default(),
+            interaction: InteractionCb::default(),
         }
     }
 }
@@ -208,7 +213,7 @@ pub struct CheckboxNode {
     pub uv_max:         [f32; 2],
     pub selected:       bool,
     pub hovered:        bool,
-    pub interaction:    Interaction,
+    pub interaction:    InteractionCb,
 }
 
 impl CheckboxNode {
@@ -222,7 +227,7 @@ impl CheckboxNode {
             uv_max:         [0.0, 0.0],
             selected:       false,
             hovered:        false,
-            interaction:    Interaction::default(),
+            interaction:    InteractionCb::default(),
         }
     }
 

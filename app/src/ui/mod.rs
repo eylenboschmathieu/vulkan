@@ -693,7 +693,7 @@ impl Ui {
         // Re-syncs the V-Sync checkbox and frame rate slider from `pending`
         // whenever this menu is shown, so they always reflect the values
         // staged when the settings menu was opened.
-        self.tree.nodes[sys_idx].base_mut().on_show = Some(Box::new(move |ui| {
+        self.tree.nodes[sys_idx].base_mut().visibility.on_show = Some(Box::new(move |ui| {
             if let Ok(checkbox) = ui.tree.get_node_mut::<CheckboxNode>(vsync_checkbox_idx) {
                 checkbox.selected = ui.pending.vsync;
                 ui.dirty_nodes.push(vsync_checkbox_idx);
@@ -796,7 +796,7 @@ impl Ui {
         }
     }
 
-    /// Takes a lifecycle callback out of `node_idx`, invokes it with
+    /// Takes a visibility callback out of `node_idx`, invokes it with
     /// `&mut self`, then restores it. The take/restore dance works around
     /// Rust's aliasing rules: the callback is borrowed out of `self.tree`, so
     /// it can't stay borrowed while also receiving `&mut self`.
@@ -825,11 +825,11 @@ impl Ui {
             let new_idx = self.menu_container;
 
             self.tree.nodes[old_idx].base_mut().visible = false;
-            self.fire_callback(old_idx, |c| &mut c.on_hide)?;
+            self.fire_callback(old_idx, |c| &mut c.visibility.on_hide)?;
 
             self.tree.nodes[new_idx].base_mut().visible = true;
             self.state = MenuState::Main;
-            self.fire_callback(new_idx, |c| &mut c.on_show)?;
+            self.fire_callback(new_idx, |c| &mut c.visibility.on_show)?;
 
             window.set_cursor_grab(CursorGrabMode::None)
                 .expect("Failed to free cursor");
@@ -849,11 +849,11 @@ impl Ui {
             let new_idx = self.world_container;
 
             self.tree.nodes[old_idx].base_mut().visible = false;
-            self.fire_callback(old_idx, |c| &mut c.on_hide)?;
+            self.fire_callback(old_idx, |c| &mut c.visibility.on_hide)?;
 
             self.tree.nodes[new_idx].base_mut().visible = true;
             self.state = MenuState::World;
-            self.fire_callback(new_idx, |c| &mut c.on_show)?;
+            self.fire_callback(new_idx, |c| &mut c.visibility.on_show)?;
 
             window.set_cursor_grab(CursorGrabMode::Locked)
                 .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined))
@@ -999,11 +999,11 @@ impl Ui {
         let new_idx = self.container_for(new_state);
 
         self.tree.nodes[old_idx].base_mut().visible = false;
-        self.fire_callback(old_idx, |c| &mut c.on_hide)?;
+        self.fire_callback(old_idx, |c| &mut c.visibility.on_hide)?;
 
         self.tree.nodes[new_idx].base_mut().visible = true;
         self.state = new_state;
-        self.fire_callback(new_idx, |c| &mut c.on_show)?;
+        self.fire_callback(new_idx, |c| &mut c.visibility.on_show)?;
 
         self.dirty = true;
         Ok(())

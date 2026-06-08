@@ -1,5 +1,6 @@
 #![allow(dead_code, unsafe_op_in_unsafe_fn)]
 
+mod input;
 mod nodes;
 
 use std::rc::Rc;
@@ -8,7 +9,8 @@ use anyhow::{anyhow, Result};
 use blitz::{Blitz, Container, Pos2, Rgba, UV, VERTEX_2D_RGBA, VertexAllocId};
 use winit::{dpi::{LogicalPosition, PhysicalSize}, window::{CursorGrabMode, Window}};
 
-use crate::{font::FontAtlas, input::{Action, InputManager}};
+use crate::font::FontAtlas;
+pub use input::UiInput;
 use nodes::*;
 
 const HOTBAR_SLOTS:       usize = 10;
@@ -101,7 +103,6 @@ impl Edges {
 
 pub struct UiTree {
     pub nodes: Vec<UiNode>,
-    pub root: usize,
 }
 
 impl UiTree {
@@ -110,7 +111,6 @@ impl UiTree {
         ui_parent.base.set_size(area.width as f32, area.height as f32);
 
         Self {
-            root: 0,
             nodes: vec![UiNode::Container(ui_parent)],
         }
     }
@@ -187,6 +187,50 @@ pub struct Ui {
     fps_slider_idx: usize,
 
     pub pending: PendingSettings,
+}
+
+/// Builds the quads for a label's text, starting at `(left, baseline_y)` and
+/// always emitting exactly `max_len` quads — one per reserved character slot —
+/// so a label occupies a constant amount of vertex-buffer space regardless of
+/// how long its current text is. Slots with nothing to draw (a character
+/// missing from the atlas, or padding past the end of `text`) get a
+/// degenerate, zero-area quad, which rasterizes to nothing.
+fn label_quads(atlas: &FontAtlas, text: &str, color: Rgba, start_x: f32, baseline_y: f32, max_len: usize) -> Vec<VERTEX_2D_RGBA> {
+    let mut verts: Vec<VERTEX_2D_RGBA> = Vec::with_capacity(max_len * 4);
+    let mut cursor_x = start_x;
+    let mut chars = text.chars();
+
+    for _ in 0..max_len {
+        let c = chars.next();
+        let glyph = c.and_then(|c| atlas.glyphs.get(&c));
+
+        match glyph {
+            Some(g) => {
+                let [u0, v0] = g.uv_min;
+                let [u1, v1] = g.uv_max;
+                let left   = cursor_x + g.bearing_x;
+                let right  = left + g.width as f32;
+                let top    = baseline_y - g.bearing_y - g.height as f32;
+                let bottom = baseline_y - g.bearing_y;
+
+                verts.push(VERTEX_2D_RGBA::new(Pos2 { x: left,  y: top    }, UV::new(u0, v0), color));
+                verts.push(VERTEX_2D_RGBA::new(Pos2 { x: right, y: top    }, UV::new(u1, v0), color));
+                verts.push(VERTEX_2D_RGBA::new(Pos2 { x: right, y: bottom }, UV::new(u1, v1), color));
+                verts.push(VERTEX_2D_RGBA::new(Pos2 { x: left,  y: bottom }, UV::new(u0, v1), color));
+
+                cursor_x += g.advance;
+            }
+            None => {
+                let p = Pos2 { x: cursor_x, y: baseline_y };
+                let degenerate = VERTEX_2D_RGBA::new(p, UV::new(0.0, 0.0), color);
+                verts.extend_from_slice(&[degenerate; 4]);
+
+                if c.is_some() { cursor_x += 8.0; }
+            }
+        }
+    }
+
+    verts
 }
 
 impl Ui {
@@ -288,7 +332,7 @@ impl Ui {
         thumb.set_color(Rgba::new(0.8, 0.8, 0.8, 0.9));
 
         let (label_idx, label) = self.create_label(parent)?;
-        label.text = label_text;
+        label.set_text(label_text);
         label.base.set_width(label_width);
         label.base.set_position_anchored_to(Anchor::Right, slider_idx, Anchor::Left, -8.0, 0.0);
 
@@ -340,29 +384,12 @@ impl Ui {
 
                 match &self.tree.nodes[child_idx] {
                     UiNode::Label(l) => {
-                        let mut cursor_x = e.left;
-                        let baseline_y   = e.bottom;
-                        let color        = l.color;
-                        let text         = l.text.clone();
+                        let text    = l.text.clone();
+                        let color   = l.color;
+                        let max_len = l.max_len();
 
                         self.tree.nodes[child_idx].base_mut().vertex_offset = verts.len();
-
-                        for c in text.chars() {
-                            let Some(g) = atlas.glyphs.get(&c) else { cursor_x += 8.0; continue };
-                            let [u0, v0] = g.uv_min;
-                            let [u1, v1] = g.uv_max;
-                            let left     = cursor_x + g.bearing_x;
-                            let right    = left + g.width as f32;
-                            let top      = baseline_y - g.bearing_y - g.height as f32;
-                            let bottom   = baseline_y - g.bearing_y;
-
-                            verts.push(VERTEX_2D_RGBA::new(Pos2 { x: left,  y: top    }, UV::new(u0, v0), color));
-                            verts.push(VERTEX_2D_RGBA::new(Pos2 { x: right, y: top    }, UV::new(u1, v0), color));
-                            verts.push(VERTEX_2D_RGBA::new(Pos2 { x: right, y: bottom }, UV::new(u1, v1), color));
-                            verts.push(VERTEX_2D_RGBA::new(Pos2 { x: left,  y: bottom }, UV::new(u0, v1), color));
-
-                            cursor_x += g.advance;
-                        }
+                        verts.extend(label_quads(atlas, &text, color, e.left, e.bottom, max_len));
                     }
                     _ => {
                         let render_data = match &self.tree.nodes[child_idx] {
@@ -396,32 +423,14 @@ impl Ui {
         for node_idx in dirty {
             match &self.tree.nodes[node_idx] {
                 UiNode::Label(l) => {
-                    let text  = l.text.clone();
-                    let color = l.color;
-                    let atlas = &*self.font_atlas;
+                    let text    = l.text.clone();
+                    let color   = l.color;
+                    let max_len = l.max_len();
+                    let atlas   = &*self.font_atlas;
 
-                    let e          = self.node_edges(node_idx);
-                    let offset     = self.tree.nodes[node_idx].base().vertex_offset;
-                    let mut cursor_x = e.left;
-                    let baseline_y   = e.bottom;
-                    let mut vertices = Vec::new();
-
-                    for c in text.chars() {
-                        let Some(g) = atlas.glyphs.get(&c) else { cursor_x += 8.0; continue };
-                        let [u0, v0] = g.uv_min;
-                        let [u1, v1] = g.uv_max;
-                        let left     = cursor_x + g.bearing_x;
-                        let right    = left + g.width as f32;
-                        let top      = baseline_y - g.bearing_y - g.height as f32;
-                        let bottom   = baseline_y - g.bearing_y;
-
-                        vertices.push(VERTEX_2D_RGBA::new(Pos2 { x: left,  y: top    }, UV::new(u0, v0), color));
-                        vertices.push(VERTEX_2D_RGBA::new(Pos2 { x: right, y: top    }, UV::new(u1, v0), color));
-                        vertices.push(VERTEX_2D_RGBA::new(Pos2 { x: right, y: bottom }, UV::new(u1, v1), color));
-                        vertices.push(VERTEX_2D_RGBA::new(Pos2 { x: left,  y: bottom }, UV::new(u0, v1), color));
-
-                        cursor_x += g.advance;
-                    }
+                    let e      = self.node_edges(node_idx);
+                    let offset = self.tree.nodes[node_idx].base().vertex_offset;
+                    let vertices = label_quads(atlas, &text, color, e.left, e.bottom, max_len);
 
                     container.stage_vertex_update_at(self.vertex_id, offset, &vertices);
                 }
@@ -501,8 +510,11 @@ impl Ui {
 
         if let Some(label_idx) = label_idx {
             let label = self.tree.get_node_mut::<LabelNode>(label_idx)?;
-            label.text = text;
-            self.dirty_nodes.push(label_idx);
+            if label.set_text(text) {
+                self.dirty = true;
+            } else {
+                self.dirty_nodes.push(label_idx);
+            }
         }
 
         Ok(())
@@ -538,7 +550,6 @@ impl Ui {
         ui_parent.base.set_size(screen_width, screen_height);
 
         self.tree = UiTree {
-            root: 0,
             nodes: vec![UiNode::Container(ui_parent)],
         };
         self.hovered_node = None;
@@ -559,7 +570,7 @@ impl Ui {
         self.menu_container = main_idx;
 
         let (_, label) = self.create_label(main_idx)?;
-        label.text = "Main Menu".to_string();
+        label.set_text("Main Menu");
         label.base.set_position(Anchor::TopLeft, 100.0, 100.0);
 
         let (resume_idx, btn) = self.create_button(main_idx)?;
@@ -568,7 +579,7 @@ impl Ui {
         btn.hover_color            = Some(button_hover_color);
         btn.interaction.on_release = Some(UiAction::CloseMenu);
         let (_, label) = self.create_label(resume_idx)?;
-        label.text = "Resume".to_string();
+        label.set_text("Resume");
         label.base.set_position(Anchor::Left, 10.0, 0.0);
 
         let (b_idx, btn) = self.create_button(main_idx)?;
@@ -577,7 +588,7 @@ impl Ui {
         btn.hover_color            = Some(button_hover_color);
         btn.interaction.on_release = Some(UiAction::OpenGameOptions);
         let (_, label) = self.create_label(b_idx)?;
-        label.text = "Game Options".to_string();
+        label.set_text("Game Options");
         label.base.set_position(Anchor::Left, 10.0, 0.0);
 
         let (b_idx, btn) = self.create_button(main_idx)?;
@@ -586,7 +597,7 @@ impl Ui {
         btn.hover_color            = Some(button_hover_color);
         btn.interaction.on_release = Some(UiAction::OpenSystemOptions);
         let (_, label) = self.create_label(b_idx)?;
-        label.text = "System Options".to_string();
+        label.set_text("System Options");
         label.base.set_position(Anchor::Left, 10.0, 0.0);
 
         let (b_idx, btn) = self.create_button(main_idx)?;
@@ -595,7 +606,7 @@ impl Ui {
         btn.hover_color            = Some(button_hover_color);
         btn.interaction.on_release = Some(UiAction::OpenKeybinds);
         let (_, label) = self.create_label(b_idx)?;
-        label.text = "Keybinds".to_string();
+        label.set_text("Keybinds");
         label.base.set_position(Anchor::Left, 10.0, 0.0);
 
         let (b_idx, btn) = self.create_button(main_idx)?;
@@ -604,7 +615,7 @@ impl Ui {
         btn.hover_color            = Some(button_hover_color);
         btn.interaction.on_release = Some(UiAction::ExitApp);
         let (_, label) = self.create_label(b_idx)?;
-        label.text = "Quit".to_string();
+        label.set_text("Quit");
         label.base.set_position(Anchor::Left, 10.0, 0.0);
 
         // ── Game Options ─────────────────────────────────────────────────────
@@ -615,7 +626,7 @@ impl Ui {
         self.game_container = game_idx;
 
         let (_, label) = self.create_label(game_idx)?;
-        label.text = "Game Options".to_string();
+        label.set_text("Game Options");
         label.base.set_position(Anchor::TopLeft, 100.0, 100.0);
 
         let (b_idx, btn) = self.create_button(game_idx)?;
@@ -624,7 +635,7 @@ impl Ui {
         btn.hover_color            = Some(button_hover_color);
         btn.interaction.on_release = Some(UiAction::BackToMain);
         let (_, label) = self.create_label(b_idx)?;
-        label.text = "Back".to_string();
+        label.set_text("Back");
         label.base.set_position(Anchor::Left, 10.0, 0.0);
 
         // ── System Options ───────────────────────────────────────────────────
@@ -635,7 +646,7 @@ impl Ui {
         self.system_container = sys_idx;
 
         let (_, label) = self.create_label(sys_idx)?;
-        label.text = "System Options".to_string();
+        label.set_text("System Options");
         label.base.set_position(Anchor::TopLeft, 100.0, 100.0);
 
         // V-Sync row
@@ -643,7 +654,7 @@ impl Ui {
         panel.base.bounds = Rect { x: 64.0, y: 200.0, width: 400.0, height: 48.0 };
         panel.color       = row_color;
         let (_, label) = self.create_label(row_idx)?;
-        label.text = "V-Sync".to_string();
+        label.set_text("V-Sync");
         label.base.set_position(Anchor::Left, 8.0, 0.0);
 
         let vsync_selected = self.pending.vsync;
@@ -660,7 +671,7 @@ impl Ui {
         panel.base.bounds = Rect { x: 64.0, y: 296.0, width: 400.0, height: 48.0 };
         panel.color       = row_color;
         let (_, label) = self.create_label(slider_row_idx)?;
-        label.text = "Framerate".to_string();
+        label.set_text("Framerate");
         label.base.set_position(Anchor::Left, 8.0, 0.0);
 
         let fps_cap = self.pending.fps_cap;
@@ -678,7 +689,7 @@ impl Ui {
         btn.hover_color            = Some(button_hover_color);
         btn.interaction.on_release = Some(UiAction::ApplySettings);
         let (_, label) = self.create_label(b_idx)?;
-        label.text = "Accept".to_string();
+        label.set_text("Accept");
         label.base.set_position(Anchor::Left, 10.0, 0.0);
 
         let (b_idx, btn) = self.create_button(sys_idx)?;
@@ -687,7 +698,7 @@ impl Ui {
         btn.hover_color            = Some(button_hover_color);
         btn.interaction.on_release = Some(UiAction::BackToMain);
         let (_, label) = self.create_label(b_idx)?;
-        label.text = "Back".to_string();
+        label.set_text("Back");
         label.base.set_position(Anchor::Left, 10.0, 0.0);
 
         // Re-syncs the V-Sync checkbox and frame rate slider from `pending`
@@ -712,7 +723,7 @@ impl Ui {
         self.keybind_container = keybind_idx;
 
         let (_, label) = self.create_label(keybind_idx)?;
-        label.text = "Keybinds".to_string();
+        label.set_text("Keybinds");
         label.base.set_position(Anchor::TopLeft, 100.0, 100.0);
 
         let (b_idx, btn) = self.create_button(keybind_idx)?;
@@ -721,7 +732,7 @@ impl Ui {
         btn.hover_color            = Some(button_hover_color);
         btn.interaction.on_release = Some(UiAction::BackToMain);
         let (_, label) = self.create_label(b_idx)?;
-        label.text = "Back".to_string();
+        label.set_text("Back");
         label.base.set_position(Anchor::Left, 10.0, 0.0);
 
         // ── World UI ─────────────────────────────────────────────────────────
@@ -751,7 +762,7 @@ impl Ui {
         self.title_container = title_idx;
 
         let (_, label) = self.create_label(title_idx)?;
-        label.text = "Playground".to_string();
+        label.set_text("Playground");
         label.base.set_position(Anchor::Top, 0.0, 80.0);
 
         let (start_idx, start_btn) = self.create_button(title_idx)?;
@@ -761,7 +772,7 @@ impl Ui {
         start_btn.hover_color            = Some(Rgba::new(0.2, 0.5, 1.0, 1.0));
         start_btn.interaction.on_release = Some(UiAction::CloseMenu);
         let (_, label) = self.create_label(start_idx)?;
-        label.text = "Start".to_string();
+        label.set_text("Start");
         label.base.set_position(Anchor::Left, 64.0, 0.0);
 
         let (quit_idx, quit_btn) = self.create_button(title_idx)?;
@@ -771,7 +782,7 @@ impl Ui {
         quit_btn.hover_color            = Some(Rgba::new(0.2, 0.5, 1.0, 1.0));
         quit_btn.interaction.on_release = Some(UiAction::ExitApp);
         let (_, label) = self.create_label(quit_idx)?;
-        label.text = "Quit".to_string();
+        label.set_text("Quit");
         label.base.set_position(Anchor::Left, 64.0, 0.0);
 
         // Reapply visibility in case the tree was rebuilt mid-session
@@ -878,13 +889,13 @@ impl Ui {
         self.pending = settings;
     }
 
-    pub fn handle_input(&mut self, input: &InputManager) -> Result<Option<UiAction>> {
+    pub fn handle_input(&mut self, input: &UiInput) -> Result<Option<UiAction>> {
         if self.state == MenuState::World { return Ok(None); }
 
         let cursor = input.cursor();
 
         if let Some(slider_idx) = self.dragging_slider {
-            if input.is_held(Action::PrimaryAction) {
+            if input.primary_held() {
                 self.drag_slider(slider_idx, cursor)?;
             } else {
                 let s = self.tree.get_node_mut::<SliderNode>(slider_idx)?;
@@ -934,7 +945,7 @@ impl Ui {
         }
 
         if let Some(idx) = hit {
-            if input.is_pressed(Action::PrimaryAction) {
+            if input.primary_pressed() {
                 if let Some(slider_idx) = self.slider_at(idx) {
                     let s = self.tree.get_node_mut::<SliderNode>(slider_idx)?;
                     let value = s.value as f32;
@@ -943,7 +954,7 @@ impl Ui {
                 }
             }
 
-            let action = if input.is_released(Action::PrimaryAction) {
+            let action = if input.primary_released() {
                 match &self.tree.nodes[idx] {
                     UiNode::Button(b)   => b.interaction.on_release.clone(),
                     UiNode::Checkbox(c) => c.interaction.on_release.clone(),

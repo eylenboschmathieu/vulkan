@@ -7,7 +7,7 @@ use anyhow::Result;
 use log::*;
 use winit::{event::ElementState, window::Window};
 
-use crate::{camera::FpCamera, debug::DebugInfo, font::FontManager, input::{Action, Input, InputManager}, ui::{Ui, UiAction, PendingSettings}, world::World};
+use crate::{camera::FpCamera, debug::DebugInfo, font::FontManager, input::{Action, Input, InputManager}, ui::{Ui, UiAction, UiInput, PendingSettings}, world::World};
 
 pub enum AppEvent {
     Exit,
@@ -87,7 +87,14 @@ impl App {
         }
 
         if self.ui.menu_opened() {
-            match self.ui.handle_input(&self.input) {
+            let ui_input = UiInput::new(
+                self.input.cursor(),
+                self.input.is_held(Action::PrimaryAction),
+                self.input.is_pressed(Action::PrimaryAction),
+                self.input.is_released(Action::PrimaryAction),
+            );
+
+            match self.ui.handle_input(&ui_input) {
                 Ok(Some(UiAction::CloseMenu)) => if let Err(e) = self.ui.toggle_menu(window) {
                     error!("UI toggle error: {e}");
                 },

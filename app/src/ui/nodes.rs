@@ -342,11 +342,11 @@ impl SliderNode {
         self.value_fraction() * (self.panel.base.bounds.width - thumb_width)
     }
 
-    /// Value formatted to a constant 3-character width, space-padded on the
-    /// right. The range is always 2-3 digits, so the label's measured width
-    /// never changes and only needs to be set once, at creation.
+    /// Value formatted and right-padded with spaces to the width of `max_value`
+    /// so the label maintains a stable visual width across all possible values.
     pub fn display_text(&self) -> String {
-        format!("{:<3}", self.value)
+        let width = self.max_value.to_string().len();
+        format!("{:<width$}", self.value)
     }
 
     /// The value implied by dragging the cursor away from where the drag started.

@@ -347,6 +347,11 @@ impl Ui {
         self.quad_count
     }
 
+    /// Rebuilds the entire vertex buffer from the current tree state. Clears
+    /// `dirty` and `dirty_nodes` so subsequent frames can use `flush_dirty`
+    /// until the next structural change. Must be called whenever a node is
+    /// added, removed, or its `max_len` grows, since those events shift
+    /// `vertex_offset` bookkeeping for every node that follows.
     pub unsafe fn flush_all(&mut self, container: &mut Container, screen: (f32, f32)) {
         self.dirty = false;
         self.dirty_nodes.clear();
@@ -418,6 +423,11 @@ impl Ui {
         container.stage_vertex_update(self.vertex_id, &verts);
     }
     
+    /// Updates only the nodes listed in `dirty_nodes`, overwriting their quads
+    /// in-place at their recorded `vertex_offset`. Safe to call when the tree
+    /// structure hasn't changed and no node's `max_len` has grown, since those
+    /// conditions guarantee every node still occupies the same slot in the
+    /// buffer it was assigned during the last `flush_all`.
     pub unsafe fn flush_dirty(&mut self, container: &mut Container) {
         let dirty: Vec<usize> = self.dirty_nodes.drain(..).collect();
         for node_idx in dirty {

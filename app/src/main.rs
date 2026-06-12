@@ -2,10 +2,9 @@
 
 mod app;
 mod font;
-mod debug;
 mod input;
 mod camera;
-mod ui;
+mod screens;
 mod world;
 mod chunk;
 mod block;

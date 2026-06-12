@@ -15,3 +15,4 @@ vulkanalia = { version = "=0.35.0", features = ["libloading", "provisional", "wi
 winit = "0.29"
 fontdue = "0.9.3"
 blitz = { version = "0.1.0", path = "../blitz" }
+ui = { version = "0.1.0", path = "../ui" }

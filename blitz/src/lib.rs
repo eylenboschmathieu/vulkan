@@ -81,13 +81,11 @@ use crate::{
 
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
 
-pub const MAX_UI_QUADS:    usize = 1024;
-pub const MAX_DEBUG_QUADS: usize = 256;
+pub const MAX_UI_QUADS: usize = 1024;
 
 /// Vertex sub-buffer indices — pass to [`Container::alloc_mesh`].
 pub const WORLD_VB: usize = 0;
 pub const UI_VB:    usize = 1;
-pub const DEBUG_VB: usize = 2;
 
 // ── Render layers ─────────────────────────────────────────────────────────────
 
@@ -148,7 +146,7 @@ impl ArrayLayer {
     }
 }
 
-/// A 2D quad layer using the UI pipeline. Shared by the UI and debug overlays.
+/// A 2D quad layer using the UI pipeline.
 #[derive(Default)]
 struct QuadLayer {
     mesh:  Mesh,
@@ -201,7 +199,6 @@ pub struct Blitz {
     color_layer: ColorLayer,
     array_layer: ArrayLayer,
     ui:          QuadLayer,
-    debug:       QuadLayer,
     sky_color: [f32; 4],
     vsync: bool,
     vsync_dirty: bool,
@@ -409,14 +406,6 @@ impl Blitz {
     /// Returns the vertex buffer ID for the pre-allocated UI quad mesh.
     pub fn ui_vertex_id(&self) -> VertexAllocId { self.ui.vertex_id() }
 
-    /// Enqueue a debug overlay draw call. Uses the same UI pipeline, drawn on top of UI.
-    pub unsafe fn draw_debug_quads(&mut self, first_quad: usize, quad_count: usize, texture_id: TextureId) {
-        self.debug.enqueue(first_quad, quad_count, texture_id);
-    }
-
-    /// Returns the vertex buffer ID for the pre-allocated debug quad mesh.
-    pub fn debug_vertex_id(&self) -> VertexAllocId { self.debug.vertex_id() }
-
     /// Write camera matrices for the current frame-in-flight slot.
     /// Call this every frame before [`Blitz::start_render`].
     pub unsafe fn update_camera(&mut self, ubo: CameraUbo) {
@@ -438,7 +427,6 @@ impl Blitz {
         self.color_layer.flush(cb, camera_set);
         self.array_layer.flush(cb, camera_set, lighting_set);
         self.ui.flush(cb, extent);
-        self.debug.flush(cb, extent);
     }
 
     unsafe fn rebuild_swapchain(&mut self, window: &Window) -> Result<()> {
@@ -537,9 +525,8 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
     globals::init_index_buffer(index_buffer);
 
     let vertex_buffer = resources::buffers::vertex_buffer::VertexBuffer::new(&[
-        1024 * 1024 * 8,                          // WORLD_VB
-        MAX_UI_QUADS    * 4 * 64,                 // UI_VB
-        MAX_DEBUG_QUADS * 4 * 64,                 // DEBUG_VB
+        1024 * 1024 * 8,        // WORLD_VB
+        MAX_UI_QUADS * 4 * 64,  // UI_VB
     ])?;
     globals::init_vertex_buffer(vertex_buffer);
 
@@ -579,7 +566,6 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
         color_layer: ColorLayer::default(),
         array_layer: ArrayLayer::default(),
         ui:          QuadLayer::default(),
-        debug:       QuadLayer::default(),
         sky_color: [0.22, 0.48, 0.72, 1.0],
         vsync: VSYNC,
         vsync_dirty: false,
@@ -590,9 +576,8 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
         frame_start: Instant::now(),
     };
 
-    // Pre-allocate UI and debug quad meshes in one upload. Indices are baked once; vertices are updated each frame.
-    let mut ui_mesh    = Mesh::default();
-    let mut debug_mesh = Mesh::default();
+    // Pre-allocate the UI quad mesh in one upload. Indices are baked once; vertices are updated each frame.
+    let mut ui_mesh = Mesh::default();
     let zeroed = resources::vertices::VERTEX_2D_RGBA::new(
         cgmath::vec2(0.0, 0.0), cgmath::vec2(0.0, 0.0), cgmath::vec4(0.0, 0.0, 0.0, 0.0),
     );
@@ -602,15 +587,9 @@ pub unsafe fn init(window: &Window) -> Result<Blitz> {
             .collect();
         ui_mesh = container.alloc_mesh(UI_VB, &vec![zeroed; MAX_UI_QUADS * 4], &ui_indices);
 
-        let debug_indices: Vec<u16> = (0..MAX_DEBUG_QUADS as u16)
-            .flat_map(|q| { let b = q * 4; [b, b+1, b+2, b+2, b+3, b] })
-            .collect();
-        debug_mesh = container.alloc_mesh(DEBUG_VB, &vec![zeroed; MAX_DEBUG_QUADS * 4], &debug_indices);
-
         Ok(())
     })?;
-    blitz.ui.mesh    = ui_mesh;
-    blitz.debug.mesh = debug_mesh;
+    blitz.ui.mesh = ui_mesh;
 
     blitz.set_fps_limit(Some(60));
 

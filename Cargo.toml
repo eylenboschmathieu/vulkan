@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "app",
-    "blitz"
+    "blitz",
+    "ui"
 ]
 resolver = "2"

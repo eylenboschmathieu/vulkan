@@ -74,9 +74,15 @@ impl App {
 
     /// Apply raw mouse delta to the camera. Ignored while a menu is open.
     pub fn mouse_motion(&mut self, delta: (f32, f32)) {
-        if self.screens.current() == Screen::World {
+        if self.current_screen() == Screen::World {
             self.camera.mouse_move(delta.0, delta.1);
         }
+    }
+
+    /// The currently active screen, as set by [`Screens::build`] and updated
+    /// by [`ui::Ui::navigate_to`]/[`ui::Ui::navigate_to_screen`].
+    fn current_screen(&self) -> Screen {
+        self.ui.current_screen::<Screen>().expect("navigation initialized in Screens::build")
     }
 
     /// Update the absolute cursor position (used for UI hit-testing).
@@ -93,16 +99,21 @@ impl App {
 
         // Keep `pending` in sync with the live settings, except while System
         // Options is open and the user may have unsaved edits.
-        if self.screens.current() != Screen::SystemOptions {
+        if self.current_screen() != Screen::SystemOptions {
             self.screens.pending.set(crate::screens::PendingSettings {
                 vsync: self.blitz.vsync(),
                 fps_cap: self.blitz.fps_cap(),
             });
         }
 
-        if self.input.is_pressed(Action::ToggleMenu) && self.screens.current() != Screen::Title {
-            let target = if self.screens.current() == Screen::World { Screen::Main } else { Screen::World };
-            self.screens.nav_request.set(Some(target));
+        if self.input.is_pressed(Action::ToggleMenu) {
+            let current = self.current_screen();
+            if current != Screen::Title {
+                let target = if current == Screen::World { Screen::Main } else { Screen::World };
+                if let Err(e) = self.ui.navigate_to_screen(target) {
+                    error!("Screen navigation error: {e}");
+                }
+            }
         }
 
         if self.input.is_pressed(Action::ToggleDebug) {
@@ -122,12 +133,6 @@ impl App {
 
         if let Err(e) = self.ui.handle_input(&ui_input) {
             error!("UI input error: {e}");
-        }
-
-        if let Some(target) = self.screens.nav_request.take()
-            && let Err(e) = self.screens.go_to(&mut self.ui, target)
-        {
-            error!("Screen navigation error: {e}");
         }
 
         if self.screens.settings_dirty.take() {
@@ -166,7 +171,7 @@ impl App {
 
     /// Advance simulation by `delta` seconds.
     pub unsafe fn update(&mut self, dt: f32) {
-        if self.screens.current() == Screen::World {
+        if self.current_screen() == Screen::World {
             self.camera.handle_input(&self.input, dt);
         }
         self.world.update(dt);
@@ -205,7 +210,7 @@ impl App {
         })?;
 
         if self.blitz.start_render(window)? {
-            if self.screens.current() != Screen::Title {
+            if self.current_screen() != Screen::Title {
                 self.world.draw(&mut self.blitz, &self.camera)?;
             }
             self.blitz.draw_ui_quads(0, self.ui.quad_count(), self.ui.font_atlas.texture_id.0 as usize);

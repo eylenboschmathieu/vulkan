@@ -3,8 +3,9 @@
 use std::{cell::Cell, rc::Rc};
 
 use anyhow::Result;
+use log::error;
 
-use ui::{Anchor, CheckboxNode, CursorRequest, PanelNode, Rect, Rgba, SliderNode, Ui};
+use ui::{Anchor, CheckboxNode, ContainerNode, CursorRequest, PanelNode, Rect, Rgba, SliderNode, Ui};
 
 const HOTBAR_SLOTS:       usize = 10;
 const SLOT_SIZE:          f32   = 48.0;
@@ -16,7 +17,7 @@ const XH_THICKNESS: f32 = 2.0;
 
 const DEBUG_PADDING: f32 = 10.0;
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 pub enum Screen {
     World,
     Title,
@@ -39,34 +40,27 @@ impl Default for PendingSettings {
     }
 }
 
-/// Owns the menu/title/world screens built on top of [`ui::Ui`] and the
-/// container indices used to show/hide them. Node callbacks only have
-/// `&mut Ui`, so navigation and settings changes are communicated back to
-/// `App` via the `Rc<Cell<_>>` handles below: `App` reads and clears them
-/// after each [`ui::Ui::handle_input`] call.
-pub struct Screens {
-    main_idx: usize,
-    game_idx: usize,
-    sys_idx: usize,
-    keybind_idx: usize,
-    world_idx: usize,
-    title_idx: usize,
+/// Navigates to the screen registered for `trigger_idx` (see
+/// [`Ui::set_navigation`]), logging instead of propagating on failure since
+/// it's called from node callbacks that can't report errors to `App`.
+fn navigate(ui: &mut Ui, trigger_idx: usize) {
+    if let Err(e) = ui.navigate_to::<Screen>(trigger_idx) {
+        error!("Screen navigation error: {e}");
+    }
+}
 
+/// Owns the debug overlay built on top of [`ui::Ui`], alongside the
+/// menu/title/world screens. Screen navigation itself is handled by `ui`'s
+/// navigator (see [`Ui::navigate_to`]/[`Ui::navigate_to_screen`]) keyed by
+/// [`Screen`]; `Screens` only tracks what it still needs after `build`: the
+/// debug overlay's node indices and the System Options live-edit buffer.
+pub struct Screens {
     debug_idx: usize,
     debug_cam_idx: usize,
     debug_mode_idx: usize,
     debug_quad_idx: usize,
     debug_fps_idx: usize,
 
-    current: Cell<Screen>,
-    /// Logical cursor position to restore when leaving the world screen,
-    /// captured once at startup (the world is always entered/exited at
-    /// screen-center).
-    mouse_center: (f32, f32),
-
-    /// Set by navigation buttons' `on_release`; consumed by `App` via
-    /// [`Self::go_to`] after `ui.handle_input`.
-    pub nav_request: Rc<Cell<Option<Screen>>>,
     /// System Options' live-edit buffer for vsync/fps settings.
     pub pending: Rc<Cell<PendingSettings>>,
     /// Set by the Accept button alongside writing `pending`.
@@ -74,43 +68,6 @@ pub struct Screens {
 }
 
 impl Screens {
-    pub fn current(&self) -> Screen {
-        self.current.get()
-    }
-
-    /// Maps a [`Screen`] to the index of the container node it displays.
-    fn container_for(&self, screen: Screen) -> usize {
-        match screen {
-            Screen::World         => self.world_idx,
-            Screen::Title         => self.title_idx,
-            Screen::Main          => self.main_idx,
-            Screen::GameOptions   => self.game_idx,
-            Screen::SystemOptions => self.sys_idx,
-            Screen::Keybinds      => self.keybind_idx,
-        }
-    }
-
-    /// Switches the visible screen, hiding `current` and showing `target`
-    /// via [`ui::Ui::set_visible`] (which fires `on_hide`/`on_show`). Also
-    /// queues a cursor lock/free request when crossing the World <-> menu
-    /// boundary.
-    pub fn go_to(&self, ui: &mut Ui, target: Screen) -> Result<()> {
-        let current = self.current.get();
-        if current == target { return Ok(()); }
-
-        ui.set_visible(self.container_for(current), false)?;
-        ui.set_visible(self.container_for(target), true)?;
-
-        if target == Screen::World {
-            ui.request_cursor(CursorRequest::Lock);
-        } else if current == Screen::World {
-            ui.request_cursor(CursorRequest::Free { x: self.mouse_center.0, y: self.mouse_center.1 });
-        }
-
-        self.current.set(target);
-        Ok(())
-    }
-
     /// Shows or hides the debug overlay (camera position, present mode, UI
     /// quad count, FPS).
     pub fn set_debug_visible(&self, ui: &mut Ui, visible: bool) -> Result<()> {
@@ -129,11 +86,15 @@ impl Screens {
     }
 
     /// Builds the title, main menu, game/system options, keybinds, and world
-    /// screens as children of the UI's root container. Navigation buttons
-    /// write to `nav_request`, quit buttons call [`ui::Ui::request_exit`],
-    /// and the System Options screen reads/writes `pending`/`settings_dirty`.
+    /// screens as children of the UI's root container, registering each with
+    /// `ui`'s navigator under its [`Screen`] variant. Navigation buttons
+    /// register themselves via [`Ui::set_navigation`] and call
+    /// [`Ui::navigate_to`] on their own index in `on_release`; quit buttons
+    /// call [`Ui::request_exit`], and the System Options screen reads/writes
+    /// `pending`/`settings_dirty`.
     pub fn build(ui: &mut Ui, screen_size: (f32, f32)) -> Result<Self> {
-        let nav_request    = Rc::new(Cell::new(None));
+        ui.init_navigation(Screen::Title);
+
         let pending        = Rc::new(Cell::new(PendingSettings::default()));
         let settings_dirty = Rc::new(Cell::new(false));
 
@@ -149,6 +110,7 @@ impl Screens {
         panel.base.bounds  = menu_rect;
         panel.set_color(panel_color);
         panel.base.visible = false;
+        ui.register_screen(Screen::Main, main_idx)?;
 
         let (_, label) = ui.create_label(main_idx)?;
         label.set_text("Main Menu");
@@ -158,10 +120,8 @@ impl Screens {
         btn.base.bounds = Rect { x: 64.0, y: 200.0, width: 400.0, height: 48.0 };
         btn.set_color(button_color);
         btn.set_hover_color(Some(button_hover_color));
-        btn.interaction.on_release = Some(Box::new({
-            let nav_request = Rc::clone(&nav_request);
-            move |_: &mut Ui| nav_request.set(Some(Screen::World))
-        }));
+        btn.interaction.on_release = Some(Box::new(move |ui: &mut Ui| navigate(ui, resume_idx)));
+        ui.set_navigation(resume_idx, Screen::World)?;
         let (_, label) = ui.create_label(resume_idx)?;
         label.set_text("Resume");
         label.base.set_position(Anchor::Left, 10.0, 0.0);
@@ -170,10 +130,8 @@ impl Screens {
         btn.base.bounds = Rect { x: 64.0, y: 296.0, width: 400.0, height: 48.0 };
         btn.set_color(button_color);
         btn.set_hover_color(Some(button_hover_color));
-        btn.interaction.on_release = Some(Box::new({
-            let nav_request = Rc::clone(&nav_request);
-            move |_: &mut Ui| nav_request.set(Some(Screen::GameOptions))
-        }));
+        btn.interaction.on_release = Some(Box::new(move |ui: &mut Ui| navigate(ui, game_btn_idx)));
+        ui.set_navigation(game_btn_idx, Screen::GameOptions)?;
         let (_, label) = ui.create_label(game_btn_idx)?;
         label.set_text("Game Options");
         label.base.set_position(Anchor::Left, 10.0, 0.0);
@@ -182,10 +140,8 @@ impl Screens {
         btn.base.bounds = Rect { x: 64.0, y: 392.0, width: 400.0, height: 48.0 };
         btn.set_color(button_color);
         btn.set_hover_color(Some(button_hover_color));
-        btn.interaction.on_release = Some(Box::new({
-            let nav_request = Rc::clone(&nav_request);
-            move |_: &mut Ui| nav_request.set(Some(Screen::SystemOptions))
-        }));
+        btn.interaction.on_release = Some(Box::new(move |ui: &mut Ui| navigate(ui, sys_btn_idx)));
+        ui.set_navigation(sys_btn_idx, Screen::SystemOptions)?;
         let (_, label) = ui.create_label(sys_btn_idx)?;
         label.set_text("System Options");
         label.base.set_position(Anchor::Left, 10.0, 0.0);
@@ -194,10 +150,8 @@ impl Screens {
         btn.base.bounds = Rect { x: 64.0, y: 488.0, width: 400.0, height: 48.0 };
         btn.set_color(button_color);
         btn.set_hover_color(Some(button_hover_color));
-        btn.interaction.on_release = Some(Box::new({
-            let nav_request = Rc::clone(&nav_request);
-            move |_: &mut Ui| nav_request.set(Some(Screen::Keybinds))
-        }));
+        btn.interaction.on_release = Some(Box::new(move |ui: &mut Ui| navigate(ui, keybind_btn_idx)));
+        ui.set_navigation(keybind_btn_idx, Screen::Keybinds)?;
         let (_, label) = ui.create_label(keybind_btn_idx)?;
         label.set_text("Keybinds");
         label.base.set_position(Anchor::Left, 10.0, 0.0);
@@ -216,6 +170,7 @@ impl Screens {
         panel.base.bounds  = menu_rect;
         panel.set_color(panel_color);
         panel.base.visible = false;
+        ui.register_screen(Screen::GameOptions, game_idx)?;
 
         let (_, label) = ui.create_label(game_idx)?;
         label.set_text("Game Options");
@@ -225,10 +180,8 @@ impl Screens {
         btn.base.bounds = Rect { x: 64.0, y: 200.0, width: 400.0, height: 48.0 };
         btn.set_color(button_color);
         btn.set_hover_color(Some(button_hover_color));
-        btn.interaction.on_release = Some(Box::new({
-            let nav_request = Rc::clone(&nav_request);
-            move |_: &mut Ui| nav_request.set(Some(Screen::Main))
-        }));
+        btn.interaction.on_release = Some(Box::new(move |ui: &mut Ui| navigate(ui, back_idx)));
+        ui.set_navigation(back_idx, Screen::Main)?;
         let (_, label) = ui.create_label(back_idx)?;
         label.set_text("Back");
         label.base.set_position(Anchor::Left, 10.0, 0.0);
@@ -238,6 +191,7 @@ impl Screens {
         panel.base.bounds  = menu_rect;
         panel.set_color(panel_color);
         panel.base.visible = false;
+        ui.register_screen(Screen::SystemOptions, sys_idx)?;
 
         let (_, label) = ui.create_label(sys_idx)?;
         label.set_text("System Options");
@@ -280,15 +234,15 @@ impl Screens {
         btn.interaction.on_release = Some(Box::new({
             let pending        = Rc::clone(&pending);
             let settings_dirty = Rc::clone(&settings_dirty);
-            let nav_request    = Rc::clone(&nav_request);
             move |ui: &mut Ui| {
                 let vsync   = ui.get_node::<CheckboxNode>(vsync_checkbox_idx).map(|c| c.selected).unwrap_or(true);
                 let fps_cap = ui.get_node::<SliderNode>(fps_slider_idx).map(|s| s.value).unwrap_or(60);
                 pending.set(PendingSettings { vsync, fps_cap });
                 settings_dirty.set(true);
-                nav_request.set(Some(Screen::Main));
+                navigate(ui, accept_idx);
             }
         }));
+        ui.set_navigation(accept_idx, Screen::Main)?;
         let (_, label) = ui.create_label(accept_idx)?;
         label.set_text("Accept");
         label.base.set_position(Anchor::Left, 10.0, 0.0);
@@ -297,10 +251,8 @@ impl Screens {
         btn.base.bounds = Rect { x: 64.0, y: 488.0, width: 400.0, height: 48.0 };
         btn.set_color(button_color);
         btn.set_hover_color(Some(button_hover_color));
-        btn.interaction.on_release = Some(Box::new({
-            let nav_request = Rc::clone(&nav_request);
-            move |_: &mut Ui| nav_request.set(Some(Screen::Main))
-        }));
+        btn.interaction.on_release = Some(Box::new(move |ui: &mut Ui| navigate(ui, back_idx)));
+        ui.set_navigation(back_idx, Screen::Main)?;
         let (_, label) = ui.create_label(back_idx)?;
         label.set_text("Back");
         label.base.set_position(Anchor::Left, 10.0, 0.0);
@@ -328,6 +280,7 @@ impl Screens {
         panel.base.bounds  = menu_rect;
         panel.set_color(panel_color);
         panel.base.visible = false;
+        ui.register_screen(Screen::Keybinds, keybind_idx)?;
 
         let (_, label) = ui.create_label(keybind_idx)?;
         label.set_text("Keybinds");
@@ -337,10 +290,8 @@ impl Screens {
         btn.base.bounds = Rect { x: 64.0, y: 200.0, width: 400.0, height: 48.0 };
         btn.set_color(button_color);
         btn.set_hover_color(Some(button_hover_color));
-        btn.interaction.on_release = Some(Box::new({
-            let nav_request = Rc::clone(&nav_request);
-            move |_: &mut Ui| nav_request.set(Some(Screen::Main))
-        }));
+        btn.interaction.on_release = Some(Box::new(move |ui: &mut Ui| navigate(ui, back_idx)));
+        ui.set_navigation(back_idx, Screen::Main)?;
         let (_, label) = ui.create_label(back_idx)?;
         label.set_text("Back");
         label.base.set_position(Anchor::Left, 10.0, 0.0);
@@ -349,6 +300,7 @@ impl Screens {
         let (world_idx, world) = ui.create_container(0)?;
         world.base.set_size(screen_size.0, screen_size.1);
         world.base.visible = false;
+        ui.register_screen(Screen::World, world_idx)?;
 
         let total_w = HOTBAR_SLOTS as f32 * (SLOT_SIZE + SLOT_GAP) + SLOT_GAP;
         let (hotbar_idx, hotbar) = ui.create_panel(world_idx)?;
@@ -376,6 +328,16 @@ impl Screens {
         v_bar.base.set_position(Anchor::Center, 0.0, 0.0);
         v_bar.base.set_size(XH_THICKNESS * 2.0, XH_SIZE * 2.0);
         v_bar.set_color(xh_color);
+
+        // World is the only screen with first-person mouse-look, so lock the
+        // cursor whenever it becomes active and free it (restoring to
+        // screen-center, captured once here) whenever it's left.
+        let mouse_center = (screen_size.0 / 2.0, screen_size.1 / 2.0);
+        let world_node = ui.get_node_mut::<ContainerNode>(world_idx)?;
+        world_node.base.visibility.on_show = Some(Box::new(|ui: &mut Ui| ui.request_cursor(CursorRequest::Lock)));
+        world_node.base.visibility.on_hide = Some(Box::new(move |ui: &mut Ui| {
+            ui.request_cursor(CursorRequest::Free { x: mouse_center.0, y: mouse_center.1 });
+        }));
 
         // ── Debug overlay ────────────────────────────────────────────────────
         let (debug_idx, debug) = ui.create_container(0)?;
@@ -408,6 +370,7 @@ impl Screens {
         let (title_idx, title) = ui.create_panel(0)?;
         title.base.set_size(screen_size.0, screen_size.1);
         title.set_color(Rgba::new(0.0, 0.0, 0.0, 1.0));
+        ui.register_screen(Screen::Title, title_idx)?;
 
         let (_, label) = ui.create_label(title_idx)?;
         label.set_text("Playground");
@@ -418,10 +381,8 @@ impl Screens {
         start_btn.base.set_size(200.0, 48.0);
         start_btn.set_color(Rgba::new(1.0, 1.0, 1.0, 1.0));
         start_btn.set_hover_color(Some(Rgba::new(0.2, 0.5, 1.0, 1.0)));
-        start_btn.interaction.on_release = Some(Box::new({
-            let nav_request = Rc::clone(&nav_request);
-            move |_: &mut Ui| nav_request.set(Some(Screen::World))
-        }));
+        start_btn.interaction.on_release = Some(Box::new(move |ui: &mut Ui| navigate(ui, start_idx)));
+        ui.set_navigation(start_idx, Screen::World)?;
         let (_, label) = ui.create_label(start_idx)?;
         label.set_text("Start");
         label.base.set_position(Anchor::Left, 64.0, 0.0);
@@ -437,20 +398,11 @@ impl Screens {
         label.base.set_position(Anchor::Left, 64.0, 0.0);
 
         Ok(Self {
-            main_idx,
-            game_idx,
-            sys_idx,
-            keybind_idx,
-            world_idx,
-            title_idx,
             debug_idx,
             debug_cam_idx,
             debug_mode_idx,
             debug_quad_idx,
             debug_fps_idx,
-            current: Cell::new(Screen::Title),
-            mouse_center: (screen_size.0 / 2.0, screen_size.1 / 2.0),
-            nav_request,
             pending,
             settings_dirty,
         })

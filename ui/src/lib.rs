@@ -2,11 +2,12 @@
 
 mod font;
 mod input;
+mod navigator;
 mod nodes;
 mod output;
 mod types;
 
-use std::rc::Rc;
+use std::{any::Any, hash::Hash, rc::Rc};
 
 use anyhow::{anyhow, Result};
 
@@ -15,6 +16,7 @@ pub use input::{Key, MouseButton, UiInput};
 pub use nodes::{Anchor, ButtonNode, CheckboxNode, ContainerNode, LabelNode, PanelNode, SliderNode, UiNode, UiNodeVariant};
 pub use output::{CursorRequest, UiEvent, UiUpdate};
 pub use types::{Pos2, Rgba, Texture, TextureId, Vertex, UV};
+use navigator::Navigator;
 use nodes::*;
 
 #[derive(Clone, Copy)]
@@ -144,6 +146,11 @@ pub struct Ui {
     /// or `flush_dirty`.
     dirty_nodes: Vec<usize>,
 
+    /// Type-erased [`Navigator<S>`], set by
+    /// [`init_navigation`](Self::init_navigation). `S` is the host's own
+    /// screen type — `Ui` doesn't need to know what it is.
+    navigator: Option<Box<dyn Any>>,
+
     // ── Events ────────────────────────────────────────────────────────────
     // Pushed by node callbacks (which only have `&mut Ui`, never `&mut Host`)
     // and drained by the host via `take_events` after each `handle_input` call.
@@ -217,6 +224,7 @@ impl Ui {
             pressed_node: None,
             dragging_node: None,
             dirty_nodes: Vec::new(),
+            navigator: None,
             events: Vec::new(),
         }
     }
@@ -641,6 +649,79 @@ impl Ui {
     /// host to act on.
     pub fn take_events(&mut self) -> Vec<UiEvent> {
         std::mem::take(&mut self.events)
+    }
+
+    // ── Navigation ────────────────────────────────────────────────────────
+
+    /// Initializes navigation with `initial` as the current screen. `S` is
+    /// the host's own screen type; call this once, before any other
+    /// navigation method, and always with the same `S`.
+    pub fn init_navigation<S: Copy + Eq + Hash + 'static>(&mut self, initial: S) {
+        self.navigator = Some(Box::new(Navigator::<S>::new(initial)));
+    }
+
+    /// Borrows the navigator as `Navigator<S>`, erroring if
+    /// [`init_navigation`](Self::init_navigation) hasn't been called, or was
+    /// called with a different `S`.
+    fn navigator<S: Copy + Eq + Hash + 'static>(&self) -> Result<&Navigator<S>> {
+        self.navigator.as_ref()
+            .and_then(|n| n.downcast_ref())
+            .ok_or_else(|| anyhow!("navigation not initialized for this screen type"))
+    }
+
+    /// Mutable counterpart of [`navigator`](Self::navigator).
+    fn navigator_mut<S: Copy + Eq + Hash + 'static>(&mut self) -> Result<&mut Navigator<S>> {
+        self.navigator.as_mut()
+            .and_then(|n| n.downcast_mut())
+            .ok_or_else(|| anyhow!("navigation not initialized for this screen type"))
+    }
+
+    /// Associates `screen` with the Container/Panel node `idx`, so
+    /// [`navigate_to_screen`](Self::navigate_to_screen) can show/hide it.
+    pub fn register_screen<S: Copy + Eq + Hash + 'static>(&mut self, screen: S, idx: usize) -> Result<()> {
+        if !matches!(self.tree.nodes.get(idx), Some(UiNode::Container(_) | UiNode::Panel(_))) {
+            return Err(anyhow!("navigation target {idx} is not a Container or Panel"));
+        }
+        self.navigator_mut::<S>()?.screens.insert(screen, idx);
+        Ok(())
+    }
+
+    /// Registers `target` as the screen [`navigate_to`](Self::navigate_to)
+    /// switches to when called with `trigger_idx` — typically a widget's own
+    /// index, set up alongside its `on_release` callback.
+    pub fn set_navigation<S: Copy + Eq + Hash + 'static>(&mut self, trigger_idx: usize, target: S) -> Result<()> {
+        self.navigator_mut::<S>()?.routes.insert(trigger_idx, target);
+        Ok(())
+    }
+
+    /// Navigates to the screen registered for `trigger_idx` via
+    /// [`set_navigation`](Self::set_navigation). Intended to be called from a
+    /// widget's own `on_release`, passing its own index.
+    pub fn navigate_to<S: Copy + Eq + Hash + 'static>(&mut self, trigger_idx: usize) -> Result<()> {
+        let target = *self.navigator::<S>()?.routes.get(&trigger_idx)
+            .ok_or_else(|| anyhow!("no navigation route registered for node {trigger_idx}"))?;
+        self.navigate_to_screen(target)
+    }
+
+    /// Hides the current screen, shows `target`, and makes it current,
+    /// firing both screens' `on_hide`/`on_show` callbacks via
+    /// [`set_visible`](Self::set_visible). For navigation not tied to a
+    /// widget click, e.g. a host-side keybind.
+    pub fn navigate_to_screen<S: Copy + Eq + Hash + 'static>(&mut self, target: S) -> Result<()> {
+        let nav = self.navigator::<S>()?;
+        if nav.current == target { return Ok(()); }
+        let current_idx = *nav.screens.get(&nav.current).ok_or_else(|| anyhow!("current screen not registered"))?;
+        let target_idx  = *nav.screens.get(&target).ok_or_else(|| anyhow!("target screen not registered"))?;
+
+        self.set_visible(current_idx, false)?;
+        self.set_visible(target_idx, true)?;
+        self.navigator_mut::<S>()?.current = target;
+        Ok(())
+    }
+
+    /// The currently active screen.
+    pub fn current_screen<S: Copy + Eq + Hash + 'static>(&self) -> Result<S> {
+        Ok(self.navigator::<S>()?.current)
     }
 
     pub fn handle_input(&mut self, input: &UiInput) -> Result<()> {

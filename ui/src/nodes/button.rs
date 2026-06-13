@@ -12,6 +12,10 @@ pub struct ButtonNode {
     hover_texture:   Option<Texture>,
     pressed_texture: Option<Texture>,
     pub interaction: InteractionCb,
+    pub children: Vec<usize>,
+    /// Next [`NodeBase::z_index`] to assign to a child raised to the front;
+    /// starts at `1` since `0` means "not orderable".
+    pub z_sentinel: u32,
 }
 
 impl ButtonNode {
@@ -25,6 +29,8 @@ impl ButtonNode {
             hover_texture:   None,
             pressed_texture: None,
             interaction:     InteractionCb::default(),
+            children:        Vec::new(),
+            z_sentinel:      1,
         }
     }
 

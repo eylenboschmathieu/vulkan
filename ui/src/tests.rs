@@ -359,6 +359,137 @@ fn anchored_to_target_tracks_target_position() {
 }
 
 #[test]
+fn add_child_on_leaf_node_errors() {
+    let mut ui = Ui::new((800.0, 600.0), test_atlas());
+
+    let (label_idx, _) = ui.create_label(0).unwrap();
+    assert!(ui.create_panel(label_idx).is_err());
+}
+
+/// Three overlapping panels, all registered as orderable in creation order
+/// (A, B, C), so C starts on top. Pressing on A's exposed corner (not
+/// covered by B or C) raises it above both, both for hit-testing and
+/// rendering.
+#[test]
+fn raise_to_front_reorders_render_and_hit_test() {
+    let mut ui = Ui::new((800.0, 600.0), test_atlas());
+
+    let (container_idx, container) = ui.create_container(0).unwrap();
+    container.base.set_position(Anchor::TopLeft, 0.0, 0.0);
+    container.base.set_size(100.0, 100.0);
+
+    let (a_idx, a) = ui.create_panel(container_idx).unwrap();
+    a.base.set_position(Anchor::TopLeft, 0.0, 0.0);
+    a.base.set_size(60.0, 60.0);
+
+    let (b_idx, b) = ui.create_panel(container_idx).unwrap();
+    b.base.set_position(Anchor::TopLeft, 0.0, 0.0);
+    b.base.set_size(40.0, 40.0);
+
+    let (c_idx, c) = ui.create_panel(container_idx).unwrap();
+    c.base.set_position(Anchor::TopLeft, 0.0, 0.0);
+    c.base.set_size(40.0, 40.0);
+
+    ui.register_orderable(a_idx).unwrap();
+    ui.register_orderable(b_idx).unwrap();
+    ui.register_orderable(c_idx).unwrap();
+
+    // Initial order matches registration order: A, B, C (C on top).
+    assert_eq!(ui.tree.ordered_children(container_idx), vec![a_idx, b_idx, c_idx]);
+
+    let root_edges = Edges { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0 };
+
+    // (20, 20) is covered by all three -> topmost (C) wins.
+    assert_eq!(ui.tree.hit_test(20.0, 20.0, 0, &root_edges), Some(c_idx));
+
+    // Press on A's exposed corner (only A covers (50, 50)) -> raises A.
+    let press = UiInput::new((50.0, 50.0)).with_mouse_button(MouseButton::Primary, true, true, false);
+    ui.handle_input(&press).unwrap();
+
+    // A is now on top of B and C.
+    assert_eq!(ui.tree.ordered_children(container_idx), vec![b_idx, c_idx, a_idx]);
+    assert_eq!(ui.tree.hit_test(20.0, 20.0, 0, &root_edges), Some(a_idx));
+
+    // Render order follows the new z-order too: A is drawn last (on top).
+    let _ = ui.flush_all();
+    let a_offset = ui.get_node::<PanelNode>(a_idx).unwrap().base.vertex_offset;
+    let b_offset = ui.get_node::<PanelNode>(b_idx).unwrap().base.vertex_offset;
+    let c_offset = ui.get_node::<PanelNode>(c_idx).unwrap().base.vertex_offset;
+    assert!(a_offset > b_offset && a_offset > c_offset);
+}
+
+/// Two overlapping "windows" (containers), both registered as orderable.
+/// Clicking a button inside one of them (in the area the other doesn't
+/// cover) raises that window itself, even though the button was never
+/// registered as orderable.
+#[test]
+fn raise_propagates_to_orderable_ancestor() {
+    let mut ui = Ui::new((800.0, 600.0), test_atlas());
+
+    let (win1_idx, win1) = ui.create_container(0).unwrap();
+    win1.base.set_position(Anchor::TopLeft, 0.0, 0.0);
+    win1.base.set_size(60.0, 60.0);
+
+    let (win2_idx, win2) = ui.create_container(0).unwrap();
+    win2.base.set_position(Anchor::TopLeft, 0.0, 0.0);
+    win2.base.set_size(40.0, 40.0);
+
+    ui.register_orderable(win1_idx).unwrap();
+    ui.register_orderable(win2_idx).unwrap();
+
+    // win2 registered last -> on top initially.
+    assert_eq!(ui.tree.ordered_children(0), vec![win1_idx, win2_idx]);
+
+    // A button inside win1, in the area win2 doesn't cover.
+    let (_, button) = ui.create_button(win1_idx).unwrap();
+    button.base.set_position(Anchor::TopLeft, 50.0, 50.0);
+    button.base.set_size(8.0, 8.0);
+
+    // Clicking the button raises win1 (its container) to the front.
+    let press = UiInput::new((54.0, 54.0)).with_mouse_button(MouseButton::Primary, true, true, false);
+    ui.handle_input(&press).unwrap();
+
+    assert_eq!(ui.tree.ordered_children(0), vec![win2_idx, win1_idx]);
+}
+
+/// Bands assigned via `register_layer` (in registration order) take priority
+/// over `z_index`: a layer registered later always sorts above one
+/// registered earlier, regardless of how high the earlier layer's `z_index`
+/// gets raised.
+#[test]
+fn register_layer_bands_take_priority_over_z_index() {
+    let mut ui = Ui::new((800.0, 600.0), test_atlas());
+
+    #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+    enum TestLayer { Content, Debug }
+
+    let (content_idx, _) = ui.create_container(0).unwrap();
+    let (debug_idx, _) = ui.create_container(0).unwrap();
+
+    // Content registered first -> band 0; Debug registered second -> band 1.
+    ui.register_layer(content_idx, TestLayer::Content).unwrap();
+    ui.register_layer(debug_idx, TestLayer::Debug).unwrap();
+
+    // Give content a non-zero z_index -- it still loses to debug's band.
+    ui.register_orderable(content_idx).unwrap();
+
+    assert_eq!(ui.tree.ordered_children(0), vec![content_idx, debug_idx]);
+}
+
+#[test]
+fn register_layer_errors_for_non_root_child() {
+    let mut ui = Ui::new((800.0, 600.0), test_atlas());
+
+    #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+    enum TestLayer { Content }
+
+    let (container_idx, _) = ui.create_container(0).unwrap();
+    let (nested_idx, _) = ui.create_container(container_idx).unwrap();
+
+    assert!(ui.register_layer(nested_idx, TestLayer::Content).is_err());
+}
+
+#[test]
 fn take_events_drains_queued_events_in_order() {
     let mut ui = Ui::new((800.0, 600.0), test_atlas());
 

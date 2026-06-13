@@ -17,6 +17,13 @@ const XH_THICKNESS: f32 = 2.0;
 
 const DEBUG_PADDING: f32 = 10.0;
 
+/// Identifies a top-level screen. Used as the `S` type parameter of `ui`'s
+/// navigator: [`Screens::build`] registers each variant's container node via
+/// [`Ui::register_screen`], buttons map to a target variant via
+/// [`Ui::set_navigation`], and [`Ui::navigate_to`]/[`Ui::navigate_to_screen`]
+/// show/hide the corresponding containers and update `ui`'s current screen.
+/// `ui` itself never sees these names — it stores `Screen` values only as
+/// `Copy + Eq + Hash` keys.
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 pub enum Screen {
     World,
@@ -25,6 +32,19 @@ pub enum Screen {
     GameOptions,
     SystemOptions,
     Keybinds,
+}
+
+/// Identifies a rendering/z-order band. Used as the `L` type parameter of
+/// `ui`'s layer order: [`Screens::build`] registers each root-level screen
+/// container via [`Ui::register_layer`], in registration order — `Content`
+/// (registered first) becomes band 0, `Debug` (registered last) becomes band
+/// 1, so the debug overlay always renders and hit-tests on top of every other
+/// screen regardless of `z_index`. Orthogonal to [`Screen`]: `Screen` is
+/// which screen is currently visible, `Layer` is purely about stacking order.
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
+pub enum Layer {
+    Content,
+    Debug,
 }
 
 /// Settings staged in the UI and applied when the user hits Accept.
@@ -111,6 +131,7 @@ impl Screens {
         panel.set_color(panel_color);
         panel.base.visible = false;
         ui.register_screen(Screen::Main, main_idx)?;
+        ui.register_layer(main_idx, Layer::Content)?;
 
         let (_, label) = ui.create_label(main_idx)?;
         label.set_text("Main Menu");
@@ -165,12 +186,52 @@ impl Screens {
         label.set_text("Quit");
         label.base.set_position(Anchor::Left, 10.0, 0.0);
 
+        // ── Z-order test windows ─────────────────────────────────────────────
+        // Two overlapping panels on the right side, registered as orderable so
+        // clicking either raises it above the other.
+        let (win_a_idx, panel) = ui.create_panel(main_idx)?;
+        panel.base.bounds = Rect { x: panel_w + 40.0, y: 80.0, width: 240.0, height: 160.0 };
+        panel.set_color(Rgba::new(0.8, 0.2, 0.2, 0.8));
+        let (_, label) = ui.create_label(win_a_idx)?;
+        label.set_text("Window A");
+        label.set_color(Rgba::new(1.0, 1.0, 1.0, 1.0));
+        label.base.set_position(Anchor::TopLeft, 10.0, 10.0);
+        let (a_btn_idx, btn) = ui.create_button(win_a_idx)?;
+        btn.base.set_position(Anchor::TopLeft, 10.0, 50.0);
+        btn.base.set_size(100.0, 32.0);
+        btn.set_color(Rgba::new(1.0, 1.0, 1.0, 0.4));
+        btn.set_hover_color(Some(Rgba::new(1.0, 1.0, 1.0, 0.7)));
+        let (_, label) = ui.create_label(a_btn_idx)?;
+        label.set_text("Button A");
+        label.base.set_position(Anchor::Left, 8.0, 0.0);
+
+        let (win_b_idx, panel) = ui.create_panel(main_idx)?;
+        panel.base.bounds = Rect { x: panel_w + 140.0, y: 160.0, width: 240.0, height: 160.0 };
+        panel.set_color(Rgba::new(0.2, 0.2, 0.8, 0.8));
+        let (_, label) = ui.create_label(win_b_idx)?;
+        label.set_text("Window B");
+        label.set_color(Rgba::new(1.0, 1.0, 1.0, 1.0));
+        label.base.set_position(Anchor::TopLeft, 10.0, 10.0);
+        let (b_btn_idx, btn) = ui.create_button(win_b_idx)?;
+        btn.base.set_position(Anchor::TopLeft, 10.0, 50.0);
+        btn.base.set_size(100.0, 32.0);
+        btn.set_color(Rgba::new(1.0, 1.0, 1.0, 0.4));
+        btn.set_hover_color(Some(Rgba::new(1.0, 1.0, 1.0, 0.7)));
+        let (_, label) = ui.create_label(b_btn_idx)?;
+        label.set_text("Button B");
+        label.base.set_position(Anchor::Left, 8.0, 0.0);
+
+        // Registration order sets the initial z-order: B starts on top of A.
+        ui.register_orderable(win_a_idx)?;
+        ui.register_orderable(win_b_idx)?;
+
         // ── Game Options ─────────────────────────────────────────────────────
         let (game_idx, panel) = ui.create_panel(0)?;
         panel.base.bounds  = menu_rect;
         panel.set_color(panel_color);
         panel.base.visible = false;
         ui.register_screen(Screen::GameOptions, game_idx)?;
+        ui.register_layer(game_idx, Layer::Content)?;
 
         let (_, label) = ui.create_label(game_idx)?;
         label.set_text("Game Options");
@@ -192,6 +253,7 @@ impl Screens {
         panel.set_color(panel_color);
         panel.base.visible = false;
         ui.register_screen(Screen::SystemOptions, sys_idx)?;
+        ui.register_layer(sys_idx, Layer::Content)?;
 
         let (_, label) = ui.create_label(sys_idx)?;
         label.set_text("System Options");
@@ -281,6 +343,7 @@ impl Screens {
         panel.set_color(panel_color);
         panel.base.visible = false;
         ui.register_screen(Screen::Keybinds, keybind_idx)?;
+        ui.register_layer(keybind_idx, Layer::Content)?;
 
         let (_, label) = ui.create_label(keybind_idx)?;
         label.set_text("Keybinds");
@@ -301,6 +364,7 @@ impl Screens {
         world.base.set_size(screen_size.0, screen_size.1);
         world.base.visible = false;
         ui.register_screen(Screen::World, world_idx)?;
+        ui.register_layer(world_idx, Layer::Content)?;
 
         let total_w = HOTBAR_SLOTS as f32 * (SLOT_SIZE + SLOT_GAP) + SLOT_GAP;
         let (hotbar_idx, hotbar) = ui.create_panel(world_idx)?;
@@ -343,6 +407,7 @@ impl Screens {
         let (debug_idx, debug) = ui.create_container(0)?;
         debug.base.set_size(screen_size.0, screen_size.1);
         debug.base.visible = false;
+        ui.register_layer(debug_idx, Layer::Debug)?;
 
         let debug_color = Rgba::new(1.0, 1.0, 1.0, 1.0);
 
@@ -371,6 +436,7 @@ impl Screens {
         title.base.set_size(screen_size.0, screen_size.1);
         title.set_color(Rgba::new(0.0, 0.0, 0.0, 1.0));
         ui.register_screen(Screen::Title, title_idx)?;
+        ui.register_layer(title_idx, Layer::Content)?;
 
         let (_, label) = ui.create_label(title_idx)?;
         label.set_text("Playground");

@@ -2,6 +2,7 @@
 
 mod font;
 mod input;
+mod layers;
 mod navigator;
 mod nodes;
 mod output;
@@ -16,6 +17,7 @@ pub use input::{Key, MouseButton, UiInput};
 pub use nodes::{Anchor, ButtonNode, CheckboxNode, ContainerNode, LabelNode, PanelNode, SliderNode, UiNode, UiNodeVariant};
 pub use output::{CursorRequest, UiEvent, UiUpdate};
 pub use types::{Pos2, Rgba, Texture, TextureId, Vertex, UV};
+use layers::LayerOrder;
 use navigator::Navigator;
 use nodes::*;
 
@@ -91,12 +93,35 @@ impl UiTree {
         T::from_node_mut(node).ok_or_else(|| anyhow!("UI node {idx} is not a {}", T::NAME))
     }
 
-    pub fn add_child(&mut self, mut node: UiNode, parent_idx: usize) -> usize {
+    pub fn add_child(&mut self, mut node: UiNode, parent_idx: usize) -> Result<usize> {
         let idx = self.nodes.len();
         node.base_mut().parent = Some(parent_idx);
         self.nodes.push(node);
-        self.nodes[parent_idx].base_mut().children.push(idx);
-        idx
+        self.nodes[parent_idx].children_mut()
+            .ok_or_else(|| anyhow!("UI node {parent_idx} cannot have children"))?
+            .push(idx);
+        Ok(idx)
+    }
+
+    /// Returns `node_idx`'s children sorted for rendering/hit-testing: for
+    /// the root, by `(band, z_index)`; for any other node, by `z_index`
+    /// alone (its `band` is unused below the root). The sort is stable, so
+    /// children with equal keys — including the common all-zero case —
+    /// keep insertion order, i.e. today's behavior. Render order is
+    /// low-to-high (painter's algorithm: later = on top); hit-testing
+    /// iterates this in reverse (topmost first).
+    pub fn ordered_children(&self, node_idx: usize) -> Vec<usize> {
+        let Some(children) = self.nodes[node_idx].children() else { return Vec::new() };
+        let mut ordered = children.to_vec();
+        if node_idx == 0 {
+            ordered.sort_by_key(|&idx| {
+                let base = self.nodes[idx].base();
+                (base.band, base.z_index)
+            });
+        } else {
+            ordered.sort_by_key(|&idx| self.nodes[idx].base().z_index);
+        }
+        ordered
     }
 
     pub fn hit_test(&self, mx: f32, my: f32, node_idx: usize, parent_edges: &Edges) -> Option<usize> {
@@ -104,13 +129,17 @@ impl UiTree {
         if !node.base().visible { return None; }
 
         let edges = node.base().resolve(parent_edges, &self.nodes);
-        if !edges.contains(mx, my) { return None; }
 
-        for &child_idx in &node.base().children {
+        // Recurse regardless of whether (mx, my) is within this node's own
+        // bounds: children aren't clipped to their parent's bounds when
+        // rendered, so they shouldn't be for hit-testing either.
+        for child_idx in self.ordered_children(node_idx).into_iter().rev() {
             if let Some(hit) = self.hit_test(mx, my, child_idx, &edges) {
                 return Some(hit);
             }
         }
+
+        if !edges.contains(mx, my) { return None; }
 
         // Containers and labels are transparent to input
         match node {
@@ -150,6 +179,11 @@ pub struct Ui {
     /// [`init_navigation`](Self::init_navigation). `S` is the host's own
     /// screen type — `Ui` doesn't need to know what it is.
     navigator: Option<Box<dyn Any>>,
+
+    /// Type-erased [`LayerOrder<L>`], lazily created by the first
+    /// [`register_layer`](Self::register_layer) call. `L` is the host's own
+    /// layer type — `Ui` doesn't need to know what it is.
+    layer_order: Option<Box<dyn Any>>,
 
     // ── Events ────────────────────────────────────────────────────────────
     // Pushed by node callbacks (which only have `&mut Ui`, never `&mut Host`)
@@ -225,6 +259,7 @@ impl Ui {
             dragging_node: None,
             dirty_nodes: Vec::new(),
             navigator: None,
+            layer_order: None,
             events: Vec::new(),
         }
     }
@@ -245,7 +280,7 @@ impl Ui {
     // the caller afterwards through the returned node's own setters/fields.
 
     pub fn create_container(&mut self, parent: usize) -> Result<(usize, &mut ContainerNode)> {
-        let idx = self.tree.add_child(UiNode::Container(ContainerNode::new()), parent);
+        let idx = self.tree.add_child(UiNode::Container(ContainerNode::new()), parent)?;
         let c = self.tree.get_node_mut::<ContainerNode>(idx)?;
         Ok((idx, c))
     }
@@ -259,7 +294,7 @@ impl Ui {
     pub fn create_panel(&mut self, parent: usize) -> Result<(usize, &mut PanelNode)> {
         let mut p = PanelNode::new();
         p.set_texture(self.solid_texture());
-        let idx = self.tree.add_child(UiNode::Panel(p), parent);
+        let idx = self.tree.add_child(UiNode::Panel(p), parent)?;
         let p = self.tree.get_node_mut::<PanelNode>(idx)?;
         Ok((idx, p))
     }
@@ -267,7 +302,7 @@ impl Ui {
     pub fn create_button(&mut self, parent: usize) -> Result<(usize, &mut ButtonNode)> {
         let mut b = ButtonNode::new();
         b.set_texture(self.solid_texture());
-        let idx = self.tree.add_child(UiNode::Button(b), parent);
+        let idx = self.tree.add_child(UiNode::Button(b), parent)?;
         let b = self.tree.get_node_mut::<ButtonNode>(idx)?;
         Ok((idx, b))
     }
@@ -276,7 +311,7 @@ impl Ui {
         let cap_height = self.font_atlas.cap_height;
         let mut l = LabelNode::new("");
         l.base.set_height(cap_height);
-        let idx = self.tree.add_child(UiNode::Label(l), parent);
+        let idx = self.tree.add_child(UiNode::Label(l), parent)?;
         let l = self.tree.get_node_mut::<LabelNode>(idx)?;
         Ok((idx, l))
     }
@@ -284,7 +319,7 @@ impl Ui {
     pub fn create_checkbox(&mut self, parent: usize) -> Result<(usize, &mut CheckboxNode)> {
         let mut c = CheckboxNode::new();
         c.set_texture(self.solid_texture());
-        let idx = self.tree.add_child(UiNode::Checkbox(c), parent);
+        let idx = self.tree.add_child(UiNode::Checkbox(c), parent)?;
         let c = self.tree.get_node_mut::<CheckboxNode>(idx)?;
         Ok((idx, c))
     }
@@ -296,7 +331,7 @@ impl Ui {
         slider.panel.set_texture(self.solid_texture());
         let label_text  = slider.display_text(true);
         let label_width = self.label_width(&label_text);
-        let slider_idx = self.tree.add_child(UiNode::Slider(slider), parent);
+        let slider_idx = self.tree.add_child(UiNode::Slider(slider), parent)?;
 
         let (thumb_idx, thumb) = self.create_button(slider_idx)?;
         thumb.base.set_size(16.0, 32.0);
@@ -350,32 +385,39 @@ impl Ui {
         let mut verts: Vec<Vertex> = Vec::new();
 
         let root_edges = self.tree.nodes[0].base().resolve(&Edges { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0 }, &self.tree.nodes);
-        let mut stack: Vec<(usize, Edges)> = vec![(0, root_edges)];
+
+        // Each stack entry is a single node still to be processed (own quad,
+        // then its children). Children are pushed in *reverse*
+        // `ordered_children` order so the LIFO stack pops them back into the
+        // correct forward order — giving a full pre-order DFS per subtree,
+        // so a node's entire subtree (not just its own quad) stays grouped
+        // relative to its siblings' subtrees.
+        let mut stack: Vec<(usize, Edges)> = self.tree.ordered_children(0).into_iter().rev()
+            .map(|idx| (idx, root_edges.clone()))
+            .collect();
 
         while let Some((node_idx, parent_edges)) = stack.pop() {
-            let child_count = self.tree.nodes[node_idx].base().children.len();
-            for i in 0..child_count {
-                let child_idx = self.tree.nodes[node_idx].base().children[i];
-                if !self.tree.nodes[child_idx].base().visible { continue; }
+            if !self.tree.nodes[node_idx].base().visible { continue; }
 
-                let e = self.tree.nodes[child_idx].base().resolve(&parent_edges, &self.tree.nodes);
+            let e = self.tree.nodes[node_idx].base().resolve(&parent_edges, &self.tree.nodes);
 
-                match &self.tree.nodes[child_idx] {
-                    UiNode::Label(l) => {
-                        let text    = l.text.clone();
-                        let color   = l.color;
-                        let max_len = l.max_len();
+            match &self.tree.nodes[node_idx] {
+                UiNode::Label(l) => {
+                    let text    = l.text.clone();
+                    let color   = l.color;
+                    let max_len = l.max_len();
 
-                        self.tree.nodes[child_idx].base_mut().vertex_offset = verts.len();
-                        verts.extend(label_quads(atlas, &text, color, e.left, e.bottom, max_len));
+                    self.tree.nodes[node_idx].base_mut().vertex_offset = verts.len();
+                    verts.extend(label_quads(atlas, &text, color, e.left, e.bottom, max_len));
+                }
+                _ => {
+                    if let Some((color, texture)) = self.render_data(node_idx) {
+                        self.tree.nodes[node_idx].base_mut().vertex_offset = verts.len();
+                        verts.extend(quad_verts(&e, color, texture));
                     }
-                    _ => {
-                        if let Some((color, texture)) = self.render_data(child_idx) {
-                            self.tree.nodes[child_idx].base_mut().vertex_offset = verts.len();
-                            verts.extend(quad_verts(&e, color, texture));
-                        }
 
-                        stack.push((child_idx, e));
+                    for child_idx in self.tree.ordered_children(node_idx).into_iter().rev() {
+                        stack.push((child_idx, e.clone()));
                     }
                 }
             }
@@ -482,7 +524,7 @@ impl Ui {
         };
 
         let right_aligned = label_idx
-            .map(|idx| self.tree.nodes[idx].base().src_anchor.is_right())
+            .map(|idx| self.tree.nodes[idx].base().anchoring.src.is_right())
             .unwrap_or(true);
         let text = self.tree.get_node::<SliderNode>(slider_idx)?.display_text(right_aligned);
 
@@ -724,6 +766,87 @@ impl Ui {
         Ok(self.navigator::<S>()?.current)
     }
 
+    // ── Layering / z-order ───────────────────────────────────────────────────
+
+    /// Borrows the layer order as `LayerOrder<L>`, lazily creating it on
+    /// first use. `L` is the host's own layer type; all
+    /// [`register_layer`](Self::register_layer) calls for the lifetime of
+    /// this `Ui` must use the same `L`.
+    fn layer_order_mut<L: Copy + Eq + Hash + 'static>(&mut self) -> Result<&mut LayerOrder<L>> {
+        if self.layer_order.is_none() {
+            self.layer_order = Some(Box::new(LayerOrder::<L>::new()));
+        }
+        self.layer_order.as_mut()
+            .and_then(|l| l.downcast_mut())
+            .ok_or_else(|| anyhow!("layer ordering already initialized for a different layer type"))
+    }
+
+    /// Assigns the Container/Panel/Slider node `idx` (a direct child of the
+    /// root) to `layer`'s band. Bands are assigned in registration order:
+    /// the first distinct `layer` value seen across all `register_layer`
+    /// calls becomes band `0` (bottom-most), the next becomes `1`, and so
+    /// on — e.g. registering normal content before a debug overlay's layer
+    /// ensures the overlay always renders and hit-tests on top, regardless
+    /// of `z_index`. `L` is the host's own layer type, independent of the
+    /// `S` used for [`init_navigation`](Self::init_navigation).
+    pub fn register_layer<L: Copy + Eq + Hash + 'static>(&mut self, idx: usize, layer: L) -> Result<()> {
+        if self.tree.nodes[idx].base().parent != Some(0) {
+            return Err(anyhow!("layer target {idx} is not a direct child of the root"));
+        }
+        let band = self.layer_order_mut::<L>()?.band(layer);
+        self.tree.nodes[idx].base_mut().band = band;
+        self.dirty = true;
+        Ok(())
+    }
+
+    /// Reassigns `idx`'s [`z_index`](NodeBase::z_index) from its parent's
+    /// `z_sentinel`, placing it above all of its current siblings.
+    fn bump_z_index(&mut self, idx: usize) -> Result<()> {
+        let parent = self.tree.nodes[idx].base().parent
+            .ok_or_else(|| anyhow!("node {idx} has no parent"))?;
+        let sentinel = self.tree.nodes[parent].z_sentinel_mut()
+            .ok_or_else(|| anyhow!("parent {parent} of node {idx} cannot have children"))?;
+        let z = *sentinel;
+        *sentinel += 1;
+        self.tree.nodes[idx].base_mut().z_index = z;
+        Ok(())
+    }
+
+    /// Marks `idx` as participating in z-ordering among its siblings,
+    /// placing it above any sibling registered so far. Call once per node
+    /// during setup, in the desired initial back-to-front order — later
+    /// calls to [`raise`](Self::raise) (on press) will only affect nodes
+    /// registered this way; siblings that are never registered keep
+    /// [`z_index`](NodeBase::z_index) `0` and always sort below registered
+    /// ones.
+    pub fn register_orderable(&mut self, idx: usize) -> Result<()> {
+        self.bump_z_index(idx)
+    }
+
+    /// Raises `idx` to the front of its parent's orderable siblings, and
+    /// propagates the same operation up through every container-like
+    /// ancestor to the root — each level only competes with its own
+    /// siblings (CSS stacking-context semantics). A no-op at any level whose
+    /// node has [`z_index`](NodeBase::z_index) `0`, i.e. was never
+    /// [`register_orderable`](Self::register_orderable)d: such nodes are
+    /// never reordered, so e.g. a debug overlay that never registers stays
+    /// fixed regardless of clicks elsewhere. Called automatically by
+    /// [`handle_input`](Self::handle_input) on press.
+    fn raise(&mut self, idx: usize) -> Result<()> {
+        let mut current = idx;
+        loop {
+            if self.tree.nodes[current].base().z_index > 0 {
+                self.bump_z_index(current)?;
+                self.dirty = true;
+            }
+            match self.tree.nodes[current].base().parent {
+                Some(parent) => current = parent,
+                None => break,
+            }
+        }
+        Ok(())
+    }
+
     pub fn handle_input(&mut self, input: &UiInput) -> Result<()> {
         let cursor = input.cursor();
 
@@ -767,6 +890,8 @@ impl Ui {
         match hit {
             Some(idx) => {
                 if input.primary_pressed() {
+                    self.raise(idx)?;
+
                     // Track pressed state for the "pressed" color/texture
                     // variants, independent of any host-attached callback.
                     if matches!(self.tree.nodes[idx], UiNode::Button(_) | UiNode::Checkbox(_)) {

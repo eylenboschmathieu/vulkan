@@ -49,6 +49,23 @@ impl Anchor {
     }
 }
 
+/// Defines how a node is positioned relative to a target node (or its parent,
+/// if `target` is `None`).
+pub struct Anchoring {
+    /// Attachment point on this node.
+    pub src: Anchor,
+    /// Node to anchor to; `None` means the parent.
+    pub target:     Option<usize>,
+    /// Attachment point on the target node.
+    pub dst: Anchor,
+}
+
+impl Anchoring {
+    fn new() -> Self {
+        Self { src: Anchor::TopLeft, target: None, dst: Anchor::TopLeft }
+    }
+}
+
 /// Callbacks fired as a node becomes or stops being the visible menu screen.
 #[derive(Default)]
 pub struct VisibilityCb {
@@ -71,29 +88,39 @@ pub struct InteractionCb {
 }
 
 pub struct NodeBase {
-    pub bounds:      Rect,
-    pub src_anchor:  Anchor,        // Attachment point on this node
-    pub target:      Option<usize>, // Node to anchor to; None = parent
-    pub dst_anchor:  Anchor,        // Attachment point on the target node
+    pub bounds:        Rect,
+    pub anchoring:     Anchoring,
     pub parent:        Option<usize>,
-    pub children:      Vec<usize>,
     pub visible:       bool,
     pub vertex_offset: usize,
     pub visibility:    VisibilityCb,
+    /// This node's position among its parent's children, low to high
+    /// (painter's algorithm: higher renders later/on top, and is hit-tested
+    /// first). `0` means "not orderable" — such nodes sort below any sibling
+    /// with `z_index >= 1` via a stable sort, so ties fall back to insertion
+    /// order (today's behavior). Bumped by [`Ui`](crate::Ui)'s raise-on-press
+    /// via the parent's `z_sentinel`.
+    pub z_index: u32,
+    /// For children of the root node only: which "layer" (in the host's own
+    /// ordering, see [`Ui::register_layer`](crate::Ui::register_layer)) this
+    /// node belongs to. Sorted before `z_index`, so it partitions root's
+    /// children into independently-ordered bands (e.g. normal content vs. a
+    /// debug overlay that should always render on top). Unused below the
+    /// root.
+    pub band: u32,
 }
 
 impl NodeBase {
     pub fn new() -> Self {
         Self {
-            bounds:      Rect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 },
-            src_anchor:  Anchor::TopLeft,
-            target:      None,
-            dst_anchor:  Anchor::TopLeft,
-            parent:      None,
-            children:    Vec::new(),
+            bounds:        Rect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 },
+            anchoring:     Anchoring::new(),
+            parent:        None,
             visible:       true,
             vertex_offset: 0,
             visibility:    VisibilityCb::default(),
+            z_index:       0,
+            band:          0,
         }
     }
 
@@ -101,22 +128,22 @@ impl NodeBase {
     /// attachment point on this node and the reference point on the parent
     /// use the same anchor, so e.g. `Center + (0, 0)` truly centres the node.
     pub fn set_position(&mut self, anchor: Anchor, x: f32, y: f32) {
-        self.src_anchor         = anchor;
-        self.dst_anchor = anchor;
-        self.target        = None;
-        self.bounds.x      = x;
-        self.bounds.y      = y;
+        self.anchoring.src = anchor;
+        self.anchoring.dst = anchor;
+        self.anchoring.target     = None;
+        self.bounds.x             = x;
+        self.bounds.y             = y;
     }
 
     /// Positions the node relative to an arbitrary sibling or ancestor.
     /// `src_anchor` is the attachment point on this node; `dst_anchor` is the
     /// reference point on the target node.
     pub fn set_position_anchored_to(&mut self, src_anchor: Anchor, target: usize, dst_anchor: Anchor, x: f32, y: f32) {
-        self.src_anchor         = src_anchor;
-        self.target        = Some(target);
-        self.dst_anchor = dst_anchor;
-        self.bounds.x      = x;
-        self.bounds.y      = y;
+        self.anchoring.src = src_anchor;
+        self.anchoring.target     = Some(target);
+        self.anchoring.dst = dst_anchor;
+        self.bounds.x             = x;
+        self.bounds.y             = y;
     }
 
     pub fn set_width(&mut self, width: f32) {
@@ -137,12 +164,12 @@ impl NodeBase {
     /// When `target` is `Some(idx)` the node is positioned relative to that
     /// node's absolute edges, computed by walking its parent chain.
     pub fn resolve(&self, parent_edges: &Edges, nodes: &[UiNode]) -> Edges {
-        let ref_edges = match self.target {
+        let ref_edges = match self.anchoring.target {
             None      => parent_edges.clone(),
             Some(idx) => node_absolute_edges(idx, nodes),
         };
-        let (px, py) = self.src_anchor.fractions();
-        let (tx, ty) = self.dst_anchor.fractions();
+        let (px, py) = self.anchoring.src.fractions();
+        let (tx, ty) = self.anchoring.dst.fractions();
         let ref_w    = ref_edges.right  - ref_edges.left;
         let ref_h    = ref_edges.bottom - ref_edges.top;
         let ref_x    = ref_edges.left + tx * ref_w  + self.bounds.x;
@@ -194,6 +221,43 @@ impl UiNode {
             UiNode::Checkbox(n)  => &mut n.base,
             UiNode::Label(n)     => &mut n.base,
             UiNode::Slider(n)    => &mut n.panel.base,
+        }
+    }
+
+    /// Child indices, for container-like node types (`Container`, `Panel`,
+    /// `Button`, `Slider`). `None` for leaf node types, which cannot have
+    /// children.
+    pub fn children(&self) -> Option<&[usize]> {
+        match self {
+            UiNode::Container(n) => Some(&n.children),
+            UiNode::Panel(n)     => Some(&n.children),
+            UiNode::Button(n)    => Some(&n.children),
+            UiNode::Slider(n)    => Some(&n.panel.children),
+            UiNode::Checkbox(_) | UiNode::Label(_) => None,
+        }
+    }
+
+    /// Mutable child indices; see [`UiNode::children`].
+    pub fn children_mut(&mut self) -> Option<&mut Vec<usize>> {
+        match self {
+            UiNode::Container(n) => Some(&mut n.children),
+            UiNode::Panel(n)     => Some(&mut n.children),
+            UiNode::Button(n)    => Some(&mut n.children),
+            UiNode::Slider(n)    => Some(&mut n.panel.children),
+            UiNode::Checkbox(_) | UiNode::Label(_) => None,
+        }
+    }
+
+    /// The per-parent monotonic counter used to assign `z_index` to
+    /// orderable children (see [`NodeBase::z_index`]); `None` for leaf node
+    /// types, which cannot have children.
+    pub fn z_sentinel_mut(&mut self) -> Option<&mut u32> {
+        match self {
+            UiNode::Container(n) => Some(&mut n.z_sentinel),
+            UiNode::Panel(n)     => Some(&mut n.z_sentinel),
+            UiNode::Button(n)    => Some(&mut n.z_sentinel),
+            UiNode::Slider(n)    => Some(&mut n.panel.z_sentinel),
+            UiNode::Checkbox(_) | UiNode::Label(_) => None,
         }
     }
 }

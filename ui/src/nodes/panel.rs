@@ -7,6 +7,10 @@ pub struct PanelNode {
     pub base: NodeBase,
     pub(crate) color: Rgba,
     pub(crate) texture: Texture,
+    pub children: Vec<usize>,
+    /// Next [`NodeBase::z_index`] to assign to a child raised to the front;
+    /// starts at `1` since `0` means "not orderable".
+    pub z_sentinel: u32,
 }
 
 impl PanelNode {
@@ -15,6 +19,8 @@ impl PanelNode {
             base: NodeBase::new(),
             color: Rgba::new(0.0, 0.0, 0.0, 0.0),
             texture: Texture::default(),
+            children: Vec::new(),
+            z_sentinel: 1,
         }
     }
 

@@ -93,6 +93,9 @@ impl UiTree {
         T::from_node_mut(node).ok_or_else(|| anyhow!("UI node {idx} is not a {}", T::NAME))
     }
 
+    /// Appends `node` as a new child of `parent_idx`, returning the new
+    /// node's index. Errors if `parent_idx` is a leaf node type that can't
+    /// have children (see [`UiNode::children_mut`]).
     pub fn add_child(&mut self, mut node: UiNode, parent_idx: usize) -> Result<usize> {
         let idx = self.nodes.len();
         node.base_mut().parent = Some(parent_idx);
@@ -124,6 +127,14 @@ impl UiTree {
         ordered
     }
 
+    /// Returns the topmost interactive node under `(mx, my)`, or `None` if
+    /// nothing is hit. For a top-level call, pass `node_idx: 0` (root) with
+    /// `parent_edges` a zero-sized [`Edges`] (root has no parent to resolve
+    /// against). `Container` and `Label` nodes are transparent to input and
+    /// never returned themselves. Recurses into `node_idx`'s children
+    /// (topmost first, via [`ordered_children`](Self::ordered_children))
+    /// even if the cursor is outside `node_idx`'s own bounds, since children
+    /// aren't clipped to their parent when rendered.
     pub fn hit_test(&self, mx: f32, my: f32, node_idx: usize, parent_edges: &Edges) -> Option<usize> {
         let node = &self.nodes[node_idx];
         if !node.base().visible { return None; }

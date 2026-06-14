@@ -56,13 +56,6 @@ impl Edges {
         y <= self.bottom
     }
 
-    pub fn intersects(&self, other: &Edges) -> bool {
-        self.left   < other.right  &&
-        self.right  > other.left   &&
-        self.top    < other.bottom &&
-        self.bottom > other.top
-    }
-
     /// The overlapping region of `self` and `other`. If they don't overlap,
     /// the result is degenerate (`left > right` and/or `top > bottom`), which
     /// callers treat as "clips away everything".
@@ -291,6 +284,16 @@ fn label_quads(atlas: &FontAtlas, text: &str, color: Rgba, start_x: f32, baselin
 /// Appends a `[first_quad, first_quad + quad_count)` range to `batches`,
 /// extending the last batch if it's contiguous and shares `clip`, or pushing
 /// a new one otherwise. A no-op if `quad_count == 0`.
+///
+/// Merging is based on `clip` *value* equality, not on the two ranges
+/// sharing a `clip_children` ancestor. If two unrelated subtrees happen to
+/// resolve to numerically equal clip rects (or both `None`) at flush time,
+/// they'll share one batch. Should one of them later move,
+/// [`refresh_batch_clip`](Ui::refresh_batch_clip) updates that batch's
+/// single `clip_rect` from whichever dirty node it sees — so the other
+/// subtree's clip would silently follow along. This is a latent
+/// (currently unobserved) edge case rather than a guaranteed-safe
+/// invariant.
 fn push_batch(batches: &mut Vec<DrawBatch>, clip: Option<Edges>, first_quad: usize, quad_count: usize) {
     if quad_count == 0 { return; }
     if let Some(last) = batches.last_mut()
@@ -705,8 +708,16 @@ impl Ui {
     /// next [`flush_dirty`](Self::flush_dirty) patch. Used when a node's
     /// position changes in a way that shifts every descendant's resolved
     /// edges (e.g. dragging a window).
+    ///
+    /// Nodes that don't occupy a vertex slot of their own (`Container`s,
+    /// whose `render_data` is `None`) are skipped: their `vertex_offset`
+    /// stays at its default `0`, so [`refresh_batch_clip`](Self::refresh_batch_clip)
+    /// would mistarget batch `0` for them. Their children are still
+    /// recursed into and added if those render their own quad.
     fn mark_dirty(&mut self, idx: usize) {
-        self.dirty_nodes.push(idx);
+        if matches!(self.tree.nodes[idx], UiNode::Label(_)) || self.render_data(idx).is_some() {
+            self.dirty_nodes.push(idx);
+        }
         let children: Vec<usize> = self.tree.nodes[idx].children().map(|c| c.to_vec()).unwrap_or_default();
         for child in children {
             self.mark_dirty(child);

@@ -773,6 +773,42 @@ fn flush_dirty_refreshes_clip_rect_on_window_drag() {
     assert_eq!(batch.clip_rect, Some(body_edges));
 }
 
+/// A `Container` nested inside a draggable window's body never gets a real
+/// `vertex_offset` (it renders no quad of its own), so `mark_dirty` must not
+/// queue it for `refresh_batch_clip` — otherwise dragging the window would
+/// mistarget batch 0 with the container's resolved clip rect.
+#[test]
+fn flush_dirty_skips_containers_and_does_not_clobber_unrelated_batch() {
+    let mut ui = Ui::new((800.0, 600.0), test_atlas());
+
+    // An unclipped panel elsewhere in the tree -> part of batch 0.
+    let (_, other) = ui.create_panel(0).unwrap();
+    other.base.set_position(Anchor::TopLeft, 300.0, 300.0);
+    other.base.set_size(50.0, 50.0);
+
+    let (_window_idx, window) = ui.create_window(0, 200.0, 150.0).unwrap();
+    window.base.set_position(Anchor::TopLeft, 10.0, 10.0);
+    window.set_draggable(true);
+    let body_idx = window.body;
+
+    // A Container nested inside the draggable window's body.
+    let (_, container) = ui.create_container(body_idx).unwrap();
+    container.base.set_position(Anchor::TopLeft, 0.0, 0.0);
+    container.base.set_size(50.0, 50.0);
+
+    let _ = ui.flush_all();
+    let batch0_before = ui.batches()[0];
+
+    // Drag the titlebar by (40, 40).
+    let press = UiInput::new((60.0, 12.0)).with_mouse_button(MouseButton::Primary, true, true, false);
+    ui.handle_input(&press).unwrap();
+    let drag = UiInput::new((100.0, 52.0)).with_mouse_button(MouseButton::Primary, true, false, false);
+    ui.handle_input(&drag).unwrap();
+    let _ = ui.flush_dirty();
+
+    assert_eq!(ui.batches()[0], batch0_before);
+}
+
 /// A child positioned outside a `clip_children` ancestor's bounds is not hit,
 /// even though its own resolved edges would otherwise contain the cursor.
 #[test]

@@ -171,28 +171,34 @@ impl Commands {
 #[derive(Clone, Copy)]
 pub(crate) struct CommandBuffer {
     handle: vk::CommandBuffer,
+    pool: vk::CommandPool,
 }
 
 impl Default for CommandBuffer {
     fn default() -> Self {
-        Self { handle: vk::CommandBuffer::null() }
+        Self { handle: vk::CommandBuffer::null(), pool: vk::CommandPool::null() }
     }
 }
 
 impl CommandBuffer {
     pub unsafe fn new(handle: vk::CommandBuffer, pool: vk::CommandPool) -> Self {
-        Self { handle }
+        Self { handle, pool }
     }
 
     pub fn handle(&self) -> vk::CommandBuffer {
         self.handle
     }
 
+    /// Ends, submits and waits on a command buffer allocated via
+    /// [`Commands::begin_one_time_submit`], then frees it back to its pool.
+    /// Without this, every call to `begin_one_time_submit` would leak a
+    /// `VkCommandBuffer` — `fetch_buffers` always allocates a fresh one.
     pub unsafe fn end_one_time_submit<T>(&self, queue: &T, wait_semaphore: Option<vk::Semaphore>) -> Result<()>
     where T: QueueType + Deref<Target = Queue> {
         globals::device().logical().end_command_buffer(self.handle())?;
         queue.submit_transfer(&self, wait_semaphore)?;
         globals::device().logical().queue_wait_idle(queue.handle())?;
+        globals::device().logical().free_command_buffers(self.pool, &[self.handle()]);
 
         Ok(())
     }

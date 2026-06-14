@@ -191,6 +191,7 @@ impl Screens {
         // so clicking either (or its titlebar/body) raises it above the other.
         let (win_a_idx, window) = ui.create_window(main_idx, 240.0, 160.0)?;
         window.base.set_position(Anchor::TopLeft, panel_w + 40.0, 80.0);
+        window.set_draggable(true);
         let title_a_idx = window.title;
         let body_a_idx  = window.body;
         ui.get_node_mut::<LabelNode>(title_a_idx)?.set_text("Window A");
@@ -206,6 +207,7 @@ impl Screens {
 
         let (win_b_idx, window) = ui.create_window(main_idx, 240.0, 160.0)?;
         window.base.set_position(Anchor::TopLeft, panel_w + 140.0, 160.0);
+        window.set_draggable(true);
         let title_b_idx = window.title;
         let body_b_idx  = window.body;
         ui.get_node_mut::<LabelNode>(title_b_idx)?.set_text("Window B");

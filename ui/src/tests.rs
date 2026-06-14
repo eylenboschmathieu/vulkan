@@ -611,3 +611,40 @@ fn close_button_hides_window() {
 
     assert!(!ui.get_node::<WindowNode>(window_idx).unwrap().base.visible);
 }
+
+#[test]
+fn window_drag_requires_draggable_and_moves_subtree() {
+    let mut ui = Ui::new((800.0, 600.0), test_atlas());
+
+    let (window_idx, window) = ui.create_window(0, 200.0, 150.0).unwrap();
+    window.base.set_position(Anchor::TopLeft, 10.0, 10.0);
+    let body_idx = window.body;
+
+    // A press+drag on the titlebar (away from the close button) does nothing
+    // while `draggable` is false.
+    let press = UiInput::new((60.0, 12.0)).with_mouse_button(MouseButton::Primary, true, true, false);
+    ui.handle_input(&press).unwrap();
+    let drag = UiInput::new((100.0, 52.0)).with_mouse_button(MouseButton::Primary, true, false, false);
+    ui.handle_input(&drag).unwrap();
+    let release = UiInput::new((100.0, 52.0)).with_mouse_button(MouseButton::Primary, false, false, true);
+    ui.handle_input(&release).unwrap();
+
+    let bounds = ui.get_node::<WindowNode>(window_idx).unwrap().base.bounds;
+    assert_eq!((bounds.x, bounds.y), (10.0, 10.0));
+
+    // Enabling `draggable` makes the same gesture move the window and its
+    // whole subtree by the cursor's delta.
+    ui.get_node_mut::<WindowNode>(window_idx).unwrap().set_draggable(true);
+
+    let press = UiInput::new((60.0, 12.0)).with_mouse_button(MouseButton::Primary, true, true, false);
+    ui.handle_input(&press).unwrap();
+    let drag = UiInput::new((100.0, 52.0)).with_mouse_button(MouseButton::Primary, true, false, false);
+    ui.handle_input(&drag).unwrap();
+
+    let bounds = ui.get_node::<WindowNode>(window_idx).unwrap().base.bounds;
+    assert_eq!((bounds.x, bounds.y), (50.0, 50.0));
+
+    // The body (a descendant) tracks the new window position.
+    let body_edges = ui.node_edges(body_idx);
+    assert_eq!((body_edges.left, body_edges.top), (52.0, 76.0));
+}

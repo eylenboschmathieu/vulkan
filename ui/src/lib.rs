@@ -180,7 +180,8 @@ pub struct Ui {
     /// while this is `Some(idx)` for its own index). Cleared on release or
     /// when the cursor leaves the node while held.
     pressed_node: Option<usize>,
-    /// The node currently being dragged (e.g. a slider's thumb), if any.
+    /// The node currently being dragged (a slider, via its thumb, or a
+    /// draggable window via its titlebar), if any.
     dragging_node: Option<usize>,
     /// Nodes needing a vertex patch. Drained to empty by either `flush_all`
     /// or `flush_dirty`.
@@ -579,6 +580,27 @@ impl Ui {
         }
     }
 
+    /// Resolves a hit on a window's titlebar to the window's own index.
+    fn window_titlebar_at(&self, idx: usize) -> Option<usize> {
+        let parent = self.tree.nodes[idx].base().parent?;
+        match &self.tree.nodes[parent] {
+            UiNode::Window(w) if w.titlebar == idx => Some(parent),
+            _ => None,
+        }
+    }
+
+    /// Marks `idx` and, recursively, all of its descendants dirty for the
+    /// next [`flush_dirty`](Self::flush_dirty) patch. Used when a node's
+    /// position changes in a way that shifts every descendant's resolved
+    /// edges (e.g. dragging a window).
+    fn mark_dirty(&mut self, idx: usize) {
+        self.dirty_nodes.push(idx);
+        let children: Vec<usize> = self.tree.nodes[idx].children().map(|c| c.to_vec()).unwrap_or_default();
+        for child in children {
+            self.mark_dirty(child);
+        }
+    }
+
     /// Repositions the thumb and refreshes the value label to match the
     /// slider's current value. Marks both as dirty for re-rendering. Hosts
     /// call this after changing a slider's value or range from their own code
@@ -663,6 +685,20 @@ impl Ui {
         s.set_value(new_value);
 
         self.layout_slider(slider_idx)
+    }
+
+    /// Repositions a window by the cursor's delta from where the drag
+    /// started, then marks the window and its whole subtree dirty so every
+    /// descendant's quad is repatched at its new resolved position.
+    fn drag_window(&mut self, window_idx: usize, cursor: (f32, f32)) -> Result<()> {
+        let w = self.tree.get_node_mut::<WindowNode>(window_idx)?;
+        let dx = cursor.0 - w.drag.start_cursor.0;
+        let dy = cursor.1 - w.drag.start_cursor.1;
+        w.base.bounds.x = w.drag.start_pos.0 + dx;
+        w.base.bounds.y = w.drag.start_pos.1 + dy;
+
+        self.mark_dirty(window_idx);
+        Ok(())
     }
 
     /// Looks up `idx` and extracts it as a `&T`, erroring instead of panicking
@@ -937,12 +973,19 @@ impl Ui {
     pub fn handle_input(&mut self, input: &UiInput) -> Result<()> {
         let cursor = input.cursor();
 
-        if let Some(slider_idx) = self.dragging_node {
+        if let Some(dragging_idx) = self.dragging_node {
             if input.primary_held() {
-                self.drag_slider(slider_idx, cursor)?;
+                match &self.tree.nodes[dragging_idx] {
+                    UiNode::Slider(_) => self.drag_slider(dragging_idx, cursor)?,
+                    UiNode::Window(_) => self.drag_window(dragging_idx, cursor)?,
+                    _ => {}
+                }
             } else {
-                let s = self.tree.get_node_mut::<SliderNode>(slider_idx)?;
-                s.drag.stop();
+                match &mut self.tree.nodes[dragging_idx] {
+                    UiNode::Slider(s) => s.drag.stop(),
+                    UiNode::Window(w) => w.drag.stop(),
+                    _ => {}
+                }
                 self.dragging_node = None;
             }
             return Ok(());
@@ -1007,6 +1050,15 @@ impl Ui {
                         let value = s.value as f32;
                         s.drag.start(cursor, value);
                         self.dragging_node = Some(slider_idx);
+                    }
+
+                    if let Some(window_idx) = self.window_titlebar_at(idx) {
+                        let w = self.tree.get_node_mut::<WindowNode>(window_idx)?;
+                        if w.draggable {
+                            let start_pos = (w.base.bounds.x, w.base.bounds.y);
+                            w.drag.start(cursor, start_pos);
+                            self.dragging_node = Some(window_idx);
+                        }
                     }
                 }
 

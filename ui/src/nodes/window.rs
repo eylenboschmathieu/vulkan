@@ -8,6 +8,33 @@ pub const TITLEBAR_HEIGHT: f32 = 24.0;
 /// Width of the border between a window's own quad and its [`WindowNode::body`].
 pub const WINDOW_BORDER: f32 = 2.0;
 
+/// Drag-to-move state for a [`WindowNode`]: tracks whether a drag is active
+/// and the cursor position / window position captured when it began, so the
+/// window's new position can be computed from a delta without accumulating
+/// drift.
+#[derive(Default, Clone, Copy)]
+pub struct WindowDrag {
+    pub is_dragging:  bool,
+    pub start_cursor: (f32, f32),
+    pub start_pos:    (f32, f32),
+}
+
+impl WindowDrag {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn start(&mut self, cursor: (f32, f32), pos: (f32, f32)) {
+        self.is_dragging  = true;
+        self.start_cursor = cursor;
+        self.start_pos    = pos;
+    }
+
+    pub fn stop(&mut self) {
+        self.is_dragging = false;
+    }
+}
+
 /// A floating panel with a titlebar (holding a [`WindowNode::title`] label
 /// and a [`WindowNode::close_button`]) and an inset [`WindowNode::body`]
 /// panel for content. The window's own quad renders as the border/frame
@@ -31,6 +58,11 @@ pub struct WindowNode {
     /// Next [`NodeBase::z_index`] to assign to a child raised to the front;
     /// starts at `1` since `0` means "not orderable".
     pub z_sentinel: u32,
+    /// Whether pressing the titlebar starts a drag-to-move. `false` by
+    /// default; see [`WindowNode::set_draggable`].
+    pub draggable: bool,
+    /// Drag-to-move state, updated by [`crate::Ui::handle_input`].
+    pub drag: WindowDrag,
 }
 
 impl WindowNode {
@@ -45,11 +77,16 @@ impl WindowNode {
             body: 0,
             children: Vec::new(),
             z_sentinel: 1,
+            draggable: false,
+            drag: WindowDrag::new(),
         }
     }
 
     pub fn set_color(&mut self, color: Rgba) { self.color = color; }
     pub fn set_texture(&mut self, texture: Texture) { self.texture = texture; }
+
+    /// Sets whether pressing this window's titlebar starts a drag-to-move.
+    pub fn set_draggable(&mut self, draggable: bool) { self.draggable = draggable; }
 }
 
 impl Default for WindowNode {

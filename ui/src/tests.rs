@@ -400,7 +400,7 @@ fn raise_to_front_reorders_render_and_hit_test() {
     let root_edges = Edges { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0 };
 
     // (20, 20) is covered by all three -> topmost (C) wins.
-    assert_eq!(ui.tree.hit_test(20.0, 20.0, 0, &root_edges), Some(c_idx));
+    assert_eq!(ui.tree.hit_test(20.0, 20.0, 0, &root_edges, None), Some(c_idx));
 
     // Press on A's exposed corner (only A covers (50, 50)) -> raises A.
     let press = UiInput::new((50.0, 50.0)).with_mouse_button(MouseButton::Primary, true, true, false);
@@ -408,7 +408,7 @@ fn raise_to_front_reorders_render_and_hit_test() {
 
     // A is now on top of B and C.
     assert_eq!(ui.tree.ordered_children(container_idx), vec![b_idx, c_idx, a_idx]);
-    assert_eq!(ui.tree.hit_test(20.0, 20.0, 0, &root_edges), Some(a_idx));
+    assert_eq!(ui.tree.hit_test(20.0, 20.0, 0, &root_edges, None), Some(a_idx));
 
     // Render order follows the new z-order too: A is drawn last (on top).
     let _ = ui.flush_all();
@@ -586,17 +586,19 @@ fn create_window_wires_titlebar_title_close_and_body() {
     indices.dedup();
     assert_eq!(indices.len(), 5);
 
-    // Titlebar contains the title label and close button.
+    // Titlebar is inset from the window's edges by WINDOW_BORDER, and
+    // contains the title label and close button.
     let titlebar = ui.get_node::<PanelNode>(titlebar_idx).unwrap();
     assert!(titlebar.children.contains(&title_idx));
     assert!(titlebar.children.contains(&close_idx));
-    assert_eq!(titlebar.base.bounds.width, 200.0);
+    assert_eq!(titlebar.base.bounds.width, 200.0 - 2.0 * WINDOW_BORDER);
     assert_eq!(titlebar.base.bounds.height, TITLEBAR_HEIGHT);
 
-    // Body is inset from the window's edges by WINDOW_BORDER, below the titlebar.
+    // Body is inset from the window's edges by WINDOW_BORDER, with another
+    // WINDOW_BORDER gap below the titlebar.
     let body = ui.get_node::<PanelNode>(body_idx).unwrap();
     assert_eq!(body.base.bounds.width, 200.0 - 2.0 * WINDOW_BORDER);
-    assert_eq!(body.base.bounds.height, 150.0 - TITLEBAR_HEIGHT - 2.0 * WINDOW_BORDER);
+    assert_eq!(body.base.bounds.height, 150.0 - TITLEBAR_HEIGHT - 3.0 * WINDOW_BORDER);
 }
 
 #[test]
@@ -646,5 +648,191 @@ fn window_drag_requires_draggable_and_moves_subtree() {
 
     // The body (a descendant) tracks the new window position.
     let body_edges = ui.node_edges(body_idx);
-    assert_eq!((body_edges.left, body_edges.top), (52.0, 76.0));
+    assert_eq!((body_edges.left, body_edges.top), (52.0, 78.0));
+}
+
+#[test]
+fn edges_intersect() {
+    let a = Edges { left: 0.0, right: 10.0, top: 0.0, bottom: 10.0 };
+
+    // Overlapping: result is the shared region.
+    let b = Edges { left: 5.0, right: 15.0, top: 5.0, bottom: 15.0 };
+    assert_eq!(a.intersect(&b), Edges { left: 5.0, right: 10.0, top: 5.0, bottom: 10.0 });
+
+    // Nested: result is the inner rect.
+    let c = Edges { left: 2.0, right: 8.0, top: 2.0, bottom: 8.0 };
+    assert_eq!(a.intersect(&c), c);
+
+    // Non-overlapping: result is degenerate (left > right, top > bottom).
+    let d = Edges { left: 20.0, right: 30.0, top: 20.0, bottom: 30.0 };
+    let result = a.intersect(&d);
+    assert!(result.left > result.right);
+    assert!(result.top > result.bottom);
+}
+
+/// A `clip_children` panel groups its children's quads into a batch tagged
+/// with its own edges as `clip_rect`, separate from its own quad (rendered
+/// under whatever clip it inherited) and from a sibling outside it.
+#[test]
+fn flush_all_groups_quads_into_clip_batches() {
+    let mut ui = Ui::new((800.0, 600.0), test_atlas());
+
+    let (p1_idx, p1) = ui.create_panel(0).unwrap();
+    p1.base.set_position(Anchor::TopLeft, 0.0, 0.0);
+    p1.base.set_size(100.0, 100.0);
+    ui.set_clip_children(p1_idx, true).unwrap();
+
+    let (_a_idx, a) = ui.create_panel(p1_idx).unwrap();
+    a.base.set_position(Anchor::TopLeft, 10.0, 10.0);
+    a.base.set_size(20.0, 20.0);
+
+    // Extends past P1's bounds; still grouped under P1's clip rect.
+    let (_b_idx, b) = ui.create_panel(p1_idx).unwrap();
+    b.base.set_position(Anchor::TopLeft, 90.0, 90.0);
+    b.base.set_size(50.0, 50.0);
+
+    // A sibling outside P1, unclipped.
+    let (_s_idx, s) = ui.create_panel(0).unwrap();
+    s.base.set_position(Anchor::TopLeft, 200.0, 200.0);
+    s.base.set_size(30.0, 30.0);
+
+    let _ = ui.flush_all();
+    let p1_edges = ui.node_edges(p1_idx);
+
+    assert_eq!(ui.batches(), &[
+        DrawBatch { clip_rect: None, first_quad: 0, quad_count: 1 },              // P1's own quad
+        DrawBatch { clip_rect: Some(p1_edges), first_quad: 1, quad_count: 2 },    // A and B
+        DrawBatch { clip_rect: None, first_quad: 3, quad_count: 1 },              // S
+    ]);
+}
+
+/// A node nested inside two `clip_children` ancestors is clipped to the
+/// intersection of both ancestors' bounds.
+#[test]
+fn flush_all_nested_clip_children_intersects_ancestors() {
+    let mut ui = Ui::new((800.0, 600.0), test_atlas());
+
+    let (p1_idx, p1) = ui.create_panel(0).unwrap();
+    p1.base.set_position(Anchor::TopLeft, 0.0, 0.0);
+    p1.base.set_size(200.0, 200.0);
+    ui.set_clip_children(p1_idx, true).unwrap();
+
+    // Extends past P1's right/bottom edges.
+    let (p2_idx, p2) = ui.create_panel(p1_idx).unwrap();
+    p2.base.set_position(Anchor::TopLeft, 100.0, 100.0);
+    p2.base.set_size(200.0, 200.0);
+    ui.set_clip_children(p2_idx, true).unwrap();
+
+    let (_c_idx, c) = ui.create_panel(p2_idx).unwrap();
+    c.base.set_position(Anchor::TopLeft, 10.0, 10.0);
+    c.base.set_size(20.0, 20.0);
+
+    let _ = ui.flush_all();
+
+    let p1_edges = ui.node_edges(p1_idx);
+    let p2_edges = ui.node_edges(p2_idx);
+    let expected_clip = Some(p1_edges.intersect(&p2_edges));
+
+    // C's quad is the last one emitted; its batch is clipped by both ancestors.
+    assert_eq!(ui.batches().last().unwrap().clip_rect, expected_clip);
+}
+
+/// Dragging a draggable window moves its body (a `clip_children` node by
+/// default), so `flush_dirty` must refresh the `clip_rect` of the batch
+/// holding an overflowing child to match the body's new position.
+#[test]
+fn flush_dirty_refreshes_clip_rect_on_window_drag() {
+    let mut ui = Ui::new((800.0, 600.0), test_atlas());
+
+    let (_window_idx, window) = ui.create_window(0, 200.0, 150.0).unwrap();
+    window.base.set_position(Anchor::TopLeft, 10.0, 10.0);
+    window.set_draggable(true);
+    let body_idx = window.body;
+
+    // Overflows the body's bounds, so it's clipped.
+    let (child_idx, child) = ui.create_panel(body_idx).unwrap();
+    child.base.set_position(Anchor::TopLeft, 0.0, 0.0);
+    child.base.set_size(500.0, 500.0);
+
+    let _ = ui.flush_all();
+
+    // Drag the titlebar by (40, 40).
+    let press = UiInput::new((60.0, 12.0)).with_mouse_button(MouseButton::Primary, true, true, false);
+    ui.handle_input(&press).unwrap();
+    let drag = UiInput::new((100.0, 52.0)).with_mouse_button(MouseButton::Primary, true, false, false);
+    ui.handle_input(&drag).unwrap();
+
+    let UiUpdate::Partial(_) = ui.flush_dirty() else { panic!("expected UiUpdate::Partial") };
+
+    let body_edges = ui.node_edges(body_idx);
+    let child_quad = ui.get_node::<PanelNode>(child_idx).unwrap().base.vertex_offset / 4;
+
+    let batch = ui.batches().iter()
+        .find(|b| child_quad >= b.first_quad && child_quad < b.first_quad + b.quad_count)
+        .unwrap();
+    assert_eq!(batch.clip_rect, Some(body_edges));
+}
+
+/// A child positioned outside a `clip_children` ancestor's bounds is not hit,
+/// even though its own resolved edges would otherwise contain the cursor.
+#[test]
+fn hit_test_respects_clip_children() {
+    let mut ui = Ui::new((800.0, 600.0), test_atlas());
+
+    let (p1_idx, p1) = ui.create_panel(0).unwrap();
+    p1.base.set_position(Anchor::TopLeft, 0.0, 0.0);
+    p1.base.set_size(100.0, 100.0);
+    ui.set_clip_children(p1_idx, true).unwrap();
+
+    // Extends past P1's bounds: (90, 90) to (140, 140).
+    let (button_idx, button) = ui.create_button(p1_idx).unwrap();
+    button.base.set_position(Anchor::TopLeft, 90.0, 90.0);
+    button.base.set_size(50.0, 50.0);
+
+    let _ = ui.flush_all();
+
+    let root_edges = Edges { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0 };
+
+    // Within the button's own bounds, but outside P1's clip rect -> no hit.
+    assert_eq!(ui.tree.hit_test(120.0, 120.0, 0, &root_edges, None), None);
+
+    // Within both the button's bounds and P1's clip rect -> hit.
+    assert_eq!(ui.tree.hit_test(95.0, 95.0, 0, &root_edges, None), Some(button_idx));
+}
+
+/// A window with `clamp_to_parent` set can't be dragged past its parent's
+/// edges: it stops flush against whichever edge the cursor overshoots.
+#[test]
+fn window_drag_clamps_to_parent_when_set() {
+    let mut ui = Ui::new((800.0, 600.0), test_atlas());
+
+    let (_outer_idx, outer) = ui.create_window(0, 200.0, 150.0).unwrap();
+    outer.base.set_position(Anchor::TopLeft, 10.0, 10.0);
+    let body_idx = outer.body;
+
+    let (inner_idx, inner) = ui.create_window(body_idx, 50.0, 40.0).unwrap();
+    inner.base.set_position(Anchor::TopLeft, 10.0, 10.0);
+    inner.set_draggable(true);
+
+    ui.set_clamp_to_parent(inner_idx, true).unwrap();
+
+    let _ = ui.flush_all();
+    let body_edges = ui.node_edges(body_idx);
+
+    // Press on the inner window's titlebar, then drag far up-left, past the
+    // body's top-left corner.
+    let press = UiInput::new((30.0, 50.0)).with_mouse_button(MouseButton::Primary, true, true, false);
+    ui.handle_input(&press).unwrap();
+    let drag = UiInput::new((-170.0, -150.0)).with_mouse_button(MouseButton::Primary, true, false, false);
+    ui.handle_input(&drag).unwrap();
+
+    let edges = ui.node_edges(inner_idx);
+    assert_eq!((edges.left, edges.top), (body_edges.left, body_edges.top));
+
+    // Drag far down-right, past the body's bottom-right corner.
+    let drag = UiInput::new((830.0, 850.0)).with_mouse_button(MouseButton::Primary, true, false, false);
+    ui.handle_input(&drag).unwrap();
+
+    let edges = ui.node_edges(inner_idx);
+    assert_eq!((edges.right, edges.bottom), (body_edges.right, body_edges.bottom));
 }

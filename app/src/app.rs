@@ -190,7 +190,11 @@ impl App {
             let cam_text   = format!("x:{:.1} y:{:.1} z:{:.1}", self.camera.eye.x, self.camera.eye.y, self.camera.eye.z);
             let mode_text  = format!("Present mode: {}", present_mode_str(self.blitz.get_present_mode()));
             let quad_count = self.ui.quad_count();
-            if let Err(e) = self.screens.update_debug(&mut self.ui, cam_text, mode_text, quad_count, self.fps) {
+            let mem_text   = match process_memory_usage() {
+                Some(bytes) => format!("Mem: {:.1} MiB", bytes as f64 / (1024.0 * 1024.0)),
+                None        => "Mem: n/a".to_string(),
+            };
+            if let Err(e) = self.screens.update_debug(&mut self.ui, cam_text, mode_text, mem_text, quad_count, self.fps) {
                 error!("Debug overlay update error: {e}");
             }
         }
@@ -213,7 +217,13 @@ impl App {
             if self.current_screen() != Screen::Title {
                 self.world.draw(&mut self.blitz, &self.camera)?;
             }
-            self.blitz.draw_ui_quads(0, self.ui.quad_count(), self.ui.font_atlas.texture_id.0 as usize);
+            let texture_id = self.ui.font_atlas.texture_id.0 as usize;
+            for batch in self.ui.batches() {
+                let clip = batch.clip_rect
+                    .map(|e| [e.left, e.top, e.right, e.bottom])
+                    .unwrap_or([f32::MIN, f32::MIN, f32::MAX, f32::MAX]);
+                self.blitz.draw_ui_quads(batch.first_quad, batch.quad_count, texture_id, clip);
+            }
             self.blitz.end_render(window)?;
         } else {
             let window_area = window.inner_size();
@@ -244,4 +254,13 @@ fn present_mode_str(mode: PresentModeKHR) -> &'static str {
         PresentModeKHR::IMMEDIATE => "IMMEDIATE",
         _ => "Error",
     }
+}
+
+/// Current resident set size (physical memory in use) of this process, in
+/// bytes, read from `/proc/self/statm`. `None` if unavailable (e.g. not on
+/// Linux). Assumes a 4 KiB page size, true for x86_64 Linux.
+fn process_memory_usage() -> Option<u64> {
+    let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
+    let rss_pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
+    Some(rss_pages * 4096)
 }

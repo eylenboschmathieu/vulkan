@@ -6,6 +6,7 @@ layout(location = 2) in vec4 inColor;
 
 layout(push_constant) uniform PushConstants {
     mat4 proj;
+    vec4 clip_rect; // left, top, right, bottom
 } pc;
 
 layout(location = 0) out vec2 fragUv;

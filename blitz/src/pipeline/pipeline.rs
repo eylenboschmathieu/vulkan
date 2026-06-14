@@ -1,6 +1,5 @@
 #![allow(dead_code, unsafe_op_in_unsafe_fn, unused_variables, clippy::too_many_arguments, clippy::unnecessary_wraps)]
 
-use cgmath::Matrix4;
 use log::*;
 use anyhow::Result;
 use vulkanalia::{
@@ -198,9 +197,9 @@ impl Pipeline {
 
     unsafe fn build_layout(descriptor_set_layouts: &[vk::DescriptorSetLayout], push_constants: bool) -> Result<vk::PipelineLayout> {
         let push_constant_range = vk::PushConstantRange::builder()
-            .stage_flags(vk::ShaderStageFlags::VERTEX)
+            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
             .offset(0)
-            .size(size_of::<Matrix4<f32>>() as u32)
+            .size(128)
             .build();
 
         let ranges: &[vk::PushConstantRange] = if push_constants {
@@ -273,15 +272,15 @@ impl Pipeline {
         );
     }
 
-    pub unsafe fn push_constants(&self, command_buffer: &CommandBuffer, data: &Matrix4<f32>) {
+    pub unsafe fn push_constants<T: Copy>(&self, command_buffer: &CommandBuffer, data: &T) {
         globals::device().logical().cmd_push_constants(  // Create a pipeline struct and add a push_constant method to it, as well as other bindings
             command_buffer.handle(),
             self.layout,
-            vk::ShaderStageFlags::VERTEX,
+            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
             0,
             std::slice::from_raw_parts(
-                data as *const cgmath::Matrix4<f32> as *const u8,
-                size_of::<cgmath::Matrix4<f32>>()
+                data as *const T as *const u8,
+                size_of::<T>()
             )
         );
     }

@@ -110,6 +110,16 @@ pub struct NodeBase {
     /// debug overlay that should always render on top). Unused below the
     /// root.
     pub band: u32,
+    /// When `true`, this node's children (and their whole subtrees) are
+    /// clipped to this node's resolved bounds, intersected with any clip rect
+    /// inherited from further up the tree. `false` by default. Set via
+    /// [`Ui::set_clip_children`](crate::Ui::set_clip_children).
+    pub clip_children: bool,
+    /// When `true`, dragging this node (currently only meaningful for a
+    /// draggable [`WindowNode`]) clamps its position so its resolved edges
+    /// stay within its parent's resolved edges. `false` by default. Set via
+    /// [`Ui::set_clamp_to_parent`](crate::Ui::set_clamp_to_parent).
+    pub clamp_to_parent: bool,
 }
 
 impl NodeBase {
@@ -123,6 +133,8 @@ impl NodeBase {
             visibility:    VisibilityCb::default(),
             z_index:       0,
             band:          0,
+            clip_children: false,
+            clamp_to_parent: false,
         }
     }
 
@@ -167,7 +179,7 @@ impl NodeBase {
     /// node's absolute edges, computed by walking its parent chain.
     pub fn resolve(&self, parent_edges: &Edges, nodes: &[UiNode]) -> Edges {
         let ref_edges = match self.anchoring.target {
-            None      => parent_edges.clone(),
+            None      => *parent_edges,
             Some(idx) => node_absolute_edges(idx, nodes),
         };
         let (px, py) = self.anchoring.src.fractions();
@@ -247,11 +259,11 @@ impl UiNode {
     pub fn children_mut(&mut self) -> Option<&mut Vec<usize>> {
         match self {
             UiNode::Container(n) => Some(&mut n.children),
-            UiNode::Panel(n)       => Some(&mut n.children),
-            UiNode::Button(n)     => Some(&mut n.children),
-            UiNode::Slider(n)     => Some(&mut n.panel.children),
-            UiNode::Window(n)     => Some(&mut n.children),
-            UiNode::Checkbox(_) | UiNode::Label(_) => None,
+            UiNode::Panel(n)         => Some(&mut n.children),
+            UiNode::Button(n)       => Some(&mut n.children),
+            UiNode::Slider(n)       => Some(&mut n.panel.children),
+            UiNode::Window(n)       => Some(&mut n.children),
+            UiNode::Checkbox(_) | UiNode::Label(_)   => None,
         }
     }
 
@@ -261,11 +273,11 @@ impl UiNode {
     pub fn z_sentinel_mut(&mut self) -> Option<&mut u32> {
         match self {
             UiNode::Container(n) => Some(&mut n.z_sentinel),
-            UiNode::Panel(n)       => Some(&mut n.z_sentinel),
-            UiNode::Button(n)     => Some(&mut n.z_sentinel),
-            UiNode::Slider(n)     => Some(&mut n.panel.z_sentinel),
-            UiNode::Window(n)     => Some(&mut n.z_sentinel),
-            UiNode::Checkbox(_) | UiNode::Label(_) => None,
+            UiNode::Panel(n)         => Some(&mut n.z_sentinel),
+            UiNode::Button(n)       => Some(&mut n.z_sentinel),
+            UiNode::Slider(n)       => Some(&mut n.panel.z_sentinel),
+            UiNode::Window(n)       => Some(&mut n.z_sentinel),
+            UiNode::Checkbox(_) | UiNode::Label(_)   => None,
         }
     }
 }

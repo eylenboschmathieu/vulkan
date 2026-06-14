@@ -78,6 +78,7 @@ pub struct Screens {
     debug_idx: usize,
     debug_cam_idx: usize,
     debug_mode_idx: usize,
+    debug_mem_idx: usize,
     debug_quad_idx: usize,
     debug_fps_idx: usize,
 
@@ -97,9 +98,10 @@ impl Screens {
     /// Refreshes the debug overlay's text. Only meaningful while the overlay
     /// is visible — callers should skip this while it's hidden, since label
     /// updates on a hidden subtree aren't reflected until the next full flush.
-    pub fn update_debug(&self, ui: &mut Ui, camera_text: impl Into<String>, present_mode_text: impl Into<String>, ui_quad_count: usize, fps: f32) -> Result<()> {
+    pub fn update_debug(&self, ui: &mut Ui, camera_text: impl Into<String>, present_mode_text: impl Into<String>, mem_text: impl Into<String>, ui_quad_count: usize, fps: f32) -> Result<()> {
         ui.set_label_text(self.debug_cam_idx, camera_text)?;
         ui.set_label_text(self.debug_mode_idx, present_mode_text)?;
+        ui.set_label_text(self.debug_mem_idx, mem_text)?;
         ui.set_label_text(self.debug_quad_idx, format!("UI quad count: {ui_quad_count}"))?;
         ui.set_label_text(self.debug_fps_idx, format!("{fps:.0} fps"))?;
         Ok(())
@@ -205,6 +207,17 @@ impl Screens {
         label.set_text("Button A");
         label.base.set_position(Anchor::Left, 8.0, 0.0);
 
+        // Manual clip test: a window nested inside Window A's body, positioned
+        // to overflow the body's bottom-right corner. Window A's body has
+        // `clip_children = true` (the default for any window body), so the
+        // overflowing portion should be invisible -- including while dragging
+        // either window.
+        let (_, nested) = ui.create_window(body_a_idx, 150.0, 100.0)?;
+        nested.base.set_position(Anchor::TopLeft, 150.0, 80.0);
+        nested.set_draggable(true);
+        let nested_title_idx = nested.title;
+        ui.get_node_mut::<LabelNode>(nested_title_idx)?.set_text("Nested");
+
         let (win_b_idx, window) = ui.create_window(main_idx, 240.0, 160.0)?;
         window.base.set_position(Anchor::TopLeft, panel_w + 140.0, 160.0);
         window.set_draggable(true);
@@ -220,6 +233,17 @@ impl Screens {
         let (_, label) = ui.create_label(b_btn_idx)?;
         label.set_text("Button B");
         label.base.set_position(Anchor::Left, 8.0, 0.0);
+
+        // Manual clamp test: a window nested inside Window B's body, small
+        // enough to fit within the body's bounds. `clamp_to_parent` keeps it
+        // fully inside the body while dragging, instead of letting it overflow
+        // (and get clipped) like the "Nested" window in Window A.
+        let (clamped_idx, clamped) = ui.create_window(body_b_idx, 110.0, 90.0)?;
+        clamped.base.set_position(Anchor::TopLeft, 20.0, 30.0);
+        clamped.set_draggable(true);
+        let clamped_title_idx = clamped.title;
+        ui.get_node_mut::<LabelNode>(clamped_title_idx)?.set_text("Clamped");
+        ui.set_clamp_to_parent(clamped_idx, true)?;
 
         // Registration order sets the initial z-order: B starts on top of A.
         ui.register_orderable(win_a_idx)?;
@@ -421,10 +445,15 @@ impl Screens {
         label.set_color(debug_color);
         label.base.set_position(Anchor::TopLeft, DEBUG_PADDING, 32.0);
 
+        let (debug_mem_idx, label) = ui.create_label(debug_idx)?;
+        label.set_text("Mem: 0000.0 MiB");
+        label.set_color(debug_color);
+        label.base.set_position(Anchor::TopLeft, DEBUG_PADDING, 54.0);
+
         let (debug_quad_idx, label) = ui.create_label(debug_idx)?;
         label.set_text("UI quad count: 0000");
         label.set_color(debug_color);
-        label.base.set_position(Anchor::TopLeft, DEBUG_PADDING, 54.0);
+        label.base.set_position(Anchor::TopLeft, DEBUG_PADDING, 76.0);
 
         let (debug_fps_idx, label) = ui.create_label(debug_idx)?;
         label.set_text("999 fps");
@@ -467,6 +496,7 @@ impl Screens {
             debug_idx,
             debug_cam_idx,
             debug_mode_idx,
+            debug_mem_idx,
             debug_quad_idx,
             debug_fps_idx,
             pending,

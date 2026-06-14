@@ -40,7 +40,7 @@ impl Rect {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Edges {
     pub left: f32,
     pub right: f32,
@@ -62,6 +62,33 @@ impl Edges {
         self.top    < other.bottom &&
         self.bottom > other.top
     }
+
+    /// The overlapping region of `self` and `other`. If they don't overlap,
+    /// the result is degenerate (`left > right` and/or `top > bottom`), which
+    /// callers treat as "clips away everything".
+    pub fn intersect(&self, other: &Edges) -> Edges {
+        Edges {
+            left:   self.left.max(other.left),
+            right:  self.right.min(other.right),
+            top:    self.top.max(other.top),
+            bottom: self.bottom.min(other.bottom),
+        }
+    }
+}
+
+/// A contiguous range of quads in the vertex buffer that share a clip rect,
+/// produced by [`Ui::flush_all`] and [`Ui::flush_dirty`] and read by the host
+/// via [`Ui::batches`] to issue one draw call per entry (updating its clip
+/// rect, e.g. via a push constant, before drawing the range).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct DrawBatch {
+    /// The clip rect quads in this batch must be rendered within, in
+    /// screen-space pixels. `None` means unclipped (renders everywhere).
+    pub clip_rect: Option<Edges>,
+    /// Index of the first quad in this batch.
+    pub first_quad: usize,
+    /// Number of quads in this batch.
+    pub quad_count: usize,
 }
 
 // ── UiTree ───────────────────────────────────────────────────────────────────
@@ -135,22 +162,32 @@ impl UiTree {
     /// (topmost first, via [`ordered_children`](Self::ordered_children))
     /// even if the cursor is outside `node_idx`'s own bounds, since children
     /// aren't clipped to their parent when rendered.
-    pub fn hit_test(&self, mx: f32, my: f32, node_idx: usize, parent_edges: &Edges) -> Option<usize> {
+    /// `clip` is the clip rect inherited from `node_idx`'s `clip_children`
+    /// ancestors (`None` = unclipped); pass `None` for a top-level call.
+    pub fn hit_test(&self, mx: f32, my: f32, node_idx: usize, parent_edges: &Edges, clip: Option<Edges>) -> Option<usize> {
         let node = &self.nodes[node_idx];
         if !node.base().visible { return None; }
 
         let edges = node.base().resolve(parent_edges, &self.nodes);
 
+        let child_clip = if node.base().clip_children {
+            Some(clip.map_or(edges, |c| c.intersect(&edges)))
+        } else {
+            clip
+        };
+
         // Recurse regardless of whether (mx, my) is within this node's own
         // bounds: children aren't clipped to their parent's bounds when
-        // rendered, so they shouldn't be for hit-testing either.
+        // rendered (unless `clip_children` says otherwise), so they shouldn't
+        // be for hit-testing either.
         for child_idx in self.ordered_children(node_idx).into_iter().rev() {
-            if let Some(hit) = self.hit_test(mx, my, child_idx, &edges) {
+            if let Some(hit) = self.hit_test(mx, my, child_idx, &edges, child_clip) {
                 return Some(hit);
             }
         }
 
         if !edges.contains(mx, my) { return None; }
+        if !clip.is_none_or(|c| c.contains(mx, my)) { return None; }
 
         // Containers and labels are transparent to input
         match node {
@@ -168,6 +205,10 @@ pub struct Ui {
     /// `flush_all` or `flush_dirty` leaves this `false`.
     dirty: bool,
     quad_count: usize,
+    /// Draw batches produced by the last [`flush_all`](Self::flush_all),
+    /// with clip-rect values kept current by [`flush_dirty`](Self::flush_dirty).
+    /// See [`Ui::batches`].
+    batches: Vec<DrawBatch>,
     pub font_atlas: Rc<FontAtlas>,
 
     tree: UiTree,
@@ -247,6 +288,20 @@ fn label_quads(atlas: &FontAtlas, text: &str, color: Rgba, start_x: f32, baselin
     verts
 }
 
+/// Appends a `[first_quad, first_quad + quad_count)` range to `batches`,
+/// extending the last batch if it's contiguous and shares `clip`, or pushing
+/// a new one otherwise. A no-op if `quad_count == 0`.
+fn push_batch(batches: &mut Vec<DrawBatch>, clip: Option<Edges>, first_quad: usize, quad_count: usize) {
+    if quad_count == 0 { return; }
+    if let Some(last) = batches.last_mut()
+        && last.clip_rect == clip && last.first_quad + last.quad_count == first_quad {
+        last.quad_count += quad_count;
+        return;
+    }
+
+    batches.push(DrawBatch { clip_rect: clip, first_quad, quad_count });
+}
+
 /// Builds the 4 vertices of a quad filling `edges`, sampling `texture`'s UV
 /// rect and tinted by `color`.
 fn quad_verts(edges: &Edges, color: Rgba, texture: Texture) -> [Vertex; 4] {
@@ -264,6 +319,7 @@ impl Ui {
         Self {
             dirty: true,
             quad_count: 0,
+            batches: Vec::new(),
             font_atlas: atlas,
             tree: UiTree::new(screen_size.0, screen_size.1),
             hovered_node: None,
@@ -378,17 +434,17 @@ impl Ui {
         w.set_texture(solid);
 
         let (titlebar_idx, titlebar) = self.create_panel(window_idx)?;
-        titlebar.base.set_position(Anchor::TopLeft, 0.0, 0.0);
-        titlebar.base.set_size(width, TITLEBAR_HEIGHT);
+        titlebar.base.set_position(Anchor::TopLeft, WINDOW_BORDER, WINDOW_BORDER);
+        titlebar.base.set_size(width - 2.0 * WINDOW_BORDER, TITLEBAR_HEIGHT);
         titlebar.set_color(frame_color);
 
         let (title_idx, title) = self.create_label(titlebar_idx)?;
         title.set_color(Rgba::new(1.0, 1.0, 1.0, 1.0));
-        title.base.set_position(Anchor::Left, WINDOW_BORDER, 0.0);
+        title.base.set_position(Anchor::Left, 0.0, 0.0);
 
         let (close_idx, close_btn) = self.create_button(titlebar_idx)?;
         close_btn.base.set_size(TITLEBAR_HEIGHT, TITLEBAR_HEIGHT);
-        close_btn.base.set_position(Anchor::TopRight, -WINDOW_BORDER, WINDOW_BORDER);
+        close_btn.base.set_position(Anchor::TopRight, 0.0, 0.0);
         close_btn.set_color(Rgba::new(1.0, 1.0, 1.0, 0.15));
         close_btn.set_hover_color(Some(Rgba::new(0.8, 0.2, 0.2, 0.7)));
         close_btn.interaction.on_release = Some(Box::new(move |ui: &mut Ui| {
@@ -403,9 +459,10 @@ impl Ui {
         close_label.base.set_position(Anchor::Center, 0.0, 0.0);
 
         let (body_idx, body) = self.create_panel(window_idx)?;
-        body.base.set_position(Anchor::TopLeft, WINDOW_BORDER, TITLEBAR_HEIGHT + WINDOW_BORDER);
-        body.base.set_size(width - 2.0 * WINDOW_BORDER, height - TITLEBAR_HEIGHT - 2.0 * WINDOW_BORDER);
+        body.base.set_position(Anchor::TopLeft, WINDOW_BORDER, TITLEBAR_HEIGHT + 2.0 * WINDOW_BORDER);
+        body.base.set_size(width - 2.0 * WINDOW_BORDER, height - TITLEBAR_HEIGHT - 3.0 * WINDOW_BORDER);
         body.set_color(Rgba::new(0.15, 0.15, 0.17, 0.95));
+        body.base.clip_children = true;
 
         let w = self.tree.get_node_mut::<WindowNode>(window_idx)?;
         w.titlebar = titlebar_idx;
@@ -419,6 +476,16 @@ impl Ui {
     /// [`flush_all`](Self::flush_all).
     pub fn quad_count(&self) -> usize {
         self.quad_count
+    }
+
+    /// Draw batches: contiguous quad ranges sharing a clip rect, in the same
+    /// order as the vertex buffer. The host should issue one draw call per
+    /// batch, applying `clip_rect` (e.g. via a push constant the fragment
+    /// shader discards against) before drawing `[first_quad, first_quad +
+    /// quad_count)`. Rebuilt by [`flush_all`](Self::flush_all); clip-rect
+    /// values are kept current by [`flush_dirty`](Self::flush_dirty).
+    pub fn batches(&self) -> &[DrawBatch] {
+        &self.batches
     }
 
     /// The (color, texture) to render for `idx`, accounting for its
@@ -450,20 +517,22 @@ impl Ui {
         self.dirty_nodes.clear();
         let atlas = &*self.font_atlas;
         let mut verts: Vec<Vertex> = Vec::new();
+        let mut batches: Vec<DrawBatch> = Vec::new();
 
         let root_edges = self.tree.nodes[0].base().resolve(&Edges { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0 }, &self.tree.nodes);
 
         // Each stack entry is a single node still to be processed (own quad,
-        // then its children). Children are pushed in *reverse*
-        // `ordered_children` order so the LIFO stack pops them back into the
-        // correct forward order — giving a full pre-order DFS per subtree,
-        // so a node's entire subtree (not just its own quad) stays grouped
-        // relative to its siblings' subtrees.
-        let mut stack: Vec<(usize, Edges)> = self.tree.ordered_children(0).into_iter().rev()
-            .map(|idx| (idx, root_edges.clone()))
+        // then its children), along with the clip rect inherited from its
+        // `clip_children` ancestors (`None` = unclipped). Children are pushed
+        // in *reverse* `ordered_children` order so the LIFO stack pops them
+        // back into the correct forward order — giving a full pre-order DFS
+        // per subtree, so a node's entire subtree (not just its own quad)
+        // stays grouped relative to its siblings' subtrees.
+        let mut stack: Vec<(usize, Edges, Option<Edges>)> = self.tree.ordered_children(0).into_iter().rev()
+            .map(|idx| (idx, root_edges, None))
             .collect();
 
-        while let Some((node_idx, parent_edges)) = stack.pop() {
+        while let Some((node_idx, parent_edges, clip)) = stack.pop() {
             if !self.tree.nodes[node_idx].base().visible { continue; }
 
             let e = self.tree.nodes[node_idx].base().resolve(&parent_edges, &self.tree.nodes);
@@ -474,23 +543,34 @@ impl Ui {
                     let color   = l.color;
                     let max_len = l.max_len();
 
+                    let quad_start = verts.len() / 4;
                     self.tree.nodes[node_idx].base_mut().vertex_offset = verts.len();
                     verts.extend(label_quads(atlas, &text, color, e.left, e.bottom, max_len));
+                    push_batch(&mut batches, clip, quad_start, max_len);
                 }
                 _ => {
                     if let Some((color, texture)) = self.render_data(node_idx) {
+                        let quad_start = verts.len() / 4;
                         self.tree.nodes[node_idx].base_mut().vertex_offset = verts.len();
                         verts.extend(quad_verts(&e, color, texture));
+                        push_batch(&mut batches, clip, quad_start, 1);
                     }
 
+                    let child_clip = if self.tree.nodes[node_idx].base().clip_children {
+                        Some(clip.map_or(e, |c| c.intersect(&e)))
+                    } else {
+                        clip
+                    };
+
                     for child_idx in self.tree.ordered_children(node_idx).into_iter().rev() {
-                        stack.push((child_idx, e.clone()));
+                        stack.push((child_idx, e, child_clip));
                     }
                 }
             }
         }
 
         self.quad_count = verts.len() / 4;
+        self.batches = batches;
         UiUpdate::Full(atlas.texture_id, verts)
     }
 
@@ -512,6 +592,7 @@ impl Ui {
 
         let mut patches: Vec<(usize, Vec<Vertex>)> = Vec::with_capacity(dirty.len());
         for node_idx in dirty {
+            self.refresh_batch_clip(node_idx);
             match &self.tree.nodes[node_idx] {
                 UiNode::Label(l) => {
                     let text    = l.text.clone();
@@ -561,6 +642,37 @@ impl Ui {
         node.base().resolve(&parent_edges, &self.tree.nodes)
     }
 
+    /// Computes the clip rect `node_idx` inherits from its `clip_children`
+    /// ancestors, intersected from the outermost in (mirrors [`node_edges`](Self::node_edges)'s
+    /// parent-chain walk). `None` means unclipped.
+    fn node_resolved_clip(&self, node_idx: usize) -> Option<Edges> {
+        let parent = self.tree.nodes[node_idx].base().parent?;
+        let parent_clip = self.node_resolved_clip(parent);
+        if self.tree.nodes[parent].base().clip_children {
+            let parent_edges = self.node_edges(parent);
+            Some(parent_clip.map_or(parent_edges, |c| c.intersect(&parent_edges)))
+        } else {
+            parent_clip
+        }
+    }
+
+    /// Updates the `clip_rect` of whichever batch in `self.batches` covers
+    /// `node_idx`'s vertex range, to reflect its current
+    /// [`node_resolved_clip`](Self::node_resolved_clip). Called by
+    /// [`flush_dirty`](Self::flush_dirty) for each dirtied node; a no-op if
+    /// the node's batch already has the right clip rect (redundant calls from
+    /// sibling/descendant nodes in the same batch are harmless).
+    fn refresh_batch_clip(&mut self, node_idx: usize) {
+        let quad_idx = self.tree.nodes[node_idx].base().vertex_offset / 4;
+        let clip = self.node_resolved_clip(node_idx);
+        for batch in &mut self.batches {
+            if quad_idx >= batch.first_quad && quad_idx < batch.first_quad + batch.quad_count {
+                batch.clip_rect = clip;
+                break;
+            }
+        }
+    }
+
     /// Sums glyph advances to get the rendered width of `text`.
     fn label_width(&self, text: &str) -> f32 {
         text.chars().map(|c| self.font_atlas.glyphs.get(&c).map_or(8.0, |g| g.advance)).sum()
@@ -599,6 +711,27 @@ impl Ui {
         for child in children {
             self.mark_dirty(child);
         }
+    }
+
+    /// Sets whether `idx`'s children (and their whole subtrees) are clipped
+    /// to `idx`'s resolved bounds; see [`NodeBase::clip_children`]. Changes
+    /// draw-batch boundaries, so marks the whole tree dirty for the next
+    /// [`flush_all`](Self::flush_all).
+    pub fn set_clip_children(&mut self, idx: usize, clip: bool) -> Result<()> {
+        self.tree.nodes.get_mut(idx)
+            .ok_or_else(|| anyhow!("UI node index {idx} out of bounds"))?
+            .base_mut().clip_children = clip;
+        self.dirty = true;
+        Ok(())
+    }
+
+    /// Sets whether dragging `idx` clamps its position so its resolved edges
+    /// stay within its parent's resolved edges; see [`NodeBase::clamp_to_parent`].
+    pub fn set_clamp_to_parent(&mut self, idx: usize, clamp: bool) -> Result<()> {
+        self.tree.nodes.get_mut(idx)
+            .ok_or_else(|| anyhow!("UI node index {idx} out of bounds"))?
+            .base_mut().clamp_to_parent = clamp;
+        Ok(())
     }
 
     /// Repositions the thumb and refreshes the value label to match the
@@ -689,7 +822,9 @@ impl Ui {
 
     /// Repositions a window by the cursor's delta from where the drag
     /// started, then marks the window and its whole subtree dirty so every
-    /// descendant's quad is repatched at its new resolved position.
+    /// descendant's quad is repatched at its new resolved position. If
+    /// [`NodeBase::clamp_to_parent`] is set, the new position is clamped so
+    /// the window's resolved edges stay within its parent's resolved edges.
     fn drag_window(&mut self, window_idx: usize, cursor: (f32, f32)) -> Result<()> {
         let w = self.tree.get_node_mut::<WindowNode>(window_idx)?;
         let dx = cursor.0 - w.drag.start_cursor.0;
@@ -697,8 +832,42 @@ impl Ui {
         w.base.bounds.x = w.drag.start_pos.0 + dx;
         w.base.bounds.y = w.drag.start_pos.1 + dy;
 
+        if self.tree.nodes[window_idx].base().clamp_to_parent {
+            self.clamp_to_parent(window_idx);
+        }
+
         self.mark_dirty(window_idx);
         Ok(())
+    }
+
+    /// Shifts `idx`'s position so its resolved edges stay within its
+    /// parent's resolved edges, shrinking-to-fit (anchored at the parent's
+    /// top-left) if `idx` is larger than its parent along an axis. A no-op
+    /// if `idx` is the root (no parent).
+    fn clamp_to_parent(&mut self, idx: usize) {
+        let Some(parent) = self.tree.nodes[idx].base().parent else { return };
+        let parent_edges = self.node_edges(parent);
+        let edges        = self.node_edges(idx);
+
+        let width  = edges.right  - edges.left;
+        let height = edges.bottom - edges.top;
+
+        let left = if width <= parent_edges.right - parent_edges.left {
+            edges.left.clamp(parent_edges.left, parent_edges.right - width)
+        } else {
+            parent_edges.left
+        };
+        let top = if height <= parent_edges.bottom - parent_edges.top {
+            edges.top.clamp(parent_edges.top, parent_edges.bottom - height)
+        } else {
+            parent_edges.top
+        };
+
+        // `resolve` is linear in `bounds.x`/`bounds.y` with slope 1, so a
+        // shift in resolved edges maps 1:1 onto `bounds`.
+        let base = self.tree.nodes[idx].base_mut();
+        base.bounds.x += left - edges.left;
+        base.bounds.y += top  - edges.top;
     }
 
     /// Looks up `idx` and extracts it as a `&T`, erroring instead of panicking
@@ -989,6 +1158,7 @@ impl Ui {
         let hit = self.tree.hit_test(
             cursor.0, cursor.1, 0,
             &Edges { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0 },
+            None,
         );
 
         if hit != self.hovered_node {

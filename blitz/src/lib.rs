@@ -146,18 +146,27 @@ impl ArrayLayer {
     }
 }
 
+/// Push constants for the UI pipeline: the ortho projection plus a clip
+/// rect (in screen pixels) that `ui.frag` discards fragments outside of.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct UiPushConstants {
+    proj: cgmath::Matrix4<f32>,
+    clip_rect: [f32; 4], // left, top, right, bottom
+}
+
 /// A 2D quad layer using the UI pipeline.
 #[derive(Default)]
 struct QuadLayer {
     mesh:  Mesh,
-    queue: Vec<(usize, usize, TextureId)>,  // (first_quad, quad_count, texture_id)
+    queue: Vec<(usize, usize, TextureId, [f32; 4])>,  // (first_quad, quad_count, texture_id, clip_rect)
 }
 
 impl QuadLayer {
     fn vertex_id(&self) -> VertexAllocId { self.mesh.vertices }
 
-    fn enqueue(&mut self, first_quad: usize, quad_count: usize, texture_id: TextureId) {
-        self.queue.push((first_quad, quad_count, texture_id));
+    fn enqueue(&mut self, first_quad: usize, quad_count: usize, texture_id: TextureId, clip_rect: [f32; 4]) {
+        self.queue.push((first_quad, quad_count, texture_id, clip_rect));
     }
 
     unsafe fn flush(&mut self, cb: &commands::CommandBuffer, extent: vk::Extent2D) {
@@ -172,10 +181,11 @@ impl QuadLayer {
         );
         let p = globals::pipelines_mut();
         p.ui.bind(cb);
-        p.ui.push_constants(cb, &ortho);
         globals::vertex_buffer().bind(cb, self.mesh.vertices);
         globals::index_buffer().bind(cb, self.mesh.indices);
-        for &(first_quad, quad_count, texture_id) in &self.queue {
+        for &(first_quad, quad_count, texture_id, clip_rect) in &self.queue {
+            let pc = UiPushConstants { proj: ortho, clip_rect };
+            p.ui.push_constants(cb, &pc);
             let descriptor_set = globals::textures()[texture_id].descriptor_set;
             p.ui.bind_sets(cb, &[descriptor_set], 0);
             globals::index_buffer().draw_range(cb, self.mesh.indices, (first_quad * 6) as u32, (quad_count * 6) as u32);
@@ -399,8 +409,10 @@ impl Blitz {
 
     /// Enqueue a 2D UI draw call for a range of quads in the shared UI mesh.
     /// Drawn after all 3D geometry with depth testing off and alpha blending on.
-    pub unsafe fn draw_ui_quads(&mut self, first_quad: usize, quad_count: usize, texture_id: TextureId) {
-        self.ui.enqueue(first_quad, quad_count, texture_id);
+    /// `clip_rect` is `[left, top, right, bottom]` in screen pixels; fragments
+    /// outside it are discarded by `ui.frag`.
+    pub unsafe fn draw_ui_quads(&mut self, first_quad: usize, quad_count: usize, texture_id: TextureId, clip_rect: [f32; 4]) {
+        self.ui.enqueue(first_quad, quad_count, texture_id, clip_rect);
     }
 
     /// Returns the vertex buffer ID for the pre-allocated UI quad mesh.

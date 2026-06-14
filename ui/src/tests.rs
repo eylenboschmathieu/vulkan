@@ -418,6 +418,60 @@ fn raise_to_front_reorders_render_and_hit_test() {
     assert!(a_offset > b_offset && a_offset > c_offset);
 }
 
+/// Two overlapping panels, each with a nested panel child, both registered
+/// as orderable. Raising a panel to the front must move its entire subtree
+/// (own quad + child), not just its own quad, so it stays grouped as a
+/// contiguous block ahead of the other panel's subtree in the vertex buffer.
+#[test]
+fn raise_moves_subtree_as_a_block_in_vertex_buffer() {
+    let mut ui = Ui::new((800.0, 600.0), test_atlas());
+
+    let (container_idx, container) = ui.create_container(0).unwrap();
+    container.base.set_position(Anchor::TopLeft, 0.0, 0.0);
+    container.base.set_size(100.0, 100.0);
+
+    let (a_idx, a) = ui.create_panel(container_idx).unwrap();
+    a.base.set_position(Anchor::TopLeft, 0.0, 0.0);
+    a.base.set_size(60.0, 60.0);
+
+    let (a_child_idx, a_child) = ui.create_panel(a_idx).unwrap();
+    a_child.base.set_position(Anchor::TopLeft, 0.0, 0.0);
+    a_child.base.set_size(5.0, 5.0);
+
+    let (b_idx, b) = ui.create_panel(container_idx).unwrap();
+    b.base.set_position(Anchor::TopLeft, 0.0, 0.0);
+    b.base.set_size(40.0, 40.0);
+
+    let (b_child_idx, b_child) = ui.create_panel(b_idx).unwrap();
+    b_child.base.set_position(Anchor::TopLeft, 5.0, 5.0);
+    b_child.base.set_size(5.0, 5.0);
+
+    ui.register_orderable(a_idx).unwrap();
+    ui.register_orderable(b_idx).unwrap();
+
+    // B registered last -> on top initially. A's subtree (own quad + child)
+    // forms one contiguous block, entirely before B's subtree.
+    let _ = ui.flush_all();
+    let a_off       = ui.get_node::<PanelNode>(a_idx).unwrap().base.vertex_offset;
+    let a_child_off = ui.get_node::<PanelNode>(a_child_idx).unwrap().base.vertex_offset;
+    let b_off       = ui.get_node::<PanelNode>(b_idx).unwrap().base.vertex_offset;
+    let b_child_off = ui.get_node::<PanelNode>(b_child_idx).unwrap().base.vertex_offset;
+    assert!(a_off < a_child_off && a_child_off < b_off && b_off < b_child_off);
+
+    // Press on A's exposed corner (only A covers (52, 52)) -> raises A.
+    let press = UiInput::new((52.0, 52.0)).with_mouse_button(MouseButton::Primary, true, true, false);
+    ui.handle_input(&press).unwrap();
+    assert_eq!(ui.tree.ordered_children(container_idx), vec![b_idx, a_idx]);
+
+    // A's subtree now forms a contiguous block, entirely after B's subtree.
+    let _ = ui.flush_all();
+    let a_off       = ui.get_node::<PanelNode>(a_idx).unwrap().base.vertex_offset;
+    let a_child_off = ui.get_node::<PanelNode>(a_child_idx).unwrap().base.vertex_offset;
+    let b_off       = ui.get_node::<PanelNode>(b_idx).unwrap().base.vertex_offset;
+    let b_child_off = ui.get_node::<PanelNode>(b_child_idx).unwrap().base.vertex_offset;
+    assert!(b_off < b_child_off && b_child_off < a_off && a_off < a_child_off);
+}
+
 /// Two overlapping "windows" (containers), both registered as orderable.
 /// Clicking a button inside one of them (in the area the other doesn't
 /// cover) raises that window itself, even though the button was never

@@ -2,12 +2,11 @@ use crate::types::{Rgba, Texture};
 
 use super::PanelNode;
 
-/// Drag gesture state: tracks whether a drag is active and the cursor
-/// position / value captured when it began, so deltas can be computed
-/// without accumulating drift.
+/// Drag gesture state: the cursor position / value captured when a drag
+/// began, so deltas can be computed without accumulating drift. Whether a
+/// drag is active at all is tracked by `Ui::dragging_node`, not here.
 #[derive(Default, Clone, Copy)]
 pub struct Draggable {
-    pub is_dragging:  bool,
     pub start_cursor: (f32, f32),
     pub start_value:  f32,
 }
@@ -18,13 +17,8 @@ impl Draggable {
     }
 
     pub fn start(&mut self, cursor: (f32, f32), value: f32) {
-        self.is_dragging  = true;
         self.start_cursor = cursor;
         self.start_value  = value;
-    }
-
-    pub fn stop(&mut self) {
-        self.is_dragging = false;
     }
 }
 

@@ -8,13 +8,12 @@ pub const TITLEBAR_HEIGHT: f32 = 24.0;
 /// Width of the border between a window's own quad and its [`WindowNode::body`].
 pub const WINDOW_BORDER: f32 = 2.0;
 
-/// Drag-to-move state for a [`WindowNode`]: tracks whether a drag is active
-/// and the cursor position / window position captured when it began, so the
-/// window's new position can be computed from a delta without accumulating
-/// drift.
+/// Drag-to-move state for a [`WindowNode`]: the cursor position / window
+/// position captured when a drag began, so the window's new position can be
+/// computed from a delta without accumulating drift. Whether a drag is
+/// active at all is tracked by `Ui::dragging_node`, not here.
 #[derive(Default, Clone, Copy)]
 pub struct WindowDrag {
-    pub is_dragging:  bool,
     pub start_cursor: (f32, f32),
     pub start_pos:    (f32, f32),
 }
@@ -25,13 +24,8 @@ impl WindowDrag {
     }
 
     pub fn start(&mut self, cursor: (f32, f32), pos: (f32, f32)) {
-        self.is_dragging  = true;
         self.start_cursor = cursor;
         self.start_pos    = pos;
-    }
-
-    pub fn stop(&mut self) {
-        self.is_dragging = false;
     }
 }
 

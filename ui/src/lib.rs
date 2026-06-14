@@ -981,11 +981,6 @@ impl Ui {
                     _ => {}
                 }
             } else {
-                match &mut self.tree.nodes[dragging_idx] {
-                    UiNode::Slider(s) => s.drag.stop(),
-                    UiNode::Window(w) => w.drag.stop(),
-                    _ => {}
-                }
                 self.dragging_node = None;
             }
             return Ok(());

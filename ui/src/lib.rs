@@ -14,7 +14,7 @@ use anyhow::{anyhow, Result};
 
 pub use font::{FontAtlas, GlyphInfo};
 pub use input::{Key, MouseButton, UiInput};
-pub use nodes::{Anchor, ButtonNode, CheckboxNode, ContainerNode, LabelNode, PanelNode, SliderNode, UiNode, UiNodeVariant};
+pub use nodes::{Anchor, ButtonNode, CheckboxNode, ContainerNode, LabelNode, PanelNode, SliderNode, UiNode, UiNodeVariant, WindowNode, TITLEBAR_HEIGHT, WINDOW_BORDER};
 pub use output::{CursorRequest, UiEvent, UiUpdate};
 pub use types::{Pos2, Rgba, Texture, TextureId, Vertex, UV};
 use layers::LayerOrder;
@@ -360,6 +360,60 @@ impl Ui {
         Ok((slider_idx, s))
     }
 
+    /// Creates a floating window of the given size: a border/frame quad with
+    /// a titlebar (holding a title label and a close button that hides the
+    /// window) and an inset body panel for content. Content should be added
+    /// under the returned `WindowNode::body`, e.g. via
+    /// `ui.create_panel(window.body)`.
+    pub fn create_window(&mut self, parent: usize, width: f32, height: f32) -> Result<(usize, &mut WindowNode)> {
+        let solid = self.solid_texture();
+
+        let frame_color = Rgba::new(0.25, 0.25, 0.3, 1.0);
+
+        let window_idx = self.tree.add_child(UiNode::Window(WindowNode::new()), parent)?;
+        let w = self.tree.get_node_mut::<WindowNode>(window_idx)?;
+        w.base.set_size(width, height);
+        w.set_color(frame_color);
+        w.set_texture(solid);
+
+        let (titlebar_idx, titlebar) = self.create_panel(window_idx)?;
+        titlebar.base.set_position(Anchor::TopLeft, 0.0, 0.0);
+        titlebar.base.set_size(width, TITLEBAR_HEIGHT);
+        titlebar.set_color(frame_color);
+
+        let (title_idx, title) = self.create_label(titlebar_idx)?;
+        title.set_color(Rgba::new(1.0, 1.0, 1.0, 1.0));
+        title.base.set_position(Anchor::Left, WINDOW_BORDER, 0.0);
+
+        let (close_idx, close_btn) = self.create_button(titlebar_idx)?;
+        close_btn.base.set_size(TITLEBAR_HEIGHT, TITLEBAR_HEIGHT);
+        close_btn.base.set_position(Anchor::TopRight, -WINDOW_BORDER, WINDOW_BORDER);
+        close_btn.set_color(Rgba::new(1.0, 1.0, 1.0, 0.15));
+        close_btn.set_hover_color(Some(Rgba::new(0.8, 0.2, 0.2, 0.7)));
+        close_btn.interaction.on_release = Some(Box::new(move |ui: &mut Ui| {
+            let _ = ui.set_visible(window_idx, false);
+        }));
+
+        let close_label_width = self.label_width("x");
+        let (_, close_label) = self.create_label(close_idx)?;
+        close_label.set_text("x");
+        close_label.set_color(Rgba::new(1.0, 1.0, 1.0, 1.0));
+        close_label.base.set_width(close_label_width);
+        close_label.base.set_position(Anchor::Center, 0.0, 0.0);
+
+        let (body_idx, body) = self.create_panel(window_idx)?;
+        body.base.set_position(Anchor::TopLeft, WINDOW_BORDER, TITLEBAR_HEIGHT + WINDOW_BORDER);
+        body.base.set_size(width - 2.0 * WINDOW_BORDER, height - TITLEBAR_HEIGHT - 2.0 * WINDOW_BORDER);
+        body.set_color(Rgba::new(0.15, 0.15, 0.17, 0.95));
+
+        let w = self.tree.get_node_mut::<WindowNode>(window_idx)?;
+        w.titlebar = titlebar_idx;
+        w.title = title_idx;
+        w.close_button = close_idx;
+        w.body = body_idx;
+        Ok((window_idx, w))
+    }
+
     /// The number of quads in the vertex buffer produced by the last
     /// [`flush_all`](Self::flush_all).
     pub fn quad_count(&self) -> usize {
@@ -378,6 +432,7 @@ impl Ui {
             UiNode::Button(b)   => Some((b.display_color(hovered, pressed), b.display_texture(hovered, pressed))),
             UiNode::Checkbox(c) => Some((c.display_color(hovered, pressed), c.display_texture(hovered, pressed))),
             UiNode::Slider(s)   => Some((s.panel.color, s.panel.texture)),
+            UiNode::Window(w)   => Some((w.color, w.texture)),
             _ => None,
         }
     }
@@ -571,6 +626,27 @@ impl Ui {
         } else {
             self.dirty_nodes.push(idx);
         }
+        Ok(())
+    }
+
+    /// Sets a window's frame color: both its own (border) quad and its
+    /// titlebar, which share a color by convention. Marks both dirty for an
+    /// in-place [`flush_dirty`](Self::flush_dirty) patch.
+    pub fn set_window_color(&mut self, idx: usize, color: Rgba) -> Result<()> {
+        let titlebar_idx = self.get_node::<WindowNode>(idx)?.titlebar;
+        self.get_node_mut::<WindowNode>(idx)?.set_color(color);
+        self.get_node_mut::<PanelNode>(titlebar_idx)?.set_color(color);
+        self.dirty_nodes.push(idx);
+        self.dirty_nodes.push(titlebar_idx);
+        Ok(())
+    }
+
+    /// Sets a window's background color, i.e. its [`WindowNode::body`] panel.
+    /// Marks it dirty for an in-place [`flush_dirty`](Self::flush_dirty) patch.
+    pub fn set_window_background_color(&mut self, idx: usize, color: Rgba) -> Result<()> {
+        let body_idx = self.get_node::<WindowNode>(idx)?.body;
+        self.get_node_mut::<PanelNode>(body_idx)?.set_color(color);
+        self.dirty_nodes.push(body_idx);
         Ok(())
     }
 

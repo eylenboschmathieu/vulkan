@@ -566,3 +566,48 @@ fn take_events_drains_queued_events_in_order() {
     // Drained by the call above; nothing left to take.
     assert!(ui.take_events().is_empty());
 }
+
+#[test]
+fn create_window_wires_titlebar_title_close_and_body() {
+    let mut ui = Ui::new((800.0, 600.0), test_atlas());
+
+    let (window_idx, window) = ui.create_window(0, 200.0, 150.0).unwrap();
+    let titlebar_idx = window.titlebar;
+    let title_idx    = window.title;
+    let close_idx    = window.close_button;
+    let body_idx     = window.body;
+    let children     = window.children.clone();
+
+    assert_eq!(children, vec![titlebar_idx, body_idx]);
+
+    // All parts are distinct nodes.
+    let mut indices = vec![window_idx, titlebar_idx, title_idx, close_idx, body_idx];
+    indices.sort();
+    indices.dedup();
+    assert_eq!(indices.len(), 5);
+
+    // Titlebar contains the title label and close button.
+    let titlebar = ui.get_node::<PanelNode>(titlebar_idx).unwrap();
+    assert!(titlebar.children.contains(&title_idx));
+    assert!(titlebar.children.contains(&close_idx));
+    assert_eq!(titlebar.base.bounds.width, 200.0);
+    assert_eq!(titlebar.base.bounds.height, TITLEBAR_HEIGHT);
+
+    // Body is inset from the window's edges by WINDOW_BORDER, below the titlebar.
+    let body = ui.get_node::<PanelNode>(body_idx).unwrap();
+    assert_eq!(body.base.bounds.width, 200.0 - 2.0 * WINDOW_BORDER);
+    assert_eq!(body.base.bounds.height, 150.0 - TITLEBAR_HEIGHT - 2.0 * WINDOW_BORDER);
+}
+
+#[test]
+fn close_button_hides_window() {
+    let mut ui = Ui::new((800.0, 600.0), test_atlas());
+
+    let (window_idx, _) = ui.create_window(0, 200.0, 150.0).unwrap();
+
+    // Inside the close button, in the titlebar's top-right corner.
+    let click = UiInput::new((190.0, 12.0)).with_mouse_button(MouseButton::Primary, false, false, true);
+    ui.handle_input(&click).unwrap();
+
+    assert!(!ui.get_node::<WindowNode>(window_idx).unwrap().base.visible);
+}

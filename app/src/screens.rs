@@ -5,7 +5,7 @@ use std::{cell::Cell, rc::Rc};
 use anyhow::Result;
 use log::error;
 
-use ui::{Anchor, CheckboxNode, ContainerNode, CursorRequest, PanelNode, Rect, Rgba, SliderNode, Ui};
+use ui::{Anchor, CheckboxNode, ContainerNode, CursorRequest, LabelNode, PanelNode, Rect, Rgba, SliderNode, Ui};
 
 const HOTBAR_SLOTS:       usize = 10;
 const SLOT_SIZE:          f32   = 48.0;
@@ -187,17 +187,16 @@ impl Screens {
         label.base.set_position(Anchor::Left, 10.0, 0.0);
 
         // ── Z-order test windows ─────────────────────────────────────────────
-        // Two overlapping panels on the right side, registered as orderable so
-        // clicking either raises it above the other.
-        let (win_a_idx, panel) = ui.create_panel(main_idx)?;
-        panel.base.bounds = Rect { x: panel_w + 40.0, y: 80.0, width: 240.0, height: 160.0 };
-        panel.set_color(Rgba::new(0.8, 0.2, 0.2, 0.8));
-        let (_, label) = ui.create_label(win_a_idx)?;
-        label.set_text("Window A");
-        label.set_color(Rgba::new(1.0, 1.0, 1.0, 1.0));
-        label.base.set_position(Anchor::TopLeft, 10.0, 10.0);
-        let (a_btn_idx, btn) = ui.create_button(win_a_idx)?;
-        btn.base.set_position(Anchor::TopLeft, 10.0, 50.0);
+        // Two overlapping windows on the right side, registered as orderable
+        // so clicking either (or its titlebar/body) raises it above the other.
+        let (win_a_idx, window) = ui.create_window(main_idx, 240.0, 160.0)?;
+        window.base.set_position(Anchor::TopLeft, panel_w + 40.0, 80.0);
+        let title_a_idx = window.title;
+        let body_a_idx  = window.body;
+        ui.get_node_mut::<LabelNode>(title_a_idx)?.set_text("Window A");
+        ui.get_node_mut::<PanelNode>(body_a_idx)?.set_color(Rgba::new(0.8, 0.2, 0.2, 1.0));
+        let (a_btn_idx, btn) = ui.create_button(body_a_idx)?;
+        btn.base.set_position(Anchor::TopLeft, 10.0, 10.0);
         btn.base.set_size(100.0, 32.0);
         btn.set_color(Rgba::new(1.0, 1.0, 1.0, 0.4));
         btn.set_hover_color(Some(Rgba::new(1.0, 1.0, 1.0, 0.7)));
@@ -205,15 +204,14 @@ impl Screens {
         label.set_text("Button A");
         label.base.set_position(Anchor::Left, 8.0, 0.0);
 
-        let (win_b_idx, panel) = ui.create_panel(main_idx)?;
-        panel.base.bounds = Rect { x: panel_w + 140.0, y: 160.0, width: 240.0, height: 160.0 };
-        panel.set_color(Rgba::new(0.2, 0.2, 0.8, 0.8));
-        let (_, label) = ui.create_label(win_b_idx)?;
-        label.set_text("Window B");
-        label.set_color(Rgba::new(1.0, 1.0, 1.0, 1.0));
-        label.base.set_position(Anchor::TopLeft, 10.0, 10.0);
-        let (b_btn_idx, btn) = ui.create_button(win_b_idx)?;
-        btn.base.set_position(Anchor::TopLeft, 10.0, 50.0);
+        let (win_b_idx, window) = ui.create_window(main_idx, 240.0, 160.0)?;
+        window.base.set_position(Anchor::TopLeft, panel_w + 140.0, 160.0);
+        let title_b_idx = window.title;
+        let body_b_idx  = window.body;
+        ui.get_node_mut::<LabelNode>(title_b_idx)?.set_text("Window B");
+        ui.get_node_mut::<PanelNode>(body_b_idx)?.set_color(Rgba::new(0.2, 0.2, 0.8, 1.0));
+        let (b_btn_idx, btn) = ui.create_button(body_b_idx)?;
+        btn.base.set_position(Anchor::TopLeft, 10.0, 10.0);
         btn.base.set_size(100.0, 32.0);
         btn.set_color(Rgba::new(1.0, 1.0, 1.0, 0.4));
         btn.set_hover_color(Some(Rgba::new(1.0, 1.0, 1.0, 0.7)));

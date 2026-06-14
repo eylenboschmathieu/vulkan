@@ -4,6 +4,7 @@ mod container;
 mod label;
 mod panel;
 mod slider;
+mod window;
 
 use crate::{Edges, Rect, Ui};
 
@@ -13,6 +14,7 @@ pub use container::ContainerNode;
 pub use label::LabelNode;
 pub use panel::PanelNode;
 pub use slider::SliderNode;
+pub use window::{WindowNode, TITLEBAR_HEIGHT, WINDOW_BORDER};
 
 // ── Layout primitives ────────────────────────────────────────────────────────
 
@@ -199,40 +201,44 @@ pub enum UiNode {
     Checkbox(CheckboxNode),
     Label(LabelNode),
     Slider(SliderNode),
+    Window(WindowNode),
 }
 
 impl UiNode {
     pub fn base(&self) -> &NodeBase {
         match self {
             UiNode::Container(n) => &n.base,
-            UiNode::Panel(n)     => &n.base,
-            UiNode::Button(n)    => &n.base,
-            UiNode::Checkbox(n)  => &n.base,
-            UiNode::Label(n)     => &n.base,
-            UiNode::Slider(n)    => &n.panel.base,
+            UiNode::Panel(n)         => &n.base,
+            UiNode::Button(n)       => &n.base,
+            UiNode::Checkbox(n)   => &n.base,
+            UiNode::Label(n)         => &n.base,
+            UiNode::Slider(n)       => &n.panel.base,
+            UiNode::Window(n)       => &n.base,
         }
     }
 
     pub fn base_mut(&mut self) -> &mut NodeBase {
         match self {
             UiNode::Container(n) => &mut n.base,
-            UiNode::Panel(n)     => &mut n.base,
-            UiNode::Button(n)    => &mut n.base,
-            UiNode::Checkbox(n)  => &mut n.base,
-            UiNode::Label(n)     => &mut n.base,
-            UiNode::Slider(n)    => &mut n.panel.base,
+            UiNode::Panel(n)         => &mut n.base,
+            UiNode::Button(n)       => &mut n.base,
+            UiNode::Checkbox(n)   => &mut n.base,
+            UiNode::Label(n)         => &mut n.base,
+            UiNode::Slider(n)       => &mut n.panel.base,
+            UiNode::Window(n)       => &mut n.base,
         }
     }
 
     /// Child indices, for container-like node types (`Container`, `Panel`,
-    /// `Button`, `Slider`). `None` for leaf node types, which cannot have
-    /// children.
+    /// `Button`, `Slider`, `Window`). `None` for leaf node types, which
+    /// cannot have children.
     pub fn children(&self) -> Option<&[usize]> {
         match self {
             UiNode::Container(n) => Some(&n.children),
-            UiNode::Panel(n)     => Some(&n.children),
-            UiNode::Button(n)    => Some(&n.children),
-            UiNode::Slider(n)    => Some(&n.panel.children),
+            UiNode::Panel(n)           => Some(&n.children),
+            UiNode::Button(n)         => Some(&n.children),
+            UiNode::Slider(n)         => Some(&n.panel.children),
+            UiNode::Window(n)         => Some(&n.children),
             UiNode::Checkbox(_) | UiNode::Label(_) => None,
         }
     }
@@ -241,9 +247,10 @@ impl UiNode {
     pub fn children_mut(&mut self) -> Option<&mut Vec<usize>> {
         match self {
             UiNode::Container(n) => Some(&mut n.children),
-            UiNode::Panel(n)     => Some(&mut n.children),
-            UiNode::Button(n)    => Some(&mut n.children),
-            UiNode::Slider(n)    => Some(&mut n.panel.children),
+            UiNode::Panel(n)       => Some(&mut n.children),
+            UiNode::Button(n)     => Some(&mut n.children),
+            UiNode::Slider(n)     => Some(&mut n.panel.children),
+            UiNode::Window(n)     => Some(&mut n.children),
             UiNode::Checkbox(_) | UiNode::Label(_) => None,
         }
     }
@@ -254,9 +261,10 @@ impl UiNode {
     pub fn z_sentinel_mut(&mut self) -> Option<&mut u32> {
         match self {
             UiNode::Container(n) => Some(&mut n.z_sentinel),
-            UiNode::Panel(n)     => Some(&mut n.z_sentinel),
-            UiNode::Button(n)    => Some(&mut n.z_sentinel),
-            UiNode::Slider(n)    => Some(&mut n.panel.z_sentinel),
+            UiNode::Panel(n)       => Some(&mut n.z_sentinel),
+            UiNode::Button(n)     => Some(&mut n.z_sentinel),
+            UiNode::Slider(n)     => Some(&mut n.panel.z_sentinel),
+            UiNode::Window(n)     => Some(&mut n.z_sentinel),
             UiNode::Checkbox(_) | UiNode::Label(_) => None,
         }
     }
@@ -293,3 +301,4 @@ ui_node_variant!(ButtonNode,    Button);
 ui_node_variant!(CheckboxNode,  Checkbox);
 ui_node_variant!(LabelNode,     Label);
 ui_node_variant!(SliderNode,    Slider);
+ui_node_variant!(WindowNode,    Window);

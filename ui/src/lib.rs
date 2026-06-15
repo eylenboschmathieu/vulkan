@@ -1132,7 +1132,8 @@ impl Ui {
     /// descendant's quad is repatched at its new resolved position. If the
     /// window's parent has [`UiNode::clamp_children`] set, the new position
     /// is clamped so the window's resolved edges stay within its parent's
-    /// resolved edges.
+    /// resolved edges (or its `content_size`, if the parent is a scroll
+    /// panel — see [`clamp_to_parent`](Self::clamp_to_parent)).
     fn drag_window(&mut self, window_idx: usize, cursor: (f32, f32)) -> Result<()> {
         let w = self.tree.get_node_mut::<WindowNode>(window_idx)?;
         let dx = cursor.0 - w.drag.start_cursor.0;
@@ -1152,11 +1153,27 @@ impl Ui {
     /// Shifts `idx`'s position so its resolved edges stay within its
     /// parent's resolved edges, shrinking-to-fit (anchored at the parent's
     /// top-left) if `idx` is larger than its parent along an axis. A no-op
-    /// if `idx` is the root (no parent).
+    /// if `idx` is the root (no parent). If the parent is a scroll panel
+    /// (see [`UiNode::scroll`]), clamps to its full `content_size` instead
+    /// of its viewport — `idx`'s resolved edges are already in the content's
+    /// scrolled coordinate space, so the content rect is the parent's
+    /// (offset-translated) top-left extended by `content_size`.
     fn clamp_to_parent(&mut self, idx: usize) {
         let Some(parent) = self.tree.nodes[idx].base().parent else { return };
         let parent_edges = self.node_edges(parent);
-        let edges        = self.node_edges(idx);
+        let parent_edges = match self.tree.nodes[parent].scroll() {
+            Some(scroll) => {
+                let origin = parent_edges.translate(-scroll.offset.0, -scroll.offset.1);
+                Edges {
+                    left:   origin.left,
+                    top:    origin.top,
+                    right:  origin.left + scroll.content_size.0,
+                    bottom: origin.top + scroll.content_size.1,
+                }
+            }
+            None => parent_edges,
+        };
+        let edges = self.node_edges(idx);
 
         let width  = edges.right  - edges.left;
         let height = edges.bottom - edges.top;

@@ -899,6 +899,53 @@ fn window_drag_clamps_to_parent_when_set() {
     assert_eq!((edges.right, edges.bottom), (body_edges.right, body_edges.bottom));
 }
 
+/// A window dragged inside a scroll panel with `clamp_children` set clamps
+/// to the panel's full `content_size`, not its (smaller) viewport — its
+/// resolved edges are already in the content's scrolled coordinate space, so
+/// the clamp rect must be too.
+#[test]
+fn window_drag_clamps_to_scroll_panel_content_size() {
+    let mut ui = Ui::new((800.0, 600.0), test_atlas());
+
+    let (p_idx, p) = ui.create_panel(0).unwrap();
+    p.base.set_position(Anchor::TopLeft, 0.0, 0.0);
+    p.base.set_size(100.0, 100.0);
+    p.enable_scroll((300.0, 300.0));
+    ui.set_clip_children(p_idx, true).unwrap();
+    ui.set_clamp_children(p_idx, true).unwrap();
+    ui.set_scroll_offset(p_idx, (20.0, 20.0)).unwrap();
+
+    let (inner_idx, inner) = ui.create_window(p_idx, 40.0, 30.0).unwrap();
+    inner.base.set_position(Anchor::TopLeft, 30.0, 30.0);
+    inner.set_draggable(true);
+
+    let _ = ui.flush_all();
+
+    // Content rect, in the content's scrolled coordinate space: the
+    // viewport's top-left (0,0) translated by -offset (20,20), extended by
+    // content_size (300,300) -> (-20,-20)..(280,280). The inner window
+    // starts at resolved (10,10)..(50,40), within the viewport.
+    let content_min = -20.0;
+    let content_max = content_min + 300.0;
+
+    // Drag far up-left, past the content area's top-left corner. (x=15,
+    // rather than further right, to avoid the titlebar's close button.)
+    let press = UiInput::new((15.0, 20.0)).with_mouse_button(MouseButton::Primary, true, true, false);
+    ui.handle_input(&press).unwrap();
+    let drag = UiInput::new((-1000.0, -1000.0)).with_mouse_button(MouseButton::Primary, true, false, false);
+    ui.handle_input(&drag).unwrap();
+
+    let edges = ui.node_edges(inner_idx);
+    assert_eq!((edges.left, edges.top), (content_min, content_min));
+
+    // Drag far down-right, past the content area's bottom-right corner.
+    let drag = UiInput::new((1000.0, 1000.0)).with_mouse_button(MouseButton::Primary, true, false, false);
+    ui.handle_input(&drag).unwrap();
+
+    let edges = ui.node_edges(inner_idx);
+    assert_eq!((edges.right, edges.bottom), (content_max, content_max));
+}
+
 /// The `clip_rect` of the draw batch containing `idx`'s quad, found the same
 /// way [`flush_dirty_refreshes_clip_rect_on_window_drag`] does.
 fn batch_clip_for(ui: &Ui, idx: usize) -> Option<Edges> {

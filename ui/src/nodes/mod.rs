@@ -1,8 +1,10 @@
 mod button;
 mod checkbox;
 mod container;
+mod group;
 mod label;
 mod panel;
+mod scroll_panel;
 mod slider;
 mod window;
 
@@ -10,10 +12,12 @@ use crate::{Edges, Rect, Ui};
 
 pub use button::ButtonNode;
 pub use checkbox::CheckboxNode;
-pub use container::ContainerNode;
+pub use container::Container;
+pub use group::GroupNode;
 pub use label::LabelNode;
-pub use panel::PanelNode;
-pub use slider::SliderNode;
+pub use panel::{PanelNode, Scroll};
+pub use scroll_panel::ScrollPanelNode;
+pub use slider::{Axis, SliderNode};
 pub use window::{WindowNode, TITLEBAR_HEIGHT, WINDOW_BORDER};
 
 // ── Layout primitives ────────────────────────────────────────────────────────
@@ -110,16 +114,6 @@ pub struct NodeBase {
     /// debug overlay that should always render on top). Unused below the
     /// root.
     pub band: u32,
-    /// When `true`, this node's children (and their whole subtrees) are
-    /// clipped to this node's resolved bounds, intersected with any clip rect
-    /// inherited from further up the tree. `false` by default. Set via
-    /// [`Ui::set_clip_children`](crate::Ui::set_clip_children).
-    pub clip_children: bool,
-    /// When `true`, dragging this node (currently only meaningful for a
-    /// draggable [`WindowNode`]) clamps its position so its resolved edges
-    /// stay within its parent's resolved edges. `false` by default. Set via
-    /// [`Ui::set_clamp_to_parent`](crate::Ui::set_clamp_to_parent).
-    pub clamp_to_parent: bool,
 }
 
 impl NodeBase {
@@ -133,8 +127,6 @@ impl NodeBase {
             visibility:    VisibilityCb::default(),
             z_index:       0,
             band:          0,
-            clip_children: false,
-            clamp_to_parent: false,
         }
     }
 
@@ -199,7 +191,13 @@ fn node_absolute_edges(idx: usize, nodes: &[UiNode]) -> Edges {
     let node = &nodes[idx];
     let parent_edges = match node.base().parent {
         None    => Edges { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0 },
-        Some(p) => node_absolute_edges(p, nodes),
+        Some(p) => {
+            let edges = node_absolute_edges(p, nodes);
+            match nodes[p].scroll() {
+                Some(s) => edges.translate(-s.offset.0, -s.offset.1),
+                None    => edges,
+            }
+        }
     };
     node.base().resolve(&parent_edges, nodes)
 }
@@ -207,11 +205,12 @@ fn node_absolute_edges(idx: usize, nodes: &[UiNode]) -> Edges {
 // ── UiNode enum ──────────────────────────────────────────────────────────────
 
 pub enum UiNode {
-    Container(ContainerNode),
+    Group(GroupNode),
     Panel(PanelNode),
     Button(ButtonNode),
     Checkbox(CheckboxNode),
     Label(LabelNode),
+    ScrollPanel(ScrollPanelNode),
     Slider(SliderNode),
     Window(WindowNode),
 }
@@ -219,38 +218,41 @@ pub enum UiNode {
 impl UiNode {
     pub fn base(&self) -> &NodeBase {
         match self {
-            UiNode::Container(n) => &n.base,
-            UiNode::Panel(n)         => &n.base,
-            UiNode::Button(n)       => &n.base,
-            UiNode::Checkbox(n)   => &n.base,
-            UiNode::Label(n)         => &n.base,
-            UiNode::Slider(n)       => &n.panel.base,
-            UiNode::Window(n)       => &n.base,
+            UiNode::Group(n)       => &n.base,
+            UiNode::Panel(n)       => &n.base,
+            UiNode::Button(n)     => &n.base,
+            UiNode::Checkbox(n) => &n.base,
+            UiNode::Label(n)       => &n.base,
+            UiNode::ScrollPanel(n) => &n.base,
+            UiNode::Slider(n)     => &n.panel.base,
+            UiNode::Window(n)     => &n.base,
         }
     }
 
     pub fn base_mut(&mut self) -> &mut NodeBase {
         match self {
-            UiNode::Container(n) => &mut n.base,
-            UiNode::Panel(n)         => &mut n.base,
-            UiNode::Button(n)       => &mut n.base,
-            UiNode::Checkbox(n)   => &mut n.base,
-            UiNode::Label(n)         => &mut n.base,
-            UiNode::Slider(n)       => &mut n.panel.base,
-            UiNode::Window(n)       => &mut n.base,
+            UiNode::Group(n)       => &mut n.base,
+            UiNode::Panel(n)       => &mut n.base,
+            UiNode::Button(n)     => &mut n.base,
+            UiNode::Checkbox(n) => &mut n.base,
+            UiNode::Label(n)       => &mut n.base,
+            UiNode::ScrollPanel(n) => &mut n.base,
+            UiNode::Slider(n)     => &mut n.panel.base,
+            UiNode::Window(n)     => &mut n.base,
         }
     }
 
-    /// Child indices, for container-like node types (`Container`, `Panel`,
-    /// `Button`, `Slider`, `Window`). `None` for leaf node types, which
-    /// cannot have children.
+    /// Child indices, for container-like node types (`Group`, `Panel`,
+    /// `Button`, `ScrollPanel`, `Slider`, `Window`). `None` for leaf node
+    /// types, which cannot have children.
     pub fn children(&self) -> Option<&[usize]> {
         match self {
-            UiNode::Container(n) => Some(&n.children),
-            UiNode::Panel(n)           => Some(&n.children),
+            UiNode::Group(n)      => Some(&n.container.children),
+            UiNode::Panel(n)           => Some(&n.container.children),
             UiNode::Button(n)         => Some(&n.children),
-            UiNode::Slider(n)         => Some(&n.panel.children),
-            UiNode::Window(n)         => Some(&n.children),
+            UiNode::ScrollPanel(n)    => Some(&n.container.children),
+            UiNode::Slider(n)         => Some(&n.panel.container.children),
+            UiNode::Window(n)         => Some(&n.container.children),
             UiNode::Checkbox(_) | UiNode::Label(_) => None,
         }
     }
@@ -258,11 +260,12 @@ impl UiNode {
     /// Mutable child indices; see [`UiNode::children`].
     pub fn children_mut(&mut self) -> Option<&mut Vec<usize>> {
         match self {
-            UiNode::Container(n) => Some(&mut n.children),
-            UiNode::Panel(n)         => Some(&mut n.children),
+            UiNode::Group(n)      => Some(&mut n.container.children),
+            UiNode::Panel(n)         => Some(&mut n.container.children),
             UiNode::Button(n)       => Some(&mut n.children),
-            UiNode::Slider(n)       => Some(&mut n.panel.children),
-            UiNode::Window(n)       => Some(&mut n.children),
+            UiNode::ScrollPanel(n)  => Some(&mut n.container.children),
+            UiNode::Slider(n)       => Some(&mut n.panel.container.children),
+            UiNode::Window(n)       => Some(&mut n.container.children),
             UiNode::Checkbox(_) | UiNode::Label(_)   => None,
         }
     }
@@ -272,13 +275,79 @@ impl UiNode {
     /// types, which cannot have children.
     pub fn z_sentinel_mut(&mut self) -> Option<&mut u32> {
         match self {
-            UiNode::Container(n) => Some(&mut n.z_sentinel),
-            UiNode::Panel(n)         => Some(&mut n.z_sentinel),
+            UiNode::Group(n)      => Some(&mut n.container.z_sentinel),
+            UiNode::Panel(n)         => Some(&mut n.container.z_sentinel),
             UiNode::Button(n)       => Some(&mut n.z_sentinel),
-            UiNode::Slider(n)       => Some(&mut n.panel.z_sentinel),
-            UiNode::Window(n)       => Some(&mut n.z_sentinel),
+            UiNode::ScrollPanel(n)  => Some(&mut n.container.z_sentinel),
+            UiNode::Slider(n)       => Some(&mut n.panel.container.z_sentinel),
+            UiNode::Window(n)       => Some(&mut n.container.z_sentinel),
             UiNode::Checkbox(_) | UiNode::Label(_)   => None,
         }
+    }
+
+    /// This node's [`Container`], for container-like node types (`Group`,
+    /// `Panel`, `ScrollPanel`, `Window`); `None` for all others.
+    fn container(&self) -> Option<&Container> {
+        match self {
+            UiNode::Group(n)       => Some(&n.container),
+            UiNode::Panel(n)       => Some(&n.container),
+            UiNode::ScrollPanel(n) => Some(&n.container),
+            UiNode::Window(n)      => Some(&n.container),
+            _ => None,
+        }
+    }
+
+    /// Mutable counterpart of [`UiNode::container`].
+    fn container_mut(&mut self) -> Option<&mut Container> {
+        match self {
+            UiNode::Group(n)       => Some(&mut n.container),
+            UiNode::Panel(n)       => Some(&mut n.container),
+            UiNode::ScrollPanel(n) => Some(&mut n.container),
+            UiNode::Window(n)      => Some(&mut n.container),
+            _ => None,
+        }
+    }
+
+    /// Whether this node's children (and their whole subtrees) are clipped
+    /// to this node's resolved bounds, intersected with any clip rect
+    /// inherited from further up the tree. Only meaningful for
+    /// container-like nodes (`Group`, `Panel`, `Window`); `false` for
+    /// all others. Set via [`Ui::set_clip_children`](crate::Ui::set_clip_children).
+    pub fn clip_children(&self) -> bool {
+        self.container().is_some_and(|c| c.clip_children)
+    }
+
+    /// Mutable access to [`UiNode::clip_children`]; `None` for node types
+    /// that don't carry the flag.
+    pub fn clip_children_mut(&mut self) -> Option<&mut bool> {
+        self.container_mut().map(|c| &mut c.clip_children)
+    }
+
+    /// Whether dragging one of this node's children clamps its position so
+    /// its resolved edges stay within this node's resolved edges. Only
+    /// meaningful for container-like nodes (`Group`, `Panel`, `Window`);
+    /// `false` for all others. Set via
+    /// [`Ui::set_clamp_children`](crate::Ui::set_clamp_children).
+    pub fn clamp_children(&self) -> bool {
+        self.container().is_some_and(|c| c.clamp_children)
+    }
+
+    /// Mutable access to [`UiNode::clamp_children`]; `None` for node types
+    /// that don't carry the flag.
+    pub fn clamp_children_mut(&mut self) -> Option<&mut bool> {
+        self.container_mut().map(|c| &mut c.clamp_children)
+    }
+
+    /// This node's scroll state, for scrollable containers (currently only
+    /// `Panel`, via [`PanelNode::scroll`]); `None` for all others, and for
+    /// panels with scrolling disabled.
+    pub fn scroll(&self) -> Option<&Scroll> {
+        match self { UiNode::Panel(p) => p.scroll.as_ref(), _ => None }
+    }
+
+    /// Mutable counterpart of [`UiNode::scroll`].
+    pub fn scroll_mut(&mut self) -> Option<&mut Scroll> {
+        match self { UiNode::Panel(p) => p.scroll.as_mut(), _ => None }
     }
 }
 
@@ -307,10 +376,11 @@ macro_rules! ui_node_variant {
     };
 }
 
-ui_node_variant!(ContainerNode, Container);
-ui_node_variant!(PanelNode,     Panel);
-ui_node_variant!(ButtonNode,    Button);
-ui_node_variant!(CheckboxNode,  Checkbox);
-ui_node_variant!(LabelNode,     Label);
-ui_node_variant!(SliderNode,    Slider);
-ui_node_variant!(WindowNode,    Window);
+ui_node_variant!(GroupNode,       Group);
+ui_node_variant!(PanelNode,       Panel);
+ui_node_variant!(ButtonNode,      Button);
+ui_node_variant!(CheckboxNode,    Checkbox);
+ui_node_variant!(LabelNode,       Label);
+ui_node_variant!(ScrollPanelNode, ScrollPanel);
+ui_node_variant!(SliderNode,      Slider);
+ui_node_variant!(WindowNode,      Window);

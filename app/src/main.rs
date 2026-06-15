@@ -73,6 +73,9 @@ fn main() -> Result<()> {
                 WindowEvent::MouseInput { device_id, state, button } => {
                     app.button_update(button, state);
                 },
+                WindowEvent::MouseWheel { delta, .. } => {
+                    app.mouse_wheel(delta);
+                },
                 WindowEvent::KeyboardInput { event, .. } => {
                     if let PhysicalKey::Code(code) = event.physical_key {
                         app.button_update(code, event.state);

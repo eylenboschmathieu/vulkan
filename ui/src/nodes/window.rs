@@ -1,6 +1,6 @@
 use crate::types::{Rgba, Texture};
 
-use super::NodeBase;
+use super::{Container, NodeBase};
 
 /// Height of a window's titlebar, in the same units as [`NodeBase::bounds`].
 pub const TITLEBAR_HEIGHT: f32 = 24.0;
@@ -46,12 +46,9 @@ pub struct WindowNode {
     /// `PanelNode` for content, inset from the window's edges by
     /// [`WINDOW_BORDER`] (and `titlebar`'s height on top), child of this node.
     pub body: usize,
-    /// Structural children: always `[titlebar, body]`. Content added by
-    /// callers belongs under `body`, not here.
-    pub children: Vec<usize>,
-    /// Next [`NodeBase::z_index`] to assign to a child raised to the front;
-    /// starts at `1` since `0` means "not orderable".
-    pub z_sentinel: u32,
+    /// Structural children (`container.children`): always `[titlebar, body]`.
+    /// Content added by callers belongs under `body`, not here.
+    pub container: Container,
     /// Whether pressing the titlebar starts a drag-to-move. `false` by
     /// default; see [`WindowNode::set_draggable`].
     pub draggable: bool,
@@ -69,8 +66,7 @@ impl WindowNode {
             title: 0,
             close_button: 0,
             body: 0,
-            children: Vec::new(),
-            z_sentinel: 1,
+            container: Container::new(),
             draggable: false,
             drag: WindowDrag::new(),
         }

@@ -19,7 +19,7 @@ fn test_atlas() -> Rc<FontAtlas> {
 fn flush_all_emits_quad_for_nested_panel() {
     let mut ui = Ui::new((800.0, 600.0), test_atlas());
 
-    let (container_idx, container) = ui.create_container(0).unwrap();
+    let (container_idx, container) = ui.create_group(0).unwrap();
     container.base.set_position(Anchor::TopLeft, 50.0, 60.0);
     container.base.set_size(200.0, 150.0);
 
@@ -166,7 +166,7 @@ fn checkbox_callbacks_mirror_host_state() {
 fn slider_drag_updates_value_with_clamping() {
     let mut ui = Ui::new((800.0, 600.0), test_atlas());
 
-    let (slider_idx, slider) = ui.create_slider(0).unwrap();
+    let (slider_idx, slider) = ui.create_slider(0, Axis::Horizontal).unwrap();
     slider.set_min_max(0, 100);
     slider.set_value(50);
     ui.layout_slider(slider_idx).unwrap();
@@ -217,7 +217,7 @@ fn slider_drag_updates_value_with_clamping() {
 fn slider_track_click_jumps_value_then_drag_continues_from_there() {
     let mut ui = Ui::new((800.0, 600.0), test_atlas());
 
-    let (slider_idx, slider) = ui.create_slider(0).unwrap();
+    let (slider_idx, slider) = ui.create_slider(0, Axis::Horizontal).unwrap();
     slider.set_min_max(0, 100);
     slider.set_value(50);
     ui.layout_slider(slider_idx).unwrap();
@@ -254,6 +254,31 @@ fn slider_track_click_jumps_value_then_drag_continues_from_there() {
 
     let release = UiInput::new((100.0, 16.0)).with_mouse_button(MouseButton::Primary, false, false, true);
     ui.handle_input(&release).unwrap();
+}
+
+#[test]
+fn step_slider_reaches_max_value_even_off_grid() {
+    let mut ui = Ui::new((800.0, 600.0), test_atlas());
+
+    let (slider_idx, slider) = ui.create_slider(0, Axis::Horizontal).unwrap();
+    // max_value (95) isn't a multiple of step_size (10): naive clamp-then-snap
+    // would land on 90 and get stuck there forever.
+    slider.set_min_max(0, 95);
+    slider.step_size = 10;
+    slider.set_value(80);
+
+    for _ in 0..2 {
+        ui.step_slider(slider_idx, true).unwrap();
+    }
+    assert_eq!(ui.get_node::<SliderNode>(slider_idx).unwrap().value, 95);
+
+    // Further increments stay pinned at max_value.
+    ui.step_slider(slider_idx, true).unwrap();
+    assert_eq!(ui.get_node::<SliderNode>(slider_idx).unwrap().value, 95);
+
+    // Decrementing from the off-grid max snaps back onto the step grid.
+    ui.step_slider(slider_idx, false).unwrap();
+    assert_eq!(ui.get_node::<SliderNode>(slider_idx).unwrap().value, 80);
 }
 
 #[test]
@@ -303,7 +328,7 @@ fn unhandled_click_on_empty_space_is_queued_as_event() {
 fn set_visible_false_fires_on_hide_and_restores_hover() {
     let mut ui = Ui::new((800.0, 600.0), test_atlas());
 
-    let (container_idx, container) = ui.create_container(0).unwrap();
+    let (container_idx, container) = ui.create_group(0).unwrap();
     container.base.set_position(Anchor::TopLeft, 0.0, 0.0);
     container.base.set_size(200.0, 100.0);
 
@@ -313,7 +338,7 @@ fn set_visible_false_fires_on_hide_and_restores_hover() {
 
     let hidden = Rc::new(Cell::new(false));
     let hidden_cb = hidden.clone();
-    ui.get_node_mut::<ContainerNode>(container_idx).unwrap().base.visibility.on_hide = Some(Box::new(move |_ui| {
+    ui.get_node_mut::<GroupNode>(container_idx).unwrap().base.visibility.on_hide = Some(Box::new(move |_ui| {
         hidden_cb.set(true);
     }));
 
@@ -326,7 +351,7 @@ fn set_visible_false_fires_on_hide_and_restores_hover() {
     ui.set_visible(container_idx, false).unwrap();
 
     assert_eq!(ui.hovered_node, None);
-    assert!(!ui.get_node::<ContainerNode>(container_idx).unwrap().base.visible);
+    assert!(!ui.get_node::<GroupNode>(container_idx).unwrap().base.visible);
     assert!(ui.dirty);
     assert!(hidden.get());
 }
@@ -374,7 +399,7 @@ fn add_child_on_leaf_node_errors() {
 fn raise_to_front_reorders_render_and_hit_test() {
     let mut ui = Ui::new((800.0, 600.0), test_atlas());
 
-    let (container_idx, container) = ui.create_container(0).unwrap();
+    let (container_idx, container) = ui.create_group(0).unwrap();
     container.base.set_position(Anchor::TopLeft, 0.0, 0.0);
     container.base.set_size(100.0, 100.0);
 
@@ -426,7 +451,7 @@ fn raise_to_front_reorders_render_and_hit_test() {
 fn raise_moves_subtree_as_a_block_in_vertex_buffer() {
     let mut ui = Ui::new((800.0, 600.0), test_atlas());
 
-    let (container_idx, container) = ui.create_container(0).unwrap();
+    let (container_idx, container) = ui.create_group(0).unwrap();
     container.base.set_position(Anchor::TopLeft, 0.0, 0.0);
     container.base.set_size(100.0, 100.0);
 
@@ -480,11 +505,11 @@ fn raise_moves_subtree_as_a_block_in_vertex_buffer() {
 fn raise_propagates_to_orderable_ancestor() {
     let mut ui = Ui::new((800.0, 600.0), test_atlas());
 
-    let (win1_idx, win1) = ui.create_container(0).unwrap();
+    let (win1_idx, win1) = ui.create_group(0).unwrap();
     win1.base.set_position(Anchor::TopLeft, 0.0, 0.0);
     win1.base.set_size(60.0, 60.0);
 
-    let (win2_idx, win2) = ui.create_container(0).unwrap();
+    let (win2_idx, win2) = ui.create_group(0).unwrap();
     win2.base.set_position(Anchor::TopLeft, 0.0, 0.0);
     win2.base.set_size(40.0, 40.0);
 
@@ -517,8 +542,8 @@ fn register_layer_bands_take_priority_over_z_index() {
     #[derive(Clone, Copy, PartialEq, Eq, Hash)]
     enum TestLayer { Content, Debug }
 
-    let (content_idx, _) = ui.create_container(0).unwrap();
-    let (debug_idx, _) = ui.create_container(0).unwrap();
+    let (content_idx, _) = ui.create_group(0).unwrap();
+    let (debug_idx, _) = ui.create_group(0).unwrap();
 
     // Content registered first -> band 0; Debug registered second -> band 1.
     ui.register_layer(content_idx, TestLayer::Content).unwrap();
@@ -537,8 +562,8 @@ fn register_layer_errors_for_non_root_child() {
     #[derive(Clone, Copy, PartialEq, Eq, Hash)]
     enum TestLayer { Content }
 
-    let (container_idx, _) = ui.create_container(0).unwrap();
-    let (nested_idx, _) = ui.create_container(container_idx).unwrap();
+    let (container_idx, _) = ui.create_group(0).unwrap();
+    let (nested_idx, _) = ui.create_group(container_idx).unwrap();
 
     assert!(ui.register_layer(nested_idx, TestLayer::Content).is_err());
 }
@@ -576,7 +601,7 @@ fn create_window_wires_titlebar_title_close_and_body() {
     let title_idx    = window.title;
     let close_idx    = window.close_button;
     let body_idx     = window.body;
-    let children     = window.children.clone();
+    let children     = window.container.children.clone();
 
     assert_eq!(children, vec![titlebar_idx, body_idx]);
 
@@ -589,8 +614,8 @@ fn create_window_wires_titlebar_title_close_and_body() {
     // Titlebar is inset from the window's edges by WINDOW_BORDER, and
     // contains the title label and close button.
     let titlebar = ui.get_node::<PanelNode>(titlebar_idx).unwrap();
-    assert!(titlebar.children.contains(&title_idx));
-    assert!(titlebar.children.contains(&close_idx));
+    assert!(titlebar.container.children.contains(&title_idx));
+    assert!(titlebar.container.children.contains(&close_idx));
     assert_eq!(titlebar.base.bounds.width, 200.0 - 2.0 * WINDOW_BORDER);
     assert_eq!(titlebar.base.bounds.height, TITLEBAR_HEIGHT);
 
@@ -773,10 +798,10 @@ fn flush_dirty_refreshes_clip_rect_on_window_drag() {
     assert_eq!(batch.clip_rect, Some(body_edges));
 }
 
-/// A `Container` nested inside a draggable window's body never gets a real
+/// A `Group` nested inside a draggable window's body never gets a real
 /// `vertex_offset` (it renders no quad of its own), so `mark_dirty` must not
 /// queue it for `refresh_batch_clip` — otherwise dragging the window would
-/// mistarget batch 0 with the container's resolved clip rect.
+/// mistarget batch 0 with the group's resolved clip rect.
 #[test]
 fn flush_dirty_skips_containers_and_does_not_clobber_unrelated_batch() {
     let mut ui = Ui::new((800.0, 600.0), test_atlas());
@@ -792,7 +817,7 @@ fn flush_dirty_skips_containers_and_does_not_clobber_unrelated_batch() {
     let body_idx = window.body;
 
     // A Container nested inside the draggable window's body.
-    let (_, container) = ui.create_container(body_idx).unwrap();
+    let (_, container) = ui.create_group(body_idx).unwrap();
     container.base.set_position(Anchor::TopLeft, 0.0, 0.0);
     container.base.set_size(50.0, 50.0);
 
@@ -836,8 +861,9 @@ fn hit_test_respects_clip_children() {
     assert_eq!(ui.tree.hit_test(95.0, 95.0, 0, &root_edges, None), Some(button_idx));
 }
 
-/// A window with `clamp_to_parent` set can't be dragged past its parent's
-/// edges: it stops flush against whichever edge the cursor overshoots.
+/// A window dragged inside a parent with `clamp_children` set can't be
+/// dragged past that parent's edges: it stops flush against whichever edge
+/// the cursor overshoots.
 #[test]
 fn window_drag_clamps_to_parent_when_set() {
     let mut ui = Ui::new((800.0, 600.0), test_atlas());
@@ -850,7 +876,7 @@ fn window_drag_clamps_to_parent_when_set() {
     inner.base.set_position(Anchor::TopLeft, 10.0, 10.0);
     inner.set_draggable(true);
 
-    ui.set_clamp_to_parent(inner_idx, true).unwrap();
+    ui.set_clamp_children(body_idx, true).unwrap();
 
     let _ = ui.flush_all();
     let body_edges = ui.node_edges(body_idx);
@@ -871,4 +897,294 @@ fn window_drag_clamps_to_parent_when_set() {
 
     let edges = ui.node_edges(inner_idx);
     assert_eq!((edges.right, edges.bottom), (body_edges.right, body_edges.bottom));
+}
+
+/// The `clip_rect` of the draw batch containing `idx`'s quad, found the same
+/// way [`flush_dirty_refreshes_clip_rect_on_window_drag`] does.
+fn batch_clip_for(ui: &Ui, idx: usize) -> Option<Edges> {
+    let quad = ui.get_node::<PanelNode>(idx).unwrap().base.vertex_offset / 4;
+    ui.batches().iter()
+        .find(|b| quad >= b.first_quad && quad < b.first_quad + b.quad_count)
+        .unwrap()
+        .clip_rect
+}
+
+/// Scrolling a panel shifts its children's resolved positions by
+/// `-scroll_offset`, while the clip rect they inherit via `clip_children`
+/// stays anchored to the panel's own unshifted bounds — content moves within
+/// a fixed viewport. `hit_test` reflects the shifted positions too.
+#[test]
+fn scroll_offset_shifts_children_within_fixed_viewport() {
+    let mut ui = Ui::new((800.0, 600.0), test_atlas());
+
+    let (p_idx, p) = ui.create_panel(0).unwrap();
+    p.base.set_position(Anchor::TopLeft, 0.0, 0.0);
+    p.base.set_size(100.0, 100.0);
+    p.enable_scroll((100.0, 200.0));
+    ui.set_clip_children(p_idx, true).unwrap();
+
+    // Two stacked children spanning the full (taller-than-viewport) content.
+    let (a_idx, a) = ui.create_panel(p_idx).unwrap();
+    a.base.set_position(Anchor::TopLeft, 0.0, 0.0);
+    a.base.set_size(100.0, 100.0);
+
+    let (b_idx, b) = ui.create_panel(p_idx).unwrap();
+    b.base.set_position(Anchor::TopLeft, 0.0, 100.0);
+    b.base.set_size(100.0, 100.0);
+
+    let _ = ui.flush_all();
+    let p_edges = ui.node_edges(p_idx);
+    let root_edges = Edges { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0 };
+
+    // Before scrolling: A fills the viewport, both clipped to P's bounds.
+    assert_eq!(ui.node_edges(a_idx), Edges { left: 0.0, right: 100.0, top: 0.0, bottom: 100.0 });
+    assert_eq!(batch_clip_for(&ui, a_idx), Some(p_edges));
+    assert_eq!(batch_clip_for(&ui, b_idx), Some(p_edges));
+    assert_eq!(ui.tree.hit_test(50.0, 50.0, 0, &root_edges, None), Some(a_idx));
+
+    // Scroll down past the max (clamped to content_size - viewport = (0, 100)).
+    let p = ui.get_node_mut::<PanelNode>(p_idx).unwrap();
+    p.scroll_by((0.0, 1000.0));
+    assert_eq!(p.scroll.as_ref().unwrap().offset, (0.0, 100.0));
+    ui.mark_dirty(p_idx);
+    let _ = ui.flush_dirty();
+
+    // A has scrolled fully out of the viewport; B now fills it.
+    assert_eq!(ui.node_edges(a_idx), Edges { left: 0.0, right: 100.0, top: -100.0, bottom: 0.0 });
+    assert_eq!(ui.node_edges(b_idx), Edges { left: 0.0, right: 100.0, top: 0.0, bottom: 100.0 });
+
+    // The viewport itself (P's edges and the inherited clip rect) hasn't moved.
+    assert_eq!(ui.node_edges(p_idx), p_edges);
+    assert_eq!(batch_clip_for(&ui, a_idx), Some(p_edges));
+    assert_eq!(batch_clip_for(&ui, b_idx), Some(p_edges));
+
+    // hit_test at the same screen point now resolves to B.
+    assert_eq!(ui.tree.hit_test(50.0, 50.0, 0, &root_edges, None), Some(b_idx));
+}
+
+/// `PanelNode::scroll_by`/`set_scroll_offset` clamp the offset to
+/// `[0, content_size - bounds.size]` per axis.
+#[test]
+fn panel_scroll_offset_clamps_to_content_size() {
+    let mut ui = Ui::new((800.0, 600.0), test_atlas());
+
+    let (p_idx, p) = ui.create_panel(0).unwrap();
+    p.base.set_size(100.0, 100.0);
+    p.enable_scroll((100.0, 250.0));
+
+    let p = ui.get_node_mut::<PanelNode>(p_idx).unwrap();
+
+    // Overshoot downward -> clamps to max_offset = content_size - bounds = (0, 150).
+    p.scroll_by((0.0, 1000.0));
+    assert_eq!(p.scroll.as_ref().unwrap().offset, (0.0, 150.0));
+
+    // Overshoot back up -> clamps to 0.
+    p.scroll_by((0.0, -1000.0));
+    assert_eq!(p.scroll.as_ref().unwrap().offset, (0.0, 0.0));
+
+    // Horizontal content_size == bounds.width -> max_offset.x is 0.
+    p.scroll_by((1000.0, 0.0));
+    assert_eq!(p.scroll.as_ref().unwrap().offset.0, 0.0);
+}
+
+/// `handle_input` routes a scroll-wheel delta to the nearest scroll-enabled
+/// ancestor of the hovered node (walking up through non-scrollable
+/// children), adding it to that panel's offset, clamped. Scrolling while
+/// hovering outside the panel is a no-op.
+#[test]
+fn handle_input_routes_scroll_to_hovered_scroll_panel() {
+    let mut ui = Ui::new((800.0, 600.0), test_atlas());
+
+    let (p_idx, p) = ui.create_panel(0).unwrap();
+    p.base.set_position(Anchor::TopLeft, 0.0, 0.0);
+    p.base.set_size(100.0, 100.0);
+    p.enable_scroll((100.0, 200.0));
+    ui.set_clip_children(p_idx, true).unwrap();
+
+    // Non-scrollable child filling the viewport - scroll input hovering over
+    // it should route up to its scrollable parent.
+    let (_child_idx, child) = ui.create_panel(p_idx).unwrap();
+    child.base.set_position(Anchor::TopLeft, 0.0, 0.0);
+    child.base.set_size(100.0, 100.0);
+
+    let _ = ui.flush_all();
+
+    // One wheel "line" with no scrollbar moves by `DEFAULT_LINE_STEP` (48px).
+    let scroll = UiInput::new((50.0, 50.0)).with_scroll_delta((0.0, 1.0));
+    ui.handle_input(&scroll).unwrap();
+    assert_eq!(ui.get_node::<PanelNode>(p_idx).unwrap().scroll.as_ref().unwrap().offset, (0.0, 48.0));
+
+    // Overshoot clamps to max_offset = content_size - bounds = (0, 100).
+    let scroll = UiInput::new((50.0, 50.0)).with_scroll_delta((0.0, 1000.0));
+    ui.handle_input(&scroll).unwrap();
+    assert_eq!(ui.get_node::<PanelNode>(p_idx).unwrap().scroll.as_ref().unwrap().offset, (0.0, 100.0));
+
+    // Scrolling while hovering outside the panel is a no-op.
+    let p = ui.get_node_mut::<PanelNode>(p_idx).unwrap();
+    p.set_scroll_offset((0.0, 0.0));
+    ui.mark_dirty(p_idx);
+    let scroll = UiInput::new((700.0, 500.0)).with_scroll_delta((0.0, 1.0));
+    ui.handle_input(&scroll).unwrap();
+    assert_eq!(ui.get_node::<PanelNode>(p_idx).unwrap().scroll.as_ref().unwrap().offset, (0.0, 0.0));
+}
+
+/// Scroll-wheel input syncs a scroll panel's [`Scroll::scrollbar`] slider:
+/// the slider's value tracks the offset along its own axis, and its thumb is
+/// re-laid-out to match.
+#[test]
+fn scroll_wheel_syncs_scrollbar_slider() {
+    let mut ui = Ui::new((800.0, 600.0), test_atlas());
+
+    let (p_idx, p) = ui.create_panel(0).unwrap();
+    p.base.set_position(Anchor::TopLeft, 0.0, 0.0);
+    p.base.set_size(100.0, 100.0);
+    p.enable_scroll((100.0, 200.0)); // max_offset = (0, 100)
+    ui.set_clip_children(p_idx, true).unwrap();
+
+    let (slider_idx, slider) = ui.create_slider(0, Axis::Vertical).unwrap();
+    slider.set_min_max(0, 100);
+
+    let p = ui.get_node_mut::<PanelNode>(p_idx).unwrap();
+    p.scroll.as_mut().unwrap().scrollbar = Some(slider_idx);
+
+    let _ = ui.flush_all();
+
+    let scroll = UiInput::new((50.0, 50.0)).with_scroll_delta((0.0, 40.0));
+    ui.handle_input(&scroll).unwrap();
+
+    assert_eq!(ui.get_node::<PanelNode>(p_idx).unwrap().scroll.as_ref().unwrap().offset, (0.0, 40.0));
+    assert_eq!(ui.get_node::<SliderNode>(slider_idx).unwrap().value, 40);
+
+    // Thumb's resolved top should reflect value=40 of [0, 100]:
+    // 0.4 * (slider_extent=200 - thumb_extent=16) = 73.6.
+    let thumb_idx = ui.get_node::<SliderNode>(slider_idx).unwrap().get_thumb().unwrap();
+    let slider_top = ui.node_edges(slider_idx).top;
+    let thumb_top  = ui.node_edges(thumb_idx).top;
+    assert_eq!(thumb_top - slider_top, 73.6);
+}
+
+/// A wheel "line" scrolls a panel by its [`Scroll::scrollbar`]'s
+/// `step_size` along that slider's axis — the same amount as one click of
+/// its step buttons (via [`Ui::step_slider`]) — rather than a fixed pixel
+/// amount.
+#[test]
+fn scroll_wheel_uses_scrollbar_step_size() {
+    let mut ui = Ui::new((800.0, 600.0), test_atlas());
+
+    let (p_idx, p) = ui.create_panel(0).unwrap();
+    p.base.set_position(Anchor::TopLeft, 0.0, 0.0);
+    p.base.set_size(100.0, 100.0);
+    p.enable_scroll((200.0, 200.0)); // max_offset = (100, 100)
+    ui.set_clip_children(p_idx, true).unwrap();
+
+    let (slider_idx, slider) = ui.create_slider(0, Axis::Vertical).unwrap();
+    slider.set_min_max(0, 100);
+    slider.step_size = 8;
+
+    let p = ui.get_node_mut::<PanelNode>(p_idx).unwrap();
+    p.scroll.as_mut().unwrap().scrollbar = Some(slider_idx);
+
+    let _ = ui.flush_all();
+
+    // One line along the scrollbar's axis moves by its step_size (8px), not
+    // the default 48px line step.
+    let scroll = UiInput::new((50.0, 50.0)).with_scroll_delta((0.0, 1.0));
+    ui.handle_input(&scroll).unwrap();
+    assert_eq!(ui.get_node::<PanelNode>(p_idx).unwrap().scroll.as_ref().unwrap().offset, (0.0, 8.0));
+
+    // The cross axis (no scrollbar on it) still uses the default 48px line step.
+    let scroll = UiInput::new((50.0, 50.0)).with_scroll_delta((1.0, 0.0));
+    ui.handle_input(&scroll).unwrap();
+    assert_eq!(ui.get_node::<PanelNode>(p_idx).unwrap().scroll.as_ref().unwrap().offset.0, 48.0);
+}
+
+/// `create_scroll_panel` lays out a content panel, scrollbar track, and
+/// dec/inc step buttons around a `viewport`, and wires them together: the
+/// content panel scrolls and clips, the scrollbar's range/thumb match
+/// `content_size`/`viewport`, and dragging either the scrollbar or the step
+/// buttons keeps the content's offset and the scrollbar's value in sync.
+#[test]
+fn create_scroll_panel_wires_content_scrollbar_and_step_buttons() {
+    let mut ui = Ui::new((800.0, 600.0), test_atlas());
+
+    let viewport = (100.0, 100.0);
+    let scrollbar_width = 20.0;
+    let content_size = (100.0, 300.0);
+    let (_, frame) = ui.create_scroll_panel(0, Axis::Vertical, viewport, scrollbar_width, content_size).unwrap();
+    // Frame = viewport plus the scrollbar's cross-axis extent.
+    assert_eq!((frame.base.bounds.width, frame.base.bounds.height), (120.0, 100.0));
+    let content_idx = frame.content_idx;
+    let scrollbar_idx = frame.scrollbar_idx;
+
+    let content = ui.get_node::<PanelNode>(content_idx).unwrap();
+    let scroll = content.scroll.as_ref().unwrap();
+    assert_eq!(scroll.content_size, content_size);
+    assert_eq!((content.base.bounds.width, content.base.bounds.height), viewport);
+    assert!(ui.tree.nodes[content_idx].clip_children());
+
+    // Thumb travel = bar_extent(100) - 2*track_padding(20+2) = 56; proportional
+    // size (56*56/300≈10.45) is below the button_size floor (20-4=16), so the
+    // thumb is floor-sized at 16.
+    let thumb_idx = ui.get_node::<SliderNode>(scrollbar_idx).unwrap().get_thumb().unwrap();
+    assert_eq!(ui.get_node::<ButtonNode>(thumb_idx).unwrap().base.bounds.height, 16.0);
+
+    // Scrolling the content clamps to max_offset (300-100=200) and syncs the scrollbar.
+    ui.set_scroll_offset(content_idx, (0.0, 1000.0)).unwrap();
+    assert_eq!(ui.get_node::<PanelNode>(content_idx).unwrap().scroll.as_ref().unwrap().offset, (0.0, 200.0));
+    assert_eq!(ui.get_node::<SliderNode>(scrollbar_idx).unwrap().value, 200);
+
+    // The decrement button sits at (102,2)-(118,18) (inset within the track's
+    // top end by padding_half=2); clicking it steps the scrollbar down by its
+    // step_size (1, the default) and pushes the new value back to the content
+    // panel via the scrollbar's `on_value_changed`.
+    let press = UiInput::new((110.0, 10.0)).with_mouse_button(MouseButton::Primary, true, true, false);
+    ui.handle_input(&press).unwrap();
+    let release = UiInput::new((110.0, 10.0)).with_mouse_button(MouseButton::Primary, false, false, true);
+    ui.handle_input(&release).unwrap();
+    assert_eq!(ui.get_node::<SliderNode>(scrollbar_idx).unwrap().value, 199);
+    assert_eq!(ui.get_node::<PanelNode>(content_idx).unwrap().scroll.as_ref().unwrap().offset, (0.0, 199.0));
+
+    // The increment button sits at (102,82)-(118,98); steps back up.
+    let press = UiInput::new((110.0, 90.0)).with_mouse_button(MouseButton::Primary, true, true, false);
+    ui.handle_input(&press).unwrap();
+    let release = UiInput::new((110.0, 90.0)).with_mouse_button(MouseButton::Primary, false, false, true);
+    ui.handle_input(&release).unwrap();
+    assert_eq!(ui.get_node::<SliderNode>(scrollbar_idx).unwrap().value, 200);
+    assert_eq!(ui.get_node::<PanelNode>(content_idx).unwrap().scroll.as_ref().unwrap().offset, (0.0, 200.0));
+}
+
+/// `resize_scroll_panel` re-derives the viewport from the frame's
+/// already-resized `base.bounds`, resizes/re-clamps the content panel's
+/// scroll offset against any new `content_size`, and recomputes the
+/// scrollbar's range and thumb size to match.
+#[test]
+fn resize_scroll_panel_reclamps_offset_and_resizes_thumb() {
+    let mut ui = Ui::new((800.0, 600.0), test_atlas());
+
+    let viewport = (100.0, 100.0);
+    let scrollbar_width = 20.0;
+    let content_size = (100.0, 300.0);
+    let (frame_idx, frame) = ui.create_scroll_panel(0, Axis::Vertical, viewport, scrollbar_width, content_size).unwrap();
+    let content_idx = frame.content_idx;
+    let scrollbar_idx = frame.scrollbar_idx;
+
+    // Scroll to the (current) max offset before resizing.
+    ui.set_scroll_offset(content_idx, (0.0, 1000.0)).unwrap();
+    assert_eq!(ui.get_node::<PanelNode>(content_idx).unwrap().scroll.as_ref().unwrap().offset, (0.0, 200.0));
+
+    // Grow the frame's overall height to 244px -> viewport.1 = 244, and grow
+    // the content to 400px tall.
+    ui.get_node_mut::<ScrollPanelNode>(frame_idx).unwrap().base.set_size(120.0, 244.0);
+    ui.resize_scroll_panel(frame_idx, (100.0, 400.0)).unwrap();
+
+    let content = ui.get_node::<PanelNode>(content_idx).unwrap();
+    assert_eq!((content.base.bounds.width, content.base.bounds.height), (100.0, 244.0));
+    // New max_offset = 400 - 244 = 156; the old offset of 200 is re-clamped.
+    assert_eq!(content.scroll.as_ref().unwrap().offset, (0.0, 156.0));
+    assert_eq!(ui.get_node::<SliderNode>(scrollbar_idx).unwrap().value, 156);
+
+    // Thumb travel = bar_extent(244) - 2*track_padding(20+2) = 200;
+    // thumb = (200*200/400).max(16) = 100.
+    let thumb_idx = ui.get_node::<SliderNode>(scrollbar_idx).unwrap().get_thumb().unwrap();
+    assert_eq!(ui.get_node::<ButtonNode>(thumb_idx).unwrap().base.bounds.height, 100.0);
 }

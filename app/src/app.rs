@@ -6,7 +6,7 @@ use cgmath::point3;
 use anyhow::Result;
 use log::*;
 use vulkanalia::vk::PresentModeKHR;
-use winit::{dpi::LogicalPosition, event::ElementState, window::{CursorGrabMode, Window}};
+use winit::{dpi::LogicalPosition, event::{ElementState, MouseScrollDelta}, window::{CursorGrabMode, Window}};
 
 use blitz::VertexAllocId;
 use ui::{CursorRequest, MouseButton, UiEvent, UiInput, UiUpdate};
@@ -79,6 +79,23 @@ impl App {
         }
     }
 
+    /// Accumulate scroll-wheel input, applied to the hovered UI scroll panel
+    /// (if any) on the next [`Self::handle_input`] tick, in wheel "lines" —
+    /// `ui::Ui::handle_input` converts a line to pixels using the panel's
+    /// scrollbar step size, so wheel-scrolling matches its step buttons. An
+    /// upward scroll (positive `y`) decreases the panel's offset, revealing
+    /// content above.
+    pub fn mouse_wheel(&mut self, delta: MouseScrollDelta) {
+        // Pixels-per-line, for normalizing trackpad `PixelDelta` events into
+        // the same "lines" unit as `LineDelta`.
+        const LINE_PX: f32 = 48.0;
+        let (dx, dy) = match delta {
+            MouseScrollDelta::LineDelta(x, y) => (x, y),
+            MouseScrollDelta::PixelDelta(p) => (p.x as f32 / LINE_PX, p.y as f32 / LINE_PX),
+        };
+        self.input.scroll((-dx, -dy));
+    }
+
     /// The currently active screen, as set by [`Screens::build`] and updated
     /// by [`ui::Ui::navigate_to`]/[`ui::Ui::navigate_to_screen`].
     fn current_screen(&self) -> Screen {
@@ -129,7 +146,8 @@ impl App {
                 self.input.is_held(Action::PrimaryAction),
                 self.input.is_pressed(Action::PrimaryAction),
                 self.input.is_released(Action::PrimaryAction),
-            );
+            )
+            .with_scroll_delta(self.input.take_scroll());
 
         if let Err(e) = self.ui.handle_input(&ui_input) {
             error!("UI input error: {e}");

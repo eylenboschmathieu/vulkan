@@ -39,6 +39,16 @@ pub struct UiInput {
     /// Text typed this frame, after keyboard-layout and modifier resolution
     /// (e.g. Shift+A -> "A").
     text: String,
+
+    /// Scroll-wheel delta for this frame, in wheel "lines" — typically ±1.0
+    /// per discrete notch from `MouseScrollDelta::LineDelta`, or a
+    /// fractional value for smooth/trackpad scrolling. Routed to the nearest
+    /// scroll-enabled ancestor of the hovered node by
+    /// [`crate::Ui::handle_input`], which converts it to pixels (using the
+    /// panel's [`crate::Scroll::scrollbar`] step size along that slider's
+    /// axis, so wheel-scrolling matches its step buttons) before adding it
+    /// to that panel's offset.
+    scroll: (f32, f32),
 }
 
 impl UiInput {
@@ -66,6 +76,12 @@ impl UiInput {
     /// Sets the text typed this frame.
     pub fn with_text(mut self, text: impl Into<String>) -> Self {
         self.text = text.into();
+        self
+    }
+
+    /// Sets the scroll-wheel delta for this frame, in wheel lines.
+    pub fn with_scroll_delta(mut self, delta: (f32, f32)) -> Self {
+        self.scroll = delta;
         self
     }
 
@@ -117,5 +133,10 @@ impl UiInput {
     /// Text typed this frame, if any.
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    /// Scroll-wheel delta for this frame, in wheel lines.
+    pub fn scroll_delta(&self) -> (f32, f32) {
+        self.scroll
     }
 }

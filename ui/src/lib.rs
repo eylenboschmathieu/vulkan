@@ -14,12 +14,23 @@ use anyhow::{anyhow, Result};
 
 pub use font::{FontAtlas, GlyphInfo};
 pub use input::{Key, MouseButton, UiInput};
-pub use nodes::{Anchor, ButtonNode, CheckboxNode, ContainerNode, LabelNode, PanelNode, SliderNode, UiNode, UiNodeVariant, WindowNode, TITLEBAR_HEIGHT, WINDOW_BORDER};
+pub use nodes::{Anchor, Axis, ButtonNode, CheckboxNode, Container, GroupNode, LabelNode, PanelNode, Scroll, ScrollPanelNode, SliderNode, UiNode, UiNodeVariant, WindowNode, TITLEBAR_HEIGHT, WINDOW_BORDER};
 pub use output::{CursorRequest, UiEvent, UiUpdate};
 pub use types::{Pos2, Rgba, Texture, TextureId, Vertex, UV};
 use layers::LayerOrder;
 use navigator::Navigator;
 use nodes::*;
+
+/// Default scroll-wheel step, in UI pixels per wheel "line", for a scroll
+/// panel's axes that aren't covered by its [`Scroll::scrollbar`] (or for
+/// panels with no scrollbar at all). See [`Ui::line_scroll_step`].
+const DEFAULT_LINE_STEP: f32 = 48.0;
+
+/// Gap, in UI pixels, kept between a scroll panel's scrollbar thumb and the
+/// track's edges: split in half for the two ends along the track's main axis
+/// (via [`SliderNode::set_track_padding`]), and used in full to shrink the
+/// thumb's cross-axis size. See [`Ui::layout_scroll_panel`].
+const SCROLLBAR_THUMB_PADDING: f32 = 4.0;
 
 #[derive(Clone, Copy)]
 pub struct Rect {
@@ -67,6 +78,11 @@ impl Edges {
             bottom: self.bottom.min(other.bottom),
         }
     }
+
+    /// Shifts all four edges by `(dx, dy)`.
+    pub fn translate(&self, dx: f32, dy: f32) -> Edges {
+        Edges { left: self.left + dx, right: self.right + dx, top: self.top + dy, bottom: self.bottom + dy }
+    }
 }
 
 /// A contiguous range of quads in the vertex buffer that share a clip rect,
@@ -92,11 +108,11 @@ pub struct UiTree {
 
 impl UiTree {
     pub fn new(width: f32, height: f32) -> Self {
-        let mut ui_parent = ContainerNode::new();
+        let mut ui_parent = GroupNode::new();
         ui_parent.base.set_size(width, height);
 
         Self {
-            nodes: vec![UiNode::Container(ui_parent)],
+            nodes: vec![UiNode::Group(ui_parent)],
         }
     }
 
@@ -150,7 +166,7 @@ impl UiTree {
     /// Returns the topmost interactive node under `(mx, my)`, or `None` if
     /// nothing is hit. For a top-level call, pass `node_idx: 0` (root) with
     /// `parent_edges` a zero-sized [`Edges`] (root has no parent to resolve
-    /// against). `Container` and `Label` nodes are transparent to input and
+    /// against). `Group` and `Label` nodes are transparent to input and
     /// never returned themselves. Recurses into `node_idx`'s children
     /// (topmost first, via [`ordered_children`](Self::ordered_children))
     /// even if the cursor is outside `node_idx`'s own bounds, since children
@@ -163,10 +179,15 @@ impl UiTree {
 
         let edges = node.base().resolve(parent_edges, &self.nodes);
 
-        let child_clip = if node.base().clip_children {
+        let child_clip = if node.clip_children() {
             Some(clip.map_or(edges, |c| c.intersect(&edges)))
         } else {
             clip
+        };
+
+        let child_edges = match node.scroll() {
+            Some(s) => edges.translate(-s.offset.0, -s.offset.1),
+            None    => edges,
         };
 
         // Recurse regardless of whether (mx, my) is within this node's own
@@ -174,7 +195,7 @@ impl UiTree {
         // rendered (unless `clip_children` says otherwise), so they shouldn't
         // be for hit-testing either.
         for child_idx in self.ordered_children(node_idx).into_iter().rev() {
-            if let Some(hit) = self.hit_test(mx, my, child_idx, &edges, child_clip) {
+            if let Some(hit) = self.hit_test(mx, my, child_idx, &child_edges, child_clip) {
                 return Some(hit);
             }
         }
@@ -184,7 +205,7 @@ impl UiTree {
 
         // Containers and labels are transparent to input
         match node {
-            UiNode::Container(_) | UiNode::Label(_) => None,
+            UiNode::Group(_) | UiNode::Label(_) => None,
             _ => Some(node_idx),
         }
     }
@@ -350,9 +371,9 @@ impl Ui {
     // Everything else — bounds, color, action, text, ... — is configured by
     // the caller afterwards through the returned node's own setters/fields.
 
-    pub fn create_container(&mut self, parent: usize) -> Result<(usize, &mut ContainerNode)> {
-        let idx = self.tree.add_child(UiNode::Container(ContainerNode::new()), parent)?;
-        let c = self.tree.get_node_mut::<ContainerNode>(idx)?;
+    pub fn create_group(&mut self, parent: usize) -> Result<(usize, &mut GroupNode)> {
+        let idx = self.tree.add_child(UiNode::Group(GroupNode::new()), parent)?;
+        let c = self.tree.get_node_mut::<GroupNode>(idx)?;
         Ok((idx, c))
     }
 
@@ -395,28 +416,23 @@ impl Ui {
         Ok((idx, c))
     }
 
-    /// Also creates the slider's thumb (panel) and value label as children
-    /// and wires their indices back into the returned `SliderNode`.
-    pub fn create_slider(&mut self, parent: usize) -> Result<(usize, &mut SliderNode)> {
-        let mut slider = SliderNode::new();
+    /// Also creates the slider's thumb (a [`ButtonNode`]) as a child and
+    /// wires its index back into the returned `SliderNode`.
+    pub fn create_slider(&mut self, parent: usize, axis: Axis) -> Result<(usize, &mut SliderNode)> {
+        let mut slider = SliderNode::new(axis);
         slider.panel.set_texture(self.solid_texture());
-        let label_text  = slider.display_text(true);
-        let label_width = self.label_width(&label_text);
         let slider_idx = self.tree.add_child(UiNode::Slider(slider), parent)?;
 
         let (thumb_idx, thumb) = self.create_button(slider_idx)?;
-        thumb.base.set_size(16.0, 32.0);
+        match axis {
+            Axis::Horizontal => thumb.base.set_size(16.0, 32.0),
+            Axis::Vertical   => thumb.base.set_size(32.0, 16.0),
+        }
         thumb.set_color(Rgba::new(0.8, 0.8, 0.8, 0.9));
         thumb.set_hover_color(Some(Rgba::new(0.3, 0.6, 1.0, 0.9)));
 
-        let (label_idx, label) = self.create_label(parent)?;
-        label.set_text(label_text);
-        label.base.set_width(label_width);
-        label.base.set_position_anchored_to(Anchor::Right, slider_idx, Anchor::Left, -8.0, 0.0);
-
         let s = self.tree.get_node_mut::<SliderNode>(slider_idx)?;
         s.set_thumb(Some(thumb_idx));
-        s.set_label(Some(label_idx));
         Ok((slider_idx, s))
     }
 
@@ -465,7 +481,7 @@ impl Ui {
         body.base.set_position(Anchor::TopLeft, WINDOW_BORDER, TITLEBAR_HEIGHT + 2.0 * WINDOW_BORDER);
         body.base.set_size(width - 2.0 * WINDOW_BORDER, height - TITLEBAR_HEIGHT - 3.0 * WINDOW_BORDER);
         body.set_color(Rgba::new(0.15, 0.15, 0.17, 0.95));
-        body.base.clip_children = true;
+        body.container.clip_children = true;
 
         let w = self.tree.get_node_mut::<WindowNode>(window_idx)?;
         w.titlebar = titlebar_idx;
@@ -473,6 +489,64 @@ impl Ui {
         w.close_button = close_idx;
         w.body = body_idx;
         Ok((window_idx, w))
+    }
+
+    /// Creates a scroll panel: a scroll-enabled content [`PanelNode`]
+    /// (`clip_children = true`), a [`SliderNode`] scrollbar, and
+    /// decrement/increment [`ButtonNode`]s, grouped under one
+    /// [`ScrollPanelNode`] so [`Ui::resize_scroll_panel`] can reposition/
+    /// resize all four together. `viewport` is the visible content area;
+    /// `content_size` is the total (virtual) content size being scrolled
+    /// over. The scrollbar's `step_size` and all colors/textures are left at
+    /// their defaults for the caller to set via the returned indices.
+    pub fn create_scroll_panel(&mut self, parent: usize, axis: Axis, viewport: (f32, f32), scrollbar_width: f32, content_size: (f32, f32)) -> Result<(usize, &mut ScrollPanelNode)> {
+        let frame_idx = self.tree.add_child(UiNode::ScrollPanel(ScrollPanelNode::new(axis, scrollbar_width, 0, 0, 0, 0)), parent)?;
+
+        let (content_idx, content) = self.create_panel(frame_idx)?;
+        content.enable_scroll(content_size);
+        self.set_clip_children(content_idx, true)?;
+
+        let (scrollbar_idx, _) = self.create_slider(frame_idx, axis)?;
+
+        let (dec_idx, dec) = self.create_button(frame_idx)?;
+        dec.set_color(Rgba::new(0.8, 0.8, 0.8, 0.9));
+        dec.set_hover_color(Some(Rgba::new(0.3, 0.6, 1.0, 0.9)));
+        dec.interaction.on_release = Some(Box::new(move |ui: &mut Ui| {
+            let _ = ui.step_slider(scrollbar_idx, false);
+        }));
+
+        let (inc_idx, inc) = self.create_button(frame_idx)?;
+        inc.set_color(Rgba::new(0.8, 0.8, 0.8, 0.9));
+        inc.set_hover_color(Some(Rgba::new(0.3, 0.6, 1.0, 0.9)));
+        inc.interaction.on_release = Some(Box::new(move |ui: &mut Ui| {
+            let _ = ui.step_slider(scrollbar_idx, true);
+        }));
+
+        if let Some(scroll) = &mut self.get_node_mut::<PanelNode>(content_idx)?.scroll {
+            scroll.scrollbar = Some(scrollbar_idx);
+        }
+        self.get_node_mut::<SliderNode>(scrollbar_idx)?.on_value_changed = Some(Box::new(move |ui: &mut Ui| {
+            let value = ui.get_node::<SliderNode>(scrollbar_idx).map(|s| s.value).unwrap_or(0);
+            let offset = match axis {
+                Axis::Horizontal => (value as f32, 0.0),
+                Axis::Vertical   => (0.0, value as f32),
+            };
+            let _ = ui.set_scroll_offset(content_idx, offset);
+        }));
+
+        let frame_size = match axis {
+            Axis::Vertical   => (viewport.0 + scrollbar_width, viewport.1),
+            Axis::Horizontal => (viewport.0, viewport.1 + scrollbar_width),
+        };
+        let frame = self.get_node_mut::<ScrollPanelNode>(frame_idx)?;
+        frame.base.set_size(frame_size.0, frame_size.1);
+        frame.content_idx = content_idx;
+        frame.scrollbar_idx = scrollbar_idx;
+        frame.dec_idx = dec_idx;
+        frame.inc_idx = inc_idx;
+
+        self.layout_scroll_panel(frame_idx, content_size)?;
+        Ok((frame_idx, self.get_node_mut::<ScrollPanelNode>(frame_idx)?))
     }
 
     /// The number of quads in the vertex buffer produced by the last
@@ -559,14 +633,19 @@ impl Ui {
                         push_batch(&mut batches, clip, quad_start, 1);
                     }
 
-                    let child_clip = if self.tree.nodes[node_idx].base().clip_children {
+                    let child_clip = if self.tree.nodes[node_idx].clip_children() {
                         Some(clip.map_or(e, |c| c.intersect(&e)))
                     } else {
                         clip
                     };
 
+                    let child_edges = match self.tree.nodes[node_idx].scroll() {
+                        Some(s) => e.translate(-s.offset.0, -s.offset.1),
+                        None    => e,
+                    };
+
                     for child_idx in self.tree.ordered_children(node_idx).into_iter().rev() {
-                        stack.push((child_idx, e, child_clip));
+                        stack.push((child_idx, child_edges, child_clip));
                     }
                 }
             }
@@ -639,7 +718,13 @@ impl Ui {
     fn node_edges(&self, node_idx: usize) -> Edges {
         let node = &self.tree.nodes[node_idx];
         let parent_edges = match node.base().parent {
-            Some(p) => self.node_edges(p),
+            Some(p) => {
+                let edges = self.node_edges(p);
+                match self.tree.nodes[p].scroll() {
+                    Some(s) => edges.translate(-s.offset.0, -s.offset.1),
+                    None    => edges,
+                }
+            }
             None    => Edges { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0 },
         };
         node.base().resolve(&parent_edges, &self.tree.nodes)
@@ -651,7 +736,7 @@ impl Ui {
     fn node_resolved_clip(&self, node_idx: usize) -> Option<Edges> {
         let parent = self.tree.nodes[node_idx].base().parent?;
         let parent_clip = self.node_resolved_clip(parent);
-        if self.tree.nodes[parent].base().clip_children {
+        if self.tree.nodes[parent].clip_children() {
             let parent_edges = self.node_edges(parent);
             Some(parent_clip.map_or(parent_edges, |c| c.intersect(&parent_edges)))
         } else {
@@ -677,7 +762,7 @@ impl Ui {
     }
 
     /// Sums glyph advances to get the rendered width of `text`.
-    fn label_width(&self, text: &str) -> f32 {
+    pub fn label_width(&self, text: &str) -> f32 {
         text.chars().map(|c| self.font_atlas.glyphs.get(&c).map_or(8.0, |g| g.advance)).sum()
     }
 
@@ -704,17 +789,47 @@ impl Ui {
         }
     }
 
+    /// Walks up from `idx` (inclusive) to the nearest ancestor with
+    /// scrolling enabled, for routing scroll-wheel input to the right panel.
+    fn scrollable_ancestor(&self, idx: usize) -> Option<usize> {
+        let mut current = idx;
+        loop {
+            if self.tree.nodes[current].scroll().is_some() {
+                return Some(current);
+            }
+            current = self.tree.nodes[current].base().parent?;
+        }
+    }
+
+    /// The pixel distance to scroll `scroll_idx` per wheel "line", per axis.
+    /// If it has a [`Scroll::scrollbar`], that slider's `step_size` applies
+    /// along the slider's own [`Axis`] — so wheel-scrolling moves it by the
+    /// same amount as one click of its step buttons. The other axis (and
+    /// panels without a scrollbar) fall back to [`DEFAULT_LINE_STEP`].
+    fn line_scroll_step(&self, scroll_idx: usize) -> (f32, f32) {
+        let scrollbar = self.tree.nodes[scroll_idx].scroll().and_then(|s| s.scrollbar);
+        match scrollbar.and_then(|idx| self.tree.get_node::<SliderNode>(idx).ok()) {
+            Some(s) => match s.axis() {
+                Axis::Horizontal => (s.step_size as f32, DEFAULT_LINE_STEP),
+                Axis::Vertical   => (DEFAULT_LINE_STEP, s.step_size as f32),
+            },
+            None => (DEFAULT_LINE_STEP, DEFAULT_LINE_STEP),
+        }
+    }
+
     /// Marks `idx` and, recursively, all of its descendants dirty for the
     /// next [`flush_dirty`](Self::flush_dirty) patch. Used when a node's
     /// position changes in a way that shifts every descendant's resolved
-    /// edges (e.g. dragging a window).
+    /// edges (e.g. dragging a window, or scrolling via
+    /// [`PanelNode::set_scroll_offset`]/[`PanelNode::scroll_by`] — call this
+    /// after mutating a fetched panel's scroll offset directly).
     ///
-    /// Nodes that don't occupy a vertex slot of their own (`Container`s,
+    /// Nodes that don't occupy a vertex slot of their own (`Group`s,
     /// whose `render_data` is `None`) are skipped: their `vertex_offset`
     /// stays at its default `0`, so [`refresh_batch_clip`](Self::refresh_batch_clip)
     /// would mistarget batch `0` for them. Their children are still
     /// recursed into and added if those render their own quad.
-    fn mark_dirty(&mut self, idx: usize) {
+    pub fn mark_dirty(&mut self, idx: usize) {
         if matches!(self.tree.nodes[idx], UiNode::Label(_)) || self.render_data(idx).is_some() {
             self.dirty_nodes.push(idx);
         }
@@ -725,59 +840,188 @@ impl Ui {
     }
 
     /// Sets whether `idx`'s children (and their whole subtrees) are clipped
-    /// to `idx`'s resolved bounds; see [`NodeBase::clip_children`]. Changes
-    /// draw-batch boundaries, so marks the whole tree dirty for the next
-    /// [`flush_all`](Self::flush_all).
+    /// to `idx`'s resolved bounds; see [`UiNode::clip_children`]. Only valid
+    /// for container-like nodes (`Group`, `Panel`, `ScrollPanel`, `Window`).
+    /// Changes draw-batch boundaries, so marks the whole tree dirty for the
+    /// next [`flush_all`](Self::flush_all).
     pub fn set_clip_children(&mut self, idx: usize, clip: bool) -> Result<()> {
-        self.tree.nodes.get_mut(idx)
-            .ok_or_else(|| anyhow!("UI node index {idx} out of bounds"))?
-            .base_mut().clip_children = clip;
+        let node = self.tree.nodes.get_mut(idx)
+            .ok_or_else(|| anyhow!("UI node index {idx} out of bounds"))?;
+        *node.clip_children_mut()
+            .ok_or_else(|| anyhow!("UI node {idx} cannot clip children"))? = clip;
         self.dirty = true;
         Ok(())
     }
 
-    /// Sets whether dragging `idx` clamps its position so its resolved edges
-    /// stay within its parent's resolved edges; see [`NodeBase::clamp_to_parent`].
-    pub fn set_clamp_to_parent(&mut self, idx: usize, clamp: bool) -> Result<()> {
-        self.tree.nodes.get_mut(idx)
-            .ok_or_else(|| anyhow!("UI node index {idx} out of bounds"))?
-            .base_mut().clamp_to_parent = clamp;
+    /// Sets whether dragging one of `idx`'s children clamps its position so
+    /// its resolved edges stay within `idx`'s resolved edges; see
+    /// [`UiNode::clamp_children`]. Only valid for container-like nodes
+    /// (`Group`, `Panel`, `ScrollPanel`, `Window`).
+    pub fn set_clamp_children(&mut self, idx: usize, clamp: bool) -> Result<()> {
+        let node = self.tree.nodes.get_mut(idx)
+            .ok_or_else(|| anyhow!("UI node index {idx} out of bounds"))?;
+        *node.clamp_children_mut()
+            .ok_or_else(|| anyhow!("UI node {idx} cannot clamp children"))? = clamp;
         Ok(())
     }
 
-    /// Repositions the thumb and refreshes the value label to match the
-    /// slider's current value. Marks both as dirty for re-rendering. Hosts
-    /// call this after changing a slider's value or range from their own code
-    /// (e.g. an `on_show` callback that re-syncs the slider to external state).
+    /// Repositions the thumb to match the slider's current value, and
+    /// resizes the step buttons (if any) to stay square with the track's
+    /// current cross-axis extent. Marks them dirty for re-rendering. Hosts
+    /// call this after changing a slider's value, range, or track size from
+    /// their own code (e.g. an `on_show` callback that re-syncs the slider to
+    /// external state, or after resizing the track set up by
+    /// [`Ui::create_slider`]).
     pub fn layout_slider(&mut self, slider_idx: usize) -> Result<()> {
-        let (thumb_idx, label_idx) = {
+        let (thumb_idx, axis) = {
             let s = self.tree.get_node::<SliderNode>(slider_idx)?;
-            (s.get_thumb(), s.get_label())
+            (s.get_thumb(), s.axis())
         };
 
-        let right_aligned = label_idx
-            .map(|idx| self.tree.nodes[idx].base().anchoring.src.is_right())
-            .unwrap_or(true);
-        let text = self.tree.get_node::<SliderNode>(slider_idx)?.display_text(right_aligned);
-
         if let Some(thumb_idx) = thumb_idx {
-            let thumb_width = self.tree.nodes[thumb_idx].base().bounds.width;
-            let x_offset = {
+            let thumb_extent = match axis {
+                Axis::Horizontal => self.tree.nodes[thumb_idx].base().bounds.width,
+                Axis::Vertical   => self.tree.nodes[thumb_idx].base().bounds.height,
+            };
+            let offset = {
                 let s = self.tree.get_node::<SliderNode>(slider_idx)?;
-                s.thumb_offset(thumb_width)
+                s.thumb_offset(thumb_extent)
             };
             let thumb = self.tree.get_node_mut::<ButtonNode>(thumb_idx)?;
-            thumb.base.set_position(Anchor::Left, x_offset, 0.0);
+            match axis {
+                Axis::Horizontal => thumb.base.set_position(Anchor::Left, offset, 0.0),
+                Axis::Vertical   => thumb.base.set_position(Anchor::Top, 0.0, offset),
+            }
             self.dirty_nodes.push(thumb_idx);
         }
 
-        if let Some(label_idx) = label_idx {
-            let width = self.label_width(&text);
-            self.set_label_text(label_idx, text)?;
-            self.tree.get_node_mut::<LabelNode>(label_idx)?.base.set_width(width);
+        Ok(())
+    }
+
+    /// After `scroll_idx`'s offset changes via scroll-wheel input, syncs its
+    /// [`Scroll::scrollbar`] slider (if any) to match: sets the slider's
+    /// value to the offset component along the slider's own [`Axis`], and
+    /// re-lays-out its thumb. A no-op if scrolling isn't enabled or no
+    /// scrollbar is set.
+    fn sync_scrollbar(&mut self, scroll_idx: usize) -> Result<()> {
+        let Some(scroll) = self.tree.nodes[scroll_idx].scroll() else { return Ok(()) };
+        let Some(slider_idx) = scroll.scrollbar else { return Ok(()) };
+        let offset = scroll.offset;
+
+        let axis = self.tree.get_node::<SliderNode>(slider_idx)?.axis();
+        let value = match axis {
+            Axis::Horizontal => offset.0,
+            Axis::Vertical   => offset.1,
+        };
+
+        let s = self.tree.get_node_mut::<SliderNode>(slider_idx)?;
+        s.set_value(value.round() as u32);
+        self.layout_slider(slider_idx)
+    }
+
+    /// Lays out a [`ScrollPanelNode`]'s content panel, scrollbar track, and
+    /// step buttons for the given `content_size`, deriving the viewport from
+    /// the frame's current `base.bounds` minus its (fixed) `scrollbar_width`
+    /// along `axis`. Shared by [`Ui::create_scroll_panel`] and
+    /// [`Ui::resize_scroll_panel`].
+    fn layout_scroll_panel(&mut self, frame_idx: usize, content_size: (f32, f32)) -> Result<()> {
+        let (axis, scrollbar_width, content_idx, scrollbar_idx, dec_idx, inc_idx, frame_size) = {
+            let f = self.get_node::<ScrollPanelNode>(frame_idx)?;
+            (f.axis, f.scrollbar_width, f.content_idx, f.scrollbar_idx, f.dec_idx, f.inc_idx, (f.base.bounds.width, f.base.bounds.height))
+        };
+
+        let viewport = match axis {
+            Axis::Vertical   => (frame_size.0 - scrollbar_width, frame_size.1),
+            Axis::Horizontal => (frame_size.0, frame_size.1 - scrollbar_width),
+        };
+
+        let content = self.get_node_mut::<PanelNode>(content_idx)?;
+        content.base.bounds = Rect { x: 0.0, y: 0.0, width: viewport.0, height: viewport.1 };
+        content.set_content_size(content_size);
+
+        // The track spans the full main-axis extent; the dec/inc buttons sit
+        // on top of its two ends (drawn after it, so already on top), inset
+        // by half the thumb padding so the track's color frames them the
+        // same way it frames the thumb.
+        let track_bounds = match axis {
+            Axis::Vertical   => Rect { x: viewport.0, y: 0.0, width: scrollbar_width, height: viewport.1 },
+            Axis::Horizontal => Rect { x: 0.0, y: viewport.1, width: viewport.0, height: scrollbar_width },
+        };
+        self.get_node_mut::<SliderNode>(scrollbar_idx)?.panel.base.bounds = track_bounds;
+
+        let padding_half = SCROLLBAR_THUMB_PADDING / 2.0;
+        let button_size  = (scrollbar_width - SCROLLBAR_THUMB_PADDING).max(0.0);
+        self.get_node_mut::<ButtonNode>(dec_idx)?.base.set_size(button_size, button_size);
+        self.get_node_mut::<ButtonNode>(inc_idx)?.base.set_size(button_size, button_size);
+        match axis {
+            Axis::Vertical => {
+                self.get_node_mut::<ButtonNode>(dec_idx)?.base.set_position_anchored_to(Anchor::Top, scrollbar_idx, Anchor::Top, 0.0, padding_half);
+                self.get_node_mut::<ButtonNode>(inc_idx)?.base.set_position_anchored_to(Anchor::Bottom, scrollbar_idx, Anchor::Bottom, 0.0, -padding_half);
+            }
+            Axis::Horizontal => {
+                self.get_node_mut::<ButtonNode>(dec_idx)?.base.set_position_anchored_to(Anchor::Left, scrollbar_idx, Anchor::Left, padding_half, 0.0);
+                self.get_node_mut::<ButtonNode>(inc_idx)?.base.set_position_anchored_to(Anchor::Right, scrollbar_idx, Anchor::Right, -padding_half, 0.0);
+            }
         }
 
-        Ok(())
+        let (bar_extent, content_extent, viewport_extent) = match axis {
+            Axis::Vertical   => (track_bounds.height, content_size.1, viewport.1),
+            Axis::Horizontal => (track_bounds.width, content_size.0, viewport.0),
+        };
+        let max_offset = (content_extent - viewport_extent).max(0.0);
+        // Keep the thumb's travel clear of the dec/inc buttons' slots
+        // (`scrollbar_width` each) plus the same small gap used elsewhere.
+        let track_padding = scrollbar_width + padding_half;
+        let scrollbar = self.get_node_mut::<SliderNode>(scrollbar_idx)?;
+        scrollbar.set_min_max(0, max_offset.round() as u32);
+        scrollbar.set_track_padding(track_padding);
+
+        if let Some(thumb_idx) = self.get_node::<SliderNode>(scrollbar_idx)?.get_thumb() {
+            let usable_extent = (bar_extent - 2.0 * track_padding).max(0.0);
+            let thumb_extent = (usable_extent * usable_extent / content_extent.max(1.0)).max(button_size);
+            let thumb = self.get_node_mut::<ButtonNode>(thumb_idx)?;
+            match axis {
+                Axis::Vertical   => { thumb.base.set_height(thumb_extent); thumb.base.set_width(button_size); }
+                Axis::Horizontal => { thumb.base.set_width(thumb_extent); thumb.base.set_height(button_size); }
+            }
+        }
+
+        self.mark_dirty(frame_idx);
+        self.sync_scrollbar(content_idx)
+    }
+
+    /// Re-lays-out a scroll panel's content/scrollbar/step buttons after its
+    /// overall size has changed via `frame.base.set_size(...)` (the normal
+    /// [`NodeBase::set_size`] resize API — there's no scroll-panel-specific
+    /// size setter) and/or its `content_size` has changed. Re-derives the
+    /// viewport from the frame's (already-updated) `base.bounds` and its
+    /// fixed `scrollbar_width`, resizes/re-clamps the content panel,
+    /// repositions the scrollbar track and step buttons, and recomputes the
+    /// scrollbar's range and thumb size.
+    pub fn resize_scroll_panel(&mut self, frame_idx: usize, content_size: (f32, f32)) -> Result<()> {
+        self.layout_scroll_panel(frame_idx, content_size)
+    }
+
+    /// Sets a scroll panel's offset (see [`PanelNode::set_scroll_offset`]),
+    /// then marks it dirty for the next [`flush_dirty`](Self::flush_dirty)
+    /// and syncs its [`Scroll::scrollbar`] (if any) to match. Hosts should
+    /// call this instead of mutating a fetched [`PanelNode`]'s scroll state
+    /// directly, so the dirty-marking and scrollbar sync can't be forgotten.
+    pub fn set_scroll_offset(&mut self, idx: usize, offset: (f32, f32)) -> Result<()> {
+        let panel = self.tree.get_node_mut::<PanelNode>(idx)?;
+        panel.set_scroll_offset(offset);
+        self.mark_dirty(idx);
+        self.sync_scrollbar(idx)
+    }
+
+    /// Adjusts a scroll panel's offset by `(dx, dy)`, clamped (see
+    /// [`PanelNode::scroll_by`]). See [`Ui::set_scroll_offset`] re:
+    /// dirty-marking and scrollbar sync.
+    pub fn scroll_by(&mut self, idx: usize, delta: (f32, f32)) -> Result<()> {
+        let panel = self.tree.get_node_mut::<PanelNode>(idx)?;
+        panel.scroll_by(delta);
+        self.mark_dirty(idx);
+        self.sync_scrollbar(idx)
     }
 
     /// Replaces a label's text, marking it dirty for an in-place
@@ -817,25 +1061,78 @@ impl Ui {
     }
 
     /// Recomputes the slider's value from the cursor position relative to
-    /// where the drag started, then re-lays-out the thumb and label.
+    /// where the drag started, then re-lays-out the thumb. Fires
+    /// `on_value_changed` if the value changed.
     fn drag_slider(&mut self, slider_idx: usize, cursor: (f32, f32)) -> Result<()> {
-        let new_value = {
+        let (new_value, old_value) = {
             let s = self.tree.get_node::<SliderNode>(slider_idx)?;
-            let thumb_width = s.get_thumb().map_or(0.0, |idx| self.tree.nodes[idx].base().bounds.width);
-            s.value_from_drag(cursor, thumb_width)
+            let thumb_extent = s.get_thumb().map_or(0.0, |idx| match s.axis() {
+                Axis::Horizontal => self.tree.nodes[idx].base().bounds.width,
+                Axis::Vertical   => self.tree.nodes[idx].base().bounds.height,
+            });
+            (s.value_from_drag(cursor, thumb_extent), s.value)
         };
 
         let s = self.tree.get_node_mut::<SliderNode>(slider_idx)?;
         s.set_value(new_value);
 
-        self.layout_slider(slider_idx)
+        self.layout_slider(slider_idx)?;
+
+        if self.tree.get_node::<SliderNode>(slider_idx)?.value != old_value {
+            self.fire_slider_value_changed(slider_idx)?;
+        }
+
+        Ok(())
+    }
+
+    /// Adjusts a slider's value by one [`SliderNode::step_size`] — up if
+    /// `increase`, down otherwise — then re-lays-out the thumb and fires
+    /// `on_value_changed` if the value changed. Wired to a scroll panel's
+    /// dec/inc buttons (see [`Ui::create_scroll_panel`]); also callable
+    /// directly by hosts, e.g. for keyboard shortcuts.
+    pub fn step_slider(&mut self, slider_idx: usize, increase: bool) -> Result<()> {
+        let (new_value, old_value) = {
+            let s = self.tree.get_node::<SliderNode>(slider_idx)?;
+            let old = s.value;
+            let new = if increase {
+                old.saturating_add(s.step_size)
+            } else {
+                old.saturating_sub(s.step_size)
+            };
+            (new, old)
+        };
+
+        let s = self.tree.get_node_mut::<SliderNode>(slider_idx)?;
+        s.set_value(new_value);
+
+        self.layout_slider(slider_idx)?;
+
+        if self.tree.get_node::<SliderNode>(slider_idx)?.value != old_value {
+            self.fire_slider_value_changed(slider_idx)?;
+        }
+
+        Ok(())
+    }
+
+    /// Like [`fire_callback`](Self::fire_callback), but for
+    /// [`SliderNode::on_value_changed`]. Fired by [`drag_slider`](Self::drag_slider)
+    /// and the track-click handler in [`handle_input`](Self::handle_input)
+    /// when an interactive change actually moves the value.
+    fn fire_slider_value_changed(&mut self, slider_idx: usize) -> Result<()> {
+        let UiNode::Slider(s) = &mut self.tree.nodes[slider_idx] else { return Ok(()) };
+        let Some(mut callback) = s.on_value_changed.take() else { return Ok(()) };
+        callback(self);
+        let UiNode::Slider(s) = &mut self.tree.nodes[slider_idx] else { unreachable!() };
+        s.on_value_changed = Some(callback);
+        Ok(())
     }
 
     /// Repositions a window by the cursor's delta from where the drag
     /// started, then marks the window and its whole subtree dirty so every
-    /// descendant's quad is repatched at its new resolved position. If
-    /// [`NodeBase::clamp_to_parent`] is set, the new position is clamped so
-    /// the window's resolved edges stay within its parent's resolved edges.
+    /// descendant's quad is repatched at its new resolved position. If the
+    /// window's parent has [`UiNode::clamp_children`] set, the new position
+    /// is clamped so the window's resolved edges stay within its parent's
+    /// resolved edges.
     fn drag_window(&mut self, window_idx: usize, cursor: (f32, f32)) -> Result<()> {
         let w = self.tree.get_node_mut::<WindowNode>(window_idx)?;
         let dx = cursor.0 - w.drag.start_cursor.0;
@@ -843,7 +1140,8 @@ impl Ui {
         w.base.bounds.x = w.drag.start_pos.0 + dx;
         w.base.bounds.y = w.drag.start_pos.1 + dy;
 
-        if self.tree.nodes[window_idx].base().clamp_to_parent {
+        let parent = self.tree.nodes[window_idx].base().parent;
+        if parent.is_some_and(|p| self.tree.nodes[p].clamp_children()) {
             self.clamp_to_parent(window_idx);
         }
 
@@ -1021,11 +1319,11 @@ impl Ui {
             .ok_or_else(|| anyhow!("navigation not initialized for this screen type"))
     }
 
-    /// Associates `screen` with the Container/Panel node `idx`, so
+    /// Associates `screen` with the Group/Panel node `idx`, so
     /// [`navigate_to_screen`](Self::navigate_to_screen) can show/hide it.
     pub fn register_screen<S: Copy + Eq + Hash + 'static>(&mut self, screen: S, idx: usize) -> Result<()> {
-        if !matches!(self.tree.nodes.get(idx), Some(UiNode::Container(_) | UiNode::Panel(_))) {
-            return Err(anyhow!("navigation target {idx} is not a Container or Panel"));
+        if !matches!(self.tree.nodes.get(idx), Some(UiNode::Group(_) | UiNode::Panel(_))) {
+            return Err(anyhow!("navigation target {idx} is not a Group or Panel"));
         }
         self.navigator_mut::<S>()?.screens.insert(screen, idx);
         Ok(())
@@ -1084,7 +1382,7 @@ impl Ui {
             .ok_or_else(|| anyhow!("layer ordering already initialized for a different layer type"))
     }
 
-    /// Assigns the Container/Panel/Slider node `idx` (a direct child of the
+    /// Assigns the Group/Panel/Slider node `idx` (a direct child of the
     /// root) to `layer`'s band. Bands are assigned in registration order:
     /// the first distinct `layer` value seen across all `register_layer`
     /// calls becomes band `0` (bottom-most), the next becomes `1`, and so
@@ -1193,6 +1491,15 @@ impl Ui {
             self.hovered_node = hit;
         }
 
+        let scroll_delta = input.scroll_delta();
+        if scroll_delta != (0.0, 0.0)
+            && let Some(hovered) = self.hovered_node
+            && let Some(scroll_idx) = self.scrollable_ancestor(hovered)
+        {
+            let (step_x, step_y) = self.line_scroll_step(scroll_idx);
+            self.scroll_by(scroll_idx, (scroll_delta.0 * step_x, scroll_delta.1 * step_y))?;
+        }
+
         match hit {
             Some(idx) => {
                 if input.primary_pressed() {
@@ -1211,15 +1518,27 @@ impl Ui {
                         // Clicking the track itself (not the thumb) jumps the
                         // value to the clicked position before the drag starts.
                         if idx == slider_idx {
-                            let new_value = {
+                            let (new_value, old_value) = {
                                 let s = self.tree.get_node::<SliderNode>(slider_idx)?;
-                                let thumb_width = s.get_thumb().map_or(0.0, |t| self.tree.nodes[t].base().bounds.width);
-                                let local_x = cursor.0 - self.node_edges(slider_idx).left;
-                                s.value_from_track_position(local_x, thumb_width)
+                                let axis = s.axis();
+                                let thumb_extent = s.get_thumb().map_or(0.0, |t| match axis {
+                                    Axis::Horizontal => self.tree.nodes[t].base().bounds.width,
+                                    Axis::Vertical   => self.tree.nodes[t].base().bounds.height,
+                                });
+                                let edges = self.node_edges(slider_idx);
+                                let local_pos = match axis {
+                                    Axis::Horizontal => cursor.0 - edges.left,
+                                    Axis::Vertical   => cursor.1 - edges.top,
+                                };
+                                (s.value_from_track_position(local_pos, thumb_extent), s.value)
                             };
                             let s = self.tree.get_node_mut::<SliderNode>(slider_idx)?;
                             s.set_value(new_value);
                             self.layout_slider(slider_idx)?;
+
+                            if self.tree.get_node::<SliderNode>(slider_idx)?.value != old_value {
+                                self.fire_slider_value_changed(slider_idx)?;
+                            }
                         }
 
                         let s = self.tree.get_node_mut::<SliderNode>(slider_idx)?;

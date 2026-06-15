@@ -5,7 +5,7 @@ use std::{cell::Cell, rc::Rc};
 use anyhow::Result;
 use log::error;
 
-use ui::{Anchor, CheckboxNode, ContainerNode, CursorRequest, LabelNode, PanelNode, Rect, Rgba, SliderNode, Ui};
+use ui::{Anchor, Axis, CheckboxNode, CursorRequest, GroupNode, LabelNode, PanelNode, Rect, Rgba, SliderNode, Ui};
 
 const HOTBAR_SLOTS:       usize = 10;
 const SLOT_SIZE:          f32   = 48.0;
@@ -124,6 +124,7 @@ impl Screens {
         let button_color       = Rgba::new(0.5, 0.5, 0.5, 0.4);
         let button_hover_color = Rgba::new(0.65, 0.65, 0.65, 0.5);
         let row_color          = Rgba::new(0.0, 0.0, 0.0, 0.2);
+        let scrollbar_color    = Rgba::new(0.35, 0.45, 0.55, 0.6);
         let panel_w            = screen_size.0 / 2.0;
         let menu_rect          = Rect { x: 0.0, y: 0.0, width: panel_w, height: screen_size.1 };
 
@@ -235,15 +236,16 @@ impl Screens {
         label.base.set_position(Anchor::Left, 8.0, 0.0);
 
         // Manual clamp test: a window nested inside Window B's body, small
-        // enough to fit within the body's bounds. `clamp_to_parent` keeps it
-        // fully inside the body while dragging, instead of letting it overflow
-        // (and get clipped) like the "Nested" window in Window A.
-        let (clamped_idx, clamped) = ui.create_window(body_b_idx, 110.0, 90.0)?;
+        // enough to fit within the body's bounds. `clamp_children` on the
+        // body keeps it fully inside the body while dragging, instead of
+        // letting it overflow (and get clipped) like the "Nested" window in
+        // Window A.
+        let (_clamped_idx, clamped) = ui.create_window(body_b_idx, 110.0, 90.0)?;
         clamped.base.set_position(Anchor::TopLeft, 20.0, 30.0);
         clamped.set_draggable(true);
         let clamped_title_idx = clamped.title;
         ui.get_node_mut::<LabelNode>(clamped_title_idx)?.set_text("Clamped");
-        ui.set_clamp_to_parent(clamped_idx, true)?;
+        ui.set_clamp_children(body_b_idx, true)?;
 
         // Registration order sets the initial z-order: B starts on top of A.
         ui.register_orderable(win_a_idx)?;
@@ -306,11 +308,24 @@ impl Screens {
         label.set_text("Framerate");
         label.base.set_position(Anchor::Left, 8.0, 0.0);
 
-        let (fps_slider_idx, slider) = ui.create_slider(slider_row_idx)?;
+        let (fps_slider_idx, slider) = ui.create_slider(slider_row_idx, Axis::Horizontal)?;
         slider.panel.base.set_position(Anchor::Right, -8.0, 0.0);
         slider.set_min_max(60, 999);
         slider.step_size = 8;
         slider.set_value(initial.fps_cap);
+
+        let fps_label_text  = format!("{:>3}", initial.fps_cap);
+        let fps_label_width = ui.label_width(&fps_label_text);
+        let (fps_label_idx, label) = ui.create_label(slider_row_idx)?;
+        label.set_text(fps_label_text);
+        label.base.set_width(fps_label_width);
+        label.base.set_position_anchored_to(Anchor::Right, fps_slider_idx, Anchor::Left, -8.0, 0.0);
+
+        ui.get_node_mut::<SliderNode>(fps_slider_idx)?.on_value_changed = Some(Box::new(move |ui: &mut Ui| {
+            let value = ui.get_node::<SliderNode>(fps_slider_idx).map(|s| s.value).unwrap_or(60);
+            let _ = ui.set_label_text(fps_label_idx, format!("{value:>3}"));
+        }));
+
         ui.layout_slider(fps_slider_idx)?;
 
         let (accept_idx, btn) = ui.create_button(sys_idx)?;
@@ -357,6 +372,8 @@ impl Screens {
                 if let Ok(slider) = ui.get_node_mut::<SliderNode>(fps_slider_idx) {
                     slider.set_value(s.fps_cap);
                 }
+                let fps_value = ui.get_node::<SliderNode>(fps_slider_idx).map(|s| s.value).unwrap_or(s.fps_cap);
+                let _ = ui.set_label_text(fps_label_idx, format!("{fps_value:>3}"));
                 let _ = ui.layout_slider(fps_slider_idx);
             }
         }));
@@ -383,8 +400,40 @@ impl Screens {
         label.set_text("Back");
         label.base.set_position(Anchor::Left, 10.0, 0.0);
 
+        // Scrollable list of keybind rows (placeholder labels for now, until
+        // actual action-to-button bindings land here), with a vertical
+        // scrollbar wired to the same scroll offset. Each row sits in a
+        // (row_height + row_offset) "slot", with row_offset / 2 of leading
+        // margin before the first row (and trailing margin after the last) -
+        // so scrolling by one slot per step always re-aligns the next row's
+        // top with that same leading margin from the panel's top.
+        let row_height      = ui.font_atlas.cap_height;
+        let row_offset      = 16.0;
+        let row_pitch       = row_height + row_offset;
+        let row_count       = 24;
+        let visible_rows    = 14;
+        let viewport        = (400.0, visible_rows as f32 * row_pitch);
+        let content_h       = row_count as f32 * row_pitch;
+        let scrollbar_width = 24.0;
+
+        let (_, frame) = ui.create_scroll_panel(keybind_idx, Axis::Vertical, viewport, scrollbar_width, (viewport.0, content_h))?;
+        frame.base.set_position(Anchor::TopLeft, 64.0, 264.0);
+        let keybind_list_idx = frame.content_idx;
+        let scrollbar_idx    = frame.scrollbar_idx;
+
+        ui.get_node_mut::<PanelNode>(keybind_list_idx)?.set_color(row_color);
+        let scrollbar = ui.get_node_mut::<SliderNode>(scrollbar_idx)?;
+        scrollbar.set_color(scrollbar_color);
+        scrollbar.step_size = row_pitch.round() as u32;
+
+        for i in 0..row_count {
+            let (_, label) = ui.create_label(keybind_list_idx)?;
+            label.set_text(format!("Action {}", i + 1));
+            label.base.set_position(Anchor::TopLeft, 8.0, row_offset / 2.0 + i as f32 * row_pitch);
+        }
+
         // ── World UI ─────────────────────────────────────────────────────────
-        let (world_idx, world) = ui.create_container(0)?;
+        let (world_idx, world) = ui.create_group(0)?;
         world.base.set_size(screen_size.0, screen_size.1);
         world.base.visible = false;
         ui.register_screen(Screen::World, world_idx)?;
@@ -421,14 +470,14 @@ impl Screens {
         // cursor whenever it becomes active and free it (restoring to
         // screen-center, captured once here) whenever it's left.
         let mouse_center = (screen_size.0 / 2.0, screen_size.1 / 2.0);
-        let world_node = ui.get_node_mut::<ContainerNode>(world_idx)?;
+        let world_node = ui.get_node_mut::<GroupNode>(world_idx)?;
         world_node.base.visibility.on_show = Some(Box::new(|ui: &mut Ui| ui.request_cursor(CursorRequest::Lock)));
         world_node.base.visibility.on_hide = Some(Box::new(move |ui: &mut Ui| {
             ui.request_cursor(CursorRequest::Free { x: mouse_center.0, y: mouse_center.1 });
         }));
 
         // ── Debug overlay ────────────────────────────────────────────────────
-        let (debug_idx, debug) = ui.create_container(0)?;
+        let (debug_idx, debug) = ui.create_group(0)?;
         debug.base.set_size(screen_size.0, screen_size.1);
         debug.base.visible = false;
         ui.register_layer(debug_idx, Layer::Debug)?;

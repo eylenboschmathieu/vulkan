@@ -149,11 +149,12 @@ pub struct InputManager {
     pub state:    InputState,
     cursor: (f32, f32), // Mouse position on screen in range of [0, 0] -> [screen_width, screen_height]
     window_size: (f32, f32), // inner width and height of the window
+    scroll: (f32, f32), // accumulated scroll-wheel delta, in wheel lines, since the last `take_scroll`
 }
 
 impl InputManager {
     pub fn new(window: &Window) -> Self {
-        let area = window.inner_size();  
+        let area = window.inner_size();
         Self {
             bindings: InputBindings::default(),
             state: InputState {
@@ -163,6 +164,7 @@ impl InputManager {
             },
             cursor: ( (area.width as f32) / 2.0, (area.height as f32) / 2.0 ),
             window_size: (area.width as f32, area.height as f32),
+            scroll: (0.0, 0.0),
         }
     }
 
@@ -191,5 +193,16 @@ impl InputManager {
 
     pub fn cursor(&self) -> (f32, f32) {
         (self.cursor.0.clamp(0.0, self.window_size.0), self.cursor.1.clamp(0.0, self.window_size.1))
+    }
+
+    /// Accumulates a scroll-wheel delta, in wheel lines, for the current tick.
+    pub fn scroll(&mut self, delta: (f32, f32)) {
+        self.scroll.0 += delta.0;
+        self.scroll.1 += delta.1;
+    }
+
+    /// Returns and resets the accumulated scroll-wheel delta, in wheel lines.
+    pub fn take_scroll(&mut self) -> (f32, f32) {
+        std::mem::take(&mut self.scroll)
     }
 }

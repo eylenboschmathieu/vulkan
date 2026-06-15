@@ -147,6 +147,12 @@ impl App {
                 self.input.is_pressed(Action::PrimaryAction),
                 self.input.is_released(Action::PrimaryAction),
             )
+            .with_mouse_button(
+                MouseButton::Secondary,
+                self.input.is_held(Action::SecondaryAction),
+                self.input.is_pressed(Action::SecondaryAction),
+                self.input.is_released(Action::SecondaryAction),
+            )
             .with_scroll_delta(self.input.take_scroll());
 
         if let Err(e) = self.ui.handle_input(&ui_input) {

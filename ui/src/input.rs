@@ -40,6 +40,14 @@ pub struct UiInput {
     /// (e.g. Shift+A -> "A").
     text: String,
 
+    /// Opaque, host-defined name of a key pressed this frame (e.g. "KeyW",
+    /// "F1", "ArrowUp"), set by the host while [`crate::Ui`] is in
+    /// key-capture mode (see [`crate::Ui::start_key_capture`]). Unlike
+    /// [`Key`], which only covers UI-navigation keys, this can represent any
+    /// key the host's input system knows about. `None` if no key was pressed
+    /// this frame.
+    captured_key: Option<String>,
+
     /// Scroll-wheel delta for this frame, in wheel "lines" — typically ±1.0
     /// per discrete notch from `MouseScrollDelta::LineDelta`, or a
     /// fractional value for smooth/trackpad scrolling. Routed to the nearest
@@ -76,6 +84,13 @@ impl UiInput {
     /// Sets the text typed this frame.
     pub fn with_text(mut self, text: impl Into<String>) -> Self {
         self.text = text.into();
+        self
+    }
+
+    /// Sets the host-defined name of a key pressed this frame, for
+    /// key-capture mode (see [`UiInput::captured_key`]).
+    pub fn with_captured_key(mut self, key: impl Into<String>) -> Self {
+        self.captured_key = Some(key.into());
         self
     }
 
@@ -133,6 +148,12 @@ impl UiInput {
     /// Text typed this frame, if any.
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    /// The host-defined name of a key pressed this frame, if any — see
+    /// [`UiInput::captured_key`].
+    pub fn captured_key(&self) -> Option<&str> {
+        self.captured_key.as_deref()
     }
 
     /// Scroll-wheel delta for this frame, in wheel lines.

@@ -238,6 +238,16 @@ pub struct Ui {
     /// The node currently being dragged (a slider, via its thumb, or a
     /// draggable window via its titlebar), if any.
     dragging_node: Option<usize>,
+    /// The node with keyboard focus, if any — Tab/Shift+Tab move this
+    /// between [`UiNode::focusable`] nodes, and Enter/Space activate it. A
+    /// [`ButtonNode`] or [`CheckboxNode`]'s `focused_color`/`focused_texture`
+    /// applies while this is `Some(idx)` for its own index.
+    focused_node: Option<usize>,
+    /// The node currently capturing raw keyboard input, if any — see
+    /// [`start_key_capture`](Self::start_key_capture). While `Some`,
+    /// [`handle_input`](Self::handle_input) bypasses hit-testing and the
+    /// normal Tab/Enter/Escape handling entirely.
+    capturing_node: Option<usize>,
     /// Nodes needing a vertex patch. Drained to empty by either `flush_all`
     /// or `flush_dirty`.
     dirty_nodes: Vec<usize>,
@@ -349,6 +359,8 @@ impl Ui {
             hovered_node: None,
             pressed_node: None,
             dragging_node: None,
+            focused_node: None,
+            capturing_node: None,
             dirty_nodes: Vec::new(),
             navigator: None,
             layer_order: None,
@@ -572,10 +584,11 @@ impl Ui {
     fn render_data(&self, idx: usize) -> Option<(Rgba, Texture)> {
         let hovered = self.hovered_node == Some(idx);
         let pressed = self.pressed_node == Some(idx);
+        let focused = self.focused_node == Some(idx);
         match &self.tree.nodes[idx] {
             UiNode::Panel(p)    => Some((p.color, p.texture)),
-            UiNode::Button(b)   => Some((b.display_color(hovered, pressed), b.display_texture(hovered, pressed))),
-            UiNode::Checkbox(c) => Some((c.display_color(hovered, pressed), c.display_texture(hovered, pressed))),
+            UiNode::Button(b)   => Some((b.display_color(hovered, pressed, focused), b.display_texture(hovered, pressed, focused))),
+            UiNode::Checkbox(c) => Some((c.display_color(hovered, pressed, focused), c.display_texture(hovered, pressed, focused))),
             UiNode::Slider(s)   => Some((s.panel.color, s.panel.texture)),
             UiNode::Window(w)   => Some((w.color, w.texture)),
             _ => None,
@@ -1237,6 +1250,25 @@ impl Ui {
             self.hovered_node = None;
         }
 
+        // A focused/capturing node that's about to be hidden would otherwise
+        // keep its index in `focused_node`/`capturing_node` with a now-stale
+        // `vertex_offset` (the next `flush_all` skips invisible subtrees
+        // without updating it) - a later `set_focus` could then misdirect
+        // `refresh_batch_clip` at whatever batch that stale offset now falls
+        // into. Clear them up front instead, same as `hovered_node` above.
+        if !visible {
+            if let Some(focused) = self.focused_node
+                && self.is_or_contains(idx, focused)
+            {
+                self.focused_node = None;
+            }
+            if let Some(capturing) = self.capturing_node
+                && self.is_or_contains(idx, capturing)
+            {
+                self.capturing_node = None;
+            }
+        }
+
         self.tree.nodes[idx].base_mut().visible = visible;
         self.dirty = true;
 
@@ -1289,6 +1321,138 @@ impl Ui {
         };
         *select(interaction) = Some(callback);
         Ok(())
+    }
+
+    /// Like [`fire_interaction`](Self::fire_interaction), but for
+    /// [`InteractionCb::on_key_capture`], which takes the captured key name
+    /// as an extra argument.
+    fn fire_key_capture(&mut self, node_idx: usize, key: &str) -> Result<()> {
+        let interaction = match &mut self.tree.nodes[node_idx] {
+            UiNode::Button(b)   => &mut b.interaction,
+            UiNode::Checkbox(c) => &mut c.interaction,
+            _ => return Ok(()),
+        };
+        let Some(mut callback) = interaction.on_key_capture.take() else { return Ok(()) };
+        callback(self, key);
+        let interaction = match &mut self.tree.nodes[node_idx] {
+            UiNode::Button(b)   => &mut b.interaction,
+            UiNode::Checkbox(c) => &mut c.interaction,
+            _ => unreachable!(),
+        };
+        interaction.on_key_capture = Some(callback);
+        Ok(())
+    }
+
+    /// Changes [`focused_node`](Self::focused_node) to `new`, marking the
+    /// old and new focused nodes (if `Button`/`Checkbox`) dirty so their
+    /// `focused_color`/`focused_texture` is repainted. No-op if `new` is
+    /// already the focused node.
+    fn set_focus(&mut self, new: Option<usize>) {
+        if self.focused_node == new {
+            return;
+        }
+        if let Some(old) = self.focused_node
+            && matches!(self.tree.nodes[old], UiNode::Button(_) | UiNode::Checkbox(_)) {
+            self.dirty_nodes.push(old);
+        }
+        if let Some(idx) = new
+            && matches!(self.tree.nodes[idx], UiNode::Button(_) | UiNode::Checkbox(_)) {
+            self.dirty_nodes.push(idx);
+        }
+        self.focused_node = new;
+    }
+
+    /// All [`UiNode::focusable`] nodes, in Tab order: a depth-first walk from
+    /// the root via [`ordered_children`](Self::ordered_children) (the same
+    /// order used for rendering/hit-testing), skipping a node — and its
+    /// whole subtree — if `!base().visible` (matching
+    /// [`hit_test`](UiTree::hit_test)'s early return).
+    fn focusable_nodes(&self) -> Vec<usize> {
+        let mut out = Vec::new();
+        self.collect_focusable(0, &mut out);
+        out
+    }
+
+    fn collect_focusable(&self, idx: usize, out: &mut Vec<usize>) {
+        if !self.tree.nodes[idx].base().visible {
+            return;
+        }
+        if self.tree.nodes[idx].focusable() {
+            out.push(idx);
+        }
+        for child in self.tree.ordered_children(idx) {
+            self.collect_focusable(child, out);
+        }
+    }
+
+    /// Moves keyboard focus to the next [`UiNode::focusable`] node in Tab
+    /// order (see [`focusable_nodes`](Self::focusable_nodes)), wrapping
+    /// around to the first. If nothing is currently focused (or the focused
+    /// node is no longer focusable/visible), focuses the first one. No-op if
+    /// there are no focusable nodes.
+    pub fn focus_next(&mut self) {
+        let nodes = self.focusable_nodes();
+        if nodes.is_empty() {
+            return;
+        }
+        let next = match self.focused_node.and_then(|idx| nodes.iter().position(|&n| n == idx)) {
+            Some(pos) => nodes[(pos + 1) % nodes.len()],
+            None => nodes[0],
+        };
+        self.set_focus(Some(next));
+    }
+
+    /// Like [`focus_next`](Self::focus_next), but moves to the previous
+    /// focusable node, wrapping around to the last. If nothing is currently
+    /// focused (or the focused node is no longer focusable/visible), focuses
+    /// the last one.
+    pub fn focus_prev(&mut self) {
+        let nodes = self.focusable_nodes();
+        if nodes.is_empty() {
+            return;
+        }
+        let prev = match self.focused_node.and_then(|idx| nodes.iter().position(|&n| n == idx)) {
+            Some(pos) => nodes[(pos + nodes.len() - 1) % nodes.len()],
+            None => nodes[nodes.len() - 1],
+        };
+        self.set_focus(Some(prev));
+    }
+
+    /// Activates the focused node as if it had been clicked: toggles
+    /// [`CheckboxNode::selected`] (and marks it dirty) if `idx` is a
+    /// checkbox, then fires `on_pressed` followed by `on_release`. Used by
+    /// [`handle_input`](Self::handle_input) for Enter/Space activation of
+    /// [`focused_node`](Self::focused_node).
+    fn activate_focused(&mut self, idx: usize) -> Result<()> {
+        if let UiNode::Checkbox(c) = &mut self.tree.nodes[idx] {
+            c.selected = !c.selected;
+            self.dirty_nodes.push(idx);
+        }
+        self.fire_interaction(idx, |i| &mut i.on_pressed)?;
+        self.fire_interaction(idx, |i| &mut i.on_release)?;
+        Ok(())
+    }
+
+    /// Enters key-capture mode for `idx`, and gives it keyboard focus. Until
+    /// [`end_key_capture`](Self::end_key_capture) is called (or the user
+    /// presses Escape, which cancels capture automatically),
+    /// [`handle_input`](Self::handle_input) bypasses hit-testing and
+    /// Tab/Enter/Escape handling, instead delivering
+    /// [`UiInput::captured_key`] to `idx`'s
+    /// [`InteractionCb::on_key_capture`].
+    pub fn start_key_capture(&mut self, idx: usize) {
+        self.capturing_node = Some(idx);
+        self.set_focus(Some(idx));
+    }
+
+    /// Exits key-capture mode, restoring normal input handling. Call this
+    /// from an `on_key_capture` callback once it's done with the key, or it
+    /// happens automatically when the user presses Escape.
+    pub fn end_key_capture(&mut self) {
+        if let Some(idx) = self.capturing_node.take()
+            && matches!(self.tree.nodes[idx], UiNode::Button(_) | UiNode::Checkbox(_)) {
+            self.dirty_nodes.push(idx);
+        }
     }
 
     /// Requests that the host exit the application. Called by node callbacks,
@@ -1468,6 +1632,15 @@ impl Ui {
     pub fn handle_input(&mut self, input: &UiInput) -> Result<()> {
         let cursor = input.cursor();
 
+        if let Some(idx) = self.capturing_node {
+            if input.key_pressed(Key::Escape) {
+                self.end_key_capture();
+            } else if let Some(key) = input.captured_key() {
+                self.fire_key_capture(idx, key)?;
+            }
+            return Ok(());
+        }
+
         if let Some(dragging_idx) = self.dragging_node {
             if input.primary_held() {
                 match &self.tree.nodes[dragging_idx] {
@@ -1522,6 +1695,10 @@ impl Ui {
                 if input.primary_pressed() {
                     self.raise(idx)?;
 
+                    if self.tree.nodes[idx].focusable() {
+                        self.set_focus(Some(idx));
+                    }
+
                     // Track pressed state for the "pressed" color/texture
                     // variants, independent of any host-attached callback.
                     if matches!(self.tree.nodes[idx], UiNode::Button(_) | UiNode::Checkbox(_)) {
@@ -1555,6 +1732,16 @@ impl Ui {
 
                             if self.tree.get_node::<SliderNode>(slider_idx)?.value != old_value {
                                 self.fire_slider_value_changed(slider_idx)?;
+                            }
+
+                            // The thumb just teleported under the cursor -
+                            // reflect that in its hover state immediately,
+                            // rather than waiting for the next pointer move.
+                            if let Some(thumb_idx) = self.tree.get_node::<SliderNode>(slider_idx)?.get_thumb()
+                                && self.hovered_node != Some(thumb_idx)
+                            {
+                                self.hovered_node = Some(thumb_idx);
+                                self.dirty_nodes.push(thumb_idx);
                             }
                         }
 
@@ -1597,6 +1784,20 @@ impl Ui {
             None => if input.any_click() {
                 self.events.push(UiEvent::Unhandled);
             }
+        }
+
+        if input.key_pressed(Key::Tab) {
+            if input.key_held(Key::Shift) {
+                self.focus_prev();
+            } else {
+                self.focus_next();
+            }
+        }
+
+        if (input.key_pressed(Key::Enter) || input.key_pressed(Key::Space))
+            && let Some(idx) = self.focused_node
+        {
+            self.activate_focused(idx)?;
         }
 
         Ok(())

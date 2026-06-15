@@ -91,6 +91,14 @@ pub struct InteractionCb {
     pub on_release: Option<Box<dyn FnMut(&mut Ui)>>,
     pub on_enter:   Option<Box<dyn FnMut(&mut Ui)>>,
     pub on_leave:   Option<Box<dyn FnMut(&mut Ui)>>,
+    /// Fired while this node is the [`Ui`](crate::Ui) capture target (see
+    /// [`Ui::start_key_capture`](crate::Ui::start_key_capture)), with the
+    /// host-supplied name of the key that was pressed
+    /// ([`UiInput::captured_key`](crate::UiInput::captured_key)). The
+    /// callback is responsible for calling
+    /// [`Ui::end_key_capture`](crate::Ui::end_key_capture) once it's done
+    /// with the key (e.g. after recording a new binding).
+    pub on_key_capture: Option<Box<dyn FnMut(&mut Ui, &str)>>,
 }
 
 pub struct NodeBase {
@@ -348,6 +356,16 @@ impl UiNode {
     /// Mutable counterpart of [`UiNode::scroll`].
     pub fn scroll_mut(&mut self) -> Option<&mut Scroll> {
         match self { UiNode::Panel(p) => p.scroll.as_mut(), _ => None }
+    }
+
+    /// Whether this node can receive keyboard focus via Tab/Shift+Tab
+    /// traversal ([`Ui::focus_next`](crate::Ui::focus_next)/
+    /// [`focus_prev`](crate::Ui::focus_prev)) and activation via Enter/Space.
+    /// Currently `Button` and `Checkbox` — this automatically covers any
+    /// plain `ButtonNode` such as a window's close button or a scroll
+    /// panel's step buttons.
+    pub fn focusable(&self) -> bool {
+        matches!(self, UiNode::Button(_) | UiNode::Checkbox(_))
     }
 }
 

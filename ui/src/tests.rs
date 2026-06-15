@@ -256,6 +256,40 @@ fn slider_track_click_jumps_value_then_drag_continues_from_there() {
     ui.handle_input(&release).unwrap();
 }
 
+/// Clicking the track (not the thumb itself) teleports the thumb under the
+/// cursor and starts a drag. Since the hover hit-test ran *before* the
+/// teleport, `hovered_node` would otherwise still point at the track for the
+/// whole drag, leaving the thumb stuck on its base color even though it's
+/// directly under the cursor.
+#[test]
+fn track_click_gives_teleported_thumb_hover_color_during_drag() {
+    let mut ui = Ui::new((800.0, 600.0), test_atlas());
+
+    let (slider_idx, slider) = ui.create_slider(0, Axis::Horizontal).unwrap();
+    slider.set_min_max(0, 100);
+    slider.set_value(50);
+    ui.layout_slider(slider_idx).unwrap();
+
+    let UiUpdate::Full(_, _) = ui.flush_all() else { panic!("expected UiUpdate::Full") };
+    let thumb_idx = ui.get_node::<SliderNode>(slider_idx).unwrap().get_thumb().unwrap();
+    let thumb_offset = ui.get_node::<ButtonNode>(thumb_idx).unwrap().base.vertex_offset;
+    let hover_color = ui.get_node::<ButtonNode>(thumb_idx).unwrap().display_color(true, false, false);
+
+    // Click the track far to the right of the thumb (which spans [92, 108]).
+    let press = UiInput::new((192.0, 16.0)).with_mouse_button(MouseButton::Primary, true, true, false);
+    ui.handle_input(&press).unwrap();
+    assert_eq!(ui.hovered_node, Some(thumb_idx));
+
+    let UiUpdate::Partial(patches) = ui.flush_dirty() else { panic!("expected UiUpdate::Partial") };
+    let thumb_patch = &patches.iter().find(|(offset, _)| *offset == thumb_offset).expect("thumb patch").1;
+    assert_eq!(thumb_patch[0].color, hover_color);
+
+    // Still hovered/dragging while held.
+    let drag = UiInput::new((192.0, 16.0)).with_mouse_button(MouseButton::Primary, true, false, false);
+    ui.handle_input(&drag).unwrap();
+    assert_eq!(ui.hovered_node, Some(thumb_idx));
+}
+
 #[test]
 fn step_slider_reaches_max_value_even_off_grid() {
     let mut ui = Ui::new((800.0, 600.0), test_atlas());
@@ -1234,4 +1268,309 @@ fn resize_scroll_panel_reclamps_offset_and_resizes_thumb() {
     // thumb = (200*200/400).max(16) = 100.
     let thumb_idx = ui.get_node::<SliderNode>(scrollbar_idx).unwrap().get_thumb().unwrap();
     assert_eq!(ui.get_node::<ButtonNode>(thumb_idx).unwrap().base.bounds.height, 100.0);
+}
+
+#[test]
+fn tab_cycles_focus_through_focusable_nodes() {
+    let mut ui = Ui::new((800.0, 600.0), test_atlas());
+
+    let (_, label) = ui.create_label(0).unwrap();
+    label.base.set_position(Anchor::TopLeft, 0.0, 0.0);
+
+    let (b1_idx, b1) = ui.create_button(0).unwrap();
+    b1.base.set_position(Anchor::TopLeft, 0.0, 0.0);
+    b1.base.set_size(32.0, 32.0);
+
+    let (b2_idx, b2) = ui.create_button(0).unwrap();
+    b2.base.set_position(Anchor::TopLeft, 40.0, 0.0);
+    b2.base.set_size(32.0, 32.0);
+
+    let (cb_idx, cb) = ui.create_checkbox(0).unwrap();
+    cb.base.set_position(Anchor::TopLeft, 80.0, 0.0);
+    cb.base.set_size(32.0, 32.0);
+
+    let cursor = (-1.0, -1.0);
+    let tab = UiInput::new(cursor).with_key(Key::Tab, false, true, false);
+
+    ui.handle_input(&tab).unwrap();
+    assert_eq!(ui.focused_node, Some(b1_idx));
+
+    ui.handle_input(&tab).unwrap();
+    assert_eq!(ui.focused_node, Some(b2_idx));
+
+    ui.handle_input(&tab).unwrap();
+    assert_eq!(ui.focused_node, Some(cb_idx));
+
+    // Wraps back to the first.
+    ui.handle_input(&tab).unwrap();
+    assert_eq!(ui.focused_node, Some(b1_idx));
+
+    // Shift+Tab moves backwards, wrapping to the last.
+    let shift_tab = UiInput::new(cursor)
+        .with_key(Key::Tab, false, true, false)
+        .with_key(Key::Shift, true, false, false);
+    ui.handle_input(&shift_tab).unwrap();
+    assert_eq!(ui.focused_node, Some(cb_idx));
+}
+
+#[test]
+fn tab_skips_invisible_subtree() {
+    let mut ui = Ui::new((800.0, 600.0), test_atlas());
+
+    let (b1_idx, b1) = ui.create_button(0).unwrap();
+    b1.base.set_position(Anchor::TopLeft, 0.0, 0.0);
+    b1.base.set_size(32.0, 32.0);
+
+    let (b2_idx, b2) = ui.create_button(0).unwrap();
+    b2.base.set_position(Anchor::TopLeft, 40.0, 0.0);
+    b2.base.set_size(32.0, 32.0);
+
+    ui.set_visible(b1_idx, false).unwrap();
+
+    let tab = UiInput::new((-1.0, -1.0)).with_key(Key::Tab, false, true, false);
+    ui.handle_input(&tab).unwrap();
+    assert_eq!(ui.focused_node, Some(b2_idx));
+}
+
+#[test]
+fn enter_and_space_activate_focused_button() {
+    let mut ui = Ui::new((800.0, 600.0), test_atlas());
+
+    let (b_idx, b) = ui.create_button(0).unwrap();
+    b.base.set_position(Anchor::TopLeft, 0.0, 0.0);
+    b.base.set_size(32.0, 32.0);
+
+    let pressed = Rc::new(Cell::new(0));
+    let released = Rc::new(Cell::new(0));
+    let pressed_clone = pressed.clone();
+    let released_clone = released.clone();
+    b.interaction.on_pressed = Some(Box::new(move |_ui| pressed_clone.set(pressed_clone.get() + 1)));
+    b.interaction.on_release = Some(Box::new(move |_ui| released_clone.set(released_clone.get() + 1)));
+
+    let cursor = (-1.0, -1.0);
+    let tab = UiInput::new(cursor).with_key(Key::Tab, false, true, false);
+    ui.handle_input(&tab).unwrap();
+    assert_eq!(ui.focused_node, Some(b_idx));
+
+    let enter = UiInput::new(cursor).with_key(Key::Enter, false, true, false);
+    ui.handle_input(&enter).unwrap();
+    assert_eq!(pressed.get(), 1);
+    assert_eq!(released.get(), 1);
+
+    let space = UiInput::new(cursor).with_key(Key::Space, false, true, false);
+    ui.handle_input(&space).unwrap();
+    assert_eq!(pressed.get(), 2);
+    assert_eq!(released.get(), 2);
+}
+
+#[test]
+fn enter_activates_focused_checkbox_and_toggles() {
+    let mut ui = Ui::new((800.0, 600.0), test_atlas());
+
+    let (cb_idx, cb) = ui.create_checkbox(0).unwrap();
+    cb.base.set_position(Anchor::TopLeft, 0.0, 0.0);
+    cb.base.set_size(32.0, 32.0);
+
+    let cursor = (-1.0, -1.0);
+    let tab = UiInput::new(cursor).with_key(Key::Tab, false, true, false);
+    ui.handle_input(&tab).unwrap();
+    assert_eq!(ui.focused_node, Some(cb_idx));
+
+    let enter = UiInput::new(cursor).with_key(Key::Enter, false, true, false);
+    ui.handle_input(&enter).unwrap();
+    assert!(ui.get_node::<CheckboxNode>(cb_idx).unwrap().selected);
+}
+
+#[test]
+fn focused_color_applies_via_render_data() {
+    let mut ui = Ui::new((800.0, 600.0), test_atlas());
+
+    let (b_idx, b) = ui.create_button(0).unwrap();
+    b.base.set_position(Anchor::TopLeft, 0.0, 0.0);
+    b.base.set_size(32.0, 32.0);
+    let base_color = b.display_color(false, false, false);
+    let focused_color = Rgba::new(1.0, 0.0, 0.0, 1.0);
+    b.set_focused_color(Some(focused_color));
+
+    let UiUpdate::Full(_, verts) = ui.flush_all() else { panic!("expected UiUpdate::Full") };
+    let offset = ui.get_node::<ButtonNode>(b_idx).unwrap().base.vertex_offset;
+    assert_eq!(verts[offset].color, base_color);
+
+    let tab = UiInput::new((-1.0, -1.0)).with_key(Key::Tab, false, true, false);
+    ui.handle_input(&tab).unwrap();
+
+    let UiUpdate::Partial(patches) = ui.flush_dirty() else { panic!("expected UiUpdate::Partial") };
+    let patch = patches.iter().find(|(o, _)| *o == offset).expect("focused patch");
+    assert_eq!(patch.1[0].color, focused_color);
+
+    // Moving focus away restores the base color.
+    ui.set_focus(None);
+    let UiUpdate::Partial(patches) = ui.flush_dirty() else { panic!("expected UiUpdate::Partial") };
+    let patch = patches.iter().find(|(o, _)| *o == offset).expect("unfocused patch");
+    assert_eq!(patch.1[0].color, base_color);
+}
+
+#[test]
+fn clicking_a_button_gives_it_focus() {
+    let mut ui = Ui::new((800.0, 600.0), test_atlas());
+
+    let (b_idx, b) = ui.create_button(0).unwrap();
+    b.base.set_position(Anchor::TopLeft, 0.0, 0.0);
+    b.base.set_size(32.0, 32.0);
+
+    let press = UiInput::new((16.0, 16.0)).with_mouse_button(MouseButton::Primary, true, true, false);
+    ui.handle_input(&press).unwrap();
+    assert_eq!(ui.focused_node, Some(b_idx));
+}
+
+#[test]
+fn key_capture_receives_captured_key_and_ends_on_callback() {
+    let mut ui = Ui::new((800.0, 600.0), test_atlas());
+
+    let (b_idx, b) = ui.create_button(0).unwrap();
+    b.base.set_position(Anchor::TopLeft, 0.0, 0.0);
+    b.base.set_size(32.0, 32.0);
+
+    let received_key_w = Rc::new(Cell::new(false));
+    let received_key_w_clone = received_key_w.clone();
+    b.interaction.on_key_capture = Some(Box::new(move |ui, key| {
+        received_key_w_clone.set(key == "KeyW");
+        ui.end_key_capture();
+    }));
+
+    ui.start_key_capture(b_idx);
+    assert_eq!(ui.capturing_node, Some(b_idx));
+    assert_eq!(ui.focused_node, Some(b_idx));
+
+    let input = UiInput::new((-1.0, -1.0)).with_captured_key("KeyW");
+    ui.handle_input(&input).unwrap();
+
+    assert!(received_key_w.get());
+    assert_eq!(ui.capturing_node, None);
+}
+
+#[test]
+fn escape_cancels_key_capture_without_firing_callback() {
+    let mut ui = Ui::new((800.0, 600.0), test_atlas());
+
+    let (b_idx, b) = ui.create_button(0).unwrap();
+    b.base.set_position(Anchor::TopLeft, 0.0, 0.0);
+    b.base.set_size(32.0, 32.0);
+
+    let fired = Rc::new(Cell::new(false));
+    let fired_clone = fired.clone();
+    b.interaction.on_key_capture = Some(Box::new(move |_ui, _key| fired_clone.set(true)));
+
+    ui.start_key_capture(b_idx);
+
+    let escape = UiInput::new((-1.0, -1.0)).with_key(Key::Escape, false, true, false);
+    ui.handle_input(&escape).unwrap();
+
+    assert!(!fired.get());
+    assert_eq!(ui.capturing_node, None);
+    // Only capture mode is cancelled - focus remains.
+    assert_eq!(ui.focused_node, Some(b_idx));
+}
+
+/// Reproduces a regression where navigating away from a screen left a stale
+/// `focused_node` pointing at the (now-invisible, now-stale-`vertex_offset`)
+/// "Keybinds" button. Focusing "Back" on the new screen then pushed that
+/// stale node to `dirty_nodes`, and `refresh_batch_clip` mistargeted the
+/// scroll panel's clipped batch using its stale `quad_idx`, unclipping its
+/// contents. `set_visible` now clears `focused_node`/`capturing_node` when
+/// hiding a subtree that contains them, same as it already did for
+/// `hovered_node`/`pressed_node`.
+#[test]
+fn navigating_away_does_not_leave_stale_focus_to_clobber_other_batches() {
+    let mut ui = Ui::new((800.0, 600.0), test_atlas());
+
+    // Main screen: a "Keybinds" button that navigates to the other screen.
+    let (main_idx, panel) = ui.create_panel(0).unwrap();
+    panel.base.bounds = Rect { x: 0.0, y: 0.0, width: 800.0, height: 600.0 };
+    let (keybind_btn_idx, btn) = ui.create_button(main_idx).unwrap();
+    btn.base.bounds = Rect { x: 64.0, y: 100.0, width: 400.0, height: 48.0 };
+
+    // Keybinds screen: starts hidden, so its subtree is excluded from the
+    // first `flush_all` (vertex_offset stays at its default 0 for all of it).
+    let (keybind_idx, panel) = ui.create_panel(0).unwrap();
+    panel.base.bounds = Rect { x: 0.0, y: 0.0, width: 800.0, height: 600.0 };
+    panel.base.visible = false;
+
+    let (back_idx, btn) = ui.create_button(keybind_idx).unwrap();
+    btn.base.bounds = Rect { x: 64.0, y: 200.0, width: 400.0, height: 48.0 };
+
+    let row_pitch = 26.0;
+    let row_count = 24;
+    let visible_rows = 14;
+    let viewport = (400.0, visible_rows as f32 * row_pitch);
+    let content_h = row_count as f32 * row_pitch;
+
+    let (_, frame) = ui.create_scroll_panel(keybind_idx, Axis::Vertical, viewport, 24.0, (viewport.0, content_h)).unwrap();
+    frame.base.set_position(Anchor::TopLeft, 64.0, 264.0);
+    let keybind_list_idx = frame.content_idx;
+
+    for i in 0..row_count {
+        let (_, label) = ui.create_label(keybind_list_idx).unwrap();
+        label.set_text(format!("Action {}", i + 1));
+        label.base.set_position(Anchor::TopLeft, 8.0, i as f32 * row_pitch);
+    }
+
+    let UiUpdate::Full(_, _) = ui.flush_all() else { panic!("expected UiUpdate::Full") };
+
+    // Click "Keybinds": presses (and focuses) the button, then navigates.
+    let press = UiInput::new((100.0, 110.0)).with_mouse_button(MouseButton::Primary, true, true, false);
+    ui.handle_input(&press).unwrap();
+    assert_eq!(ui.focused_node, Some(keybind_btn_idx));
+
+    let release = UiInput::new((100.0, 110.0)).with_mouse_button(MouseButton::Primary, false, false, true);
+    ui.handle_input(&release).unwrap();
+    ui.set_visible(main_idx, false).unwrap();
+    ui.set_visible(keybind_idx, true).unwrap();
+
+    // Hiding `main_idx` clears the stale focus reference.
+    assert_eq!(ui.focused_node, None);
+
+    // The screen switch marks everything dirty -> full re-flush.
+    let UiUpdate::Full(_, _) = ui.flush_all() else { panic!("expected UiUpdate::Full") };
+
+    // The scroll panel's content is in its own clipped batch.
+    let content_batch = *ui.batches().iter().find(|b| b.clip_rect.is_some())
+        .expect("scroll content batch should be clipped");
+
+    // Clicking "Back" focuses it - no stale node to clobber another batch.
+    let press = UiInput::new((100.0, 210.0)).with_mouse_button(MouseButton::Primary, true, true, false);
+    ui.handle_input(&press).unwrap();
+    assert_eq!(ui.focused_node, Some(back_idx));
+    let _ = ui.flush_dirty();
+
+    // The scroll content's batch is still clipped.
+    let content_batch_after = ui.batches().iter().find(|b| b.first_quad == content_batch.first_quad).unwrap();
+    assert_eq!(content_batch_after.clip_rect, content_batch.clip_rect);
+}
+
+#[test]
+fn capturing_node_bypasses_tab_and_clicks() {
+    let mut ui = Ui::new((800.0, 600.0), test_atlas());
+
+    let (b1_idx, b1) = ui.create_button(0).unwrap();
+    b1.base.set_position(Anchor::TopLeft, 0.0, 0.0);
+    b1.base.set_size(32.0, 32.0);
+
+    let (_, b2) = ui.create_button(0).unwrap();
+    b2.base.set_position(Anchor::TopLeft, 40.0, 0.0);
+    b2.base.set_size(32.0, 32.0);
+
+    ui.start_key_capture(b1_idx);
+
+    // Tab does not move focus while capturing.
+    let tab = UiInput::new((-1.0, -1.0)).with_key(Key::Tab, false, true, false);
+    ui.handle_input(&tab).unwrap();
+    assert_eq!(ui.focused_node, Some(b1_idx));
+    assert_eq!(ui.capturing_node, Some(b1_idx));
+
+    // A click elsewhere does not update hover state while capturing.
+    let click = UiInput::new((56.0, 16.0)).with_mouse_button(MouseButton::Primary, false, true, false);
+    ui.handle_input(&click).unwrap();
+    assert_eq!(ui.hovered_node, None);
+    assert_eq!(ui.focused_node, Some(b1_idx));
 }

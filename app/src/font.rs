@@ -33,20 +33,19 @@ pub unsafe fn build_atlas(container: &mut Container, path: &str, font_size: f32)
 
     let characters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()_+-=[]{}|;':\",./<>? ";
 
-    let (data, width, height, glyphs, white_uv, cap_height) = build_font(&font, characters, font_size);
+    let (data, width, height, glyphs, cap_height) = build_font(&font, characters, font_size);
 
     let texture_id = container.alloc_font_atlas(data, width, height)?;
 
     Ok(FontAtlas {
         texture_id: ui::TextureId(texture_id as u64),
         glyphs,
-        white_uv,
         line_height: height as f32,
         cap_height,
     })
 }
 
-fn build_font(font: &Font, characters: &str, font_size: f32) -> (Vec<u8>, u32, u32, HashMap<char, GlyphInfo>, [f32; 2], f32) {
+fn build_font(font: &Font, characters: &str, font_size: f32) -> (Vec<u8>, u32, u32, HashMap<char, GlyphInfo>, f32) {
     let rasterized: Vec<(char, fontdue::Metrics, Vec<u8>)> = characters
         .chars()
         .map(|c| {
@@ -59,19 +58,14 @@ fn build_font(font: &Font, characters: &str, font_size: f32) -> (Vec<u8>, u32, u
         .max()
         .unwrap_or(0);
 
-    // Column 0 is reserved for a full-height white strip used by UI quads.
     let padding = 1u32;
-    let atlas_width = 1 + rasterized.iter()
+    let atlas_width = rasterized.iter()
         .map(|(_, metrics, _)| metrics.width as u32 + padding)
         .sum::<u32>();
 
     let mut atlas_data = vec![0u8; (atlas_width * atlas_height) as usize];
 
-    for row in 0..atlas_height {
-        atlas_data[(row * atlas_width) as usize] = 0xFF;
-    }
-
-    let mut cursor_x = 1u32;
+    let mut cursor_x = 0u32;
     let mut glyphs = HashMap::new();
 
     for (c, metrics, bitmap) in &rasterized {
@@ -100,12 +94,10 @@ fn build_font(font: &Font, characters: &str, font_size: f32) -> (Vec<u8>, u32, u
         cursor_x += metrics.width as u32 + padding;
     }
 
-    let white_uv = [0.5 / atlas_width as f32, 0.5 / atlas_height as f32];
-
     let cap_height = rasterized.iter()
         .filter(|(c, _, _)| c.is_uppercase())
         .map(|(_, m, _)| (m.ymin + m.height as i32).max(0) as f32)
         .fold(0.0f32, f32::max);
 
-    (atlas_data, atlas_width, atlas_height, glyphs, white_uv, cap_height)
+    (atlas_data, atlas_width, atlas_height, glyphs, cap_height)
 }

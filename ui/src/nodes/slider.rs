@@ -1,9 +1,10 @@
+use anyhow::Result;
 use crate::{
     types::{Rgba, Texture},
     Ui,
 };
 
-use super::PanelNode;
+use super::{Anchor, ButtonNode, PanelNode, UiNode};
 
 /// Which axis a [`SliderNode`]'s value increases along: its track's width
 /// (`Horizontal`) or height (`Vertical`). Drives the geometry math in
@@ -59,6 +60,83 @@ pub struct SliderNode {
 }
 
 impl SliderNode {
+    /// Positions the thumb button at the offset implied by the slider's current
+    /// value and marks it dirty. Called after any value change.
+    pub fn layout(ui: &mut Ui, slider_idx: usize) -> Result<()> {
+        let (thumb_idx, axis) = {
+            let s = ui.get_node::<Self>(slider_idx)?;
+            (s.get_thumb(), s.axis())
+        };
+
+        if let Some(thumb_idx) = thumb_idx {
+            let thumb_extent = {
+                let thumb = ui.get_node::<ButtonNode>(thumb_idx)?;
+                match axis {
+                    Axis::Horizontal => thumb.base.bounds.width,
+                    Axis::Vertical   => thumb.base.bounds.height,
+                }
+            };
+            let offset = ui.get_node::<Self>(slider_idx)?.thumb_offset(thumb_extent);
+            let thumb  = ui.get_node_mut::<ButtonNode>(thumb_idx)?;
+            match axis {
+                Axis::Horizontal => thumb.base.set_position(Anchor::Left, offset, 0.0),
+                Axis::Vertical   => thumb.base.set_position(Anchor::Top,  0.0,    offset),
+            }
+            ui.mark_dirty(thumb_idx);
+        }
+
+        Ok(())
+    }
+
+    /// Recomputes the slider's value from the cursor delta since the drag
+    /// began, re-lays-out the thumb, and fires `on_value_changed` if the
+    /// value changed. Called from [`crate::Ui::handle_input`] during a drag.
+    pub fn apply_drag(ui: &mut Ui, slider_idx: usize, cursor: (f32, f32)) -> Result<()> {
+        let (thumb_idx, axis) = {
+            let s = ui.get_node::<Self>(slider_idx)?;
+            (s.get_thumb(), s.axis())
+        };
+        let thumb_extent = match thumb_idx {
+            Some(idx) => {
+                let thumb = ui.get_node::<ButtonNode>(idx)?;
+                match axis {
+                    Axis::Horizontal => thumb.base.bounds.width,
+                    Axis::Vertical   => thumb.base.bounds.height,
+                }
+            }
+            None => 0.0,
+        };
+
+        let changed = ui.get_node_mut::<Self>(slider_idx)?.drag_to(cursor, thumb_extent);
+        Self::layout(ui, slider_idx)?;
+
+        if changed {
+            ui.fire_slider_value_changed(slider_idx)?;
+        }
+
+        Ok(())
+    }
+
+    /// Inserts this slider and its default thumb [`ButtonNode`] into the tree
+    /// under `parent`, configures the thumb's size and colors, and wires the
+    /// thumb index back. This is the full construction logic for
+    /// [`crate::Ui::create_slider`].
+    pub fn build(ui: &mut Ui, parent: usize, axis: Axis) -> Result<(usize, &mut Self)> {
+        let slider_idx = ui.add_node(UiNode::Slider(Self::new(axis)), parent)?;
+
+        let (thumb_idx, thumb) = ui.create_button(slider_idx)?;
+        match axis {
+            Axis::Horizontal => thumb.base.set_size(16.0, 32.0),
+            Axis::Vertical   => thumb.base.set_size(32.0, 16.0),
+        }
+        thumb.set_color(Rgba::new(0.8, 0.8, 0.8, 0.9));
+        thumb.set_hover_color(Some(Rgba::new(0.3, 0.6, 1.0, 0.9)));
+
+        let s = ui.get_node_mut::<Self>(slider_idx)?;
+        s.set_thumb(Some(thumb_idx));
+        Ok((slider_idx, s))
+    }
+
     pub fn new(axis: Axis) -> Self {
         let mut this = Self {
             panel: PanelNode::new(),
@@ -113,6 +191,30 @@ impl SliderNode {
         }
         let steps = (value - self.min_value) / self.step_size;
         self.value = self.min_value + steps * self.step_size;
+    }
+
+    /// Adjusts the value by one [`SliderNode::step_size`] — up if `increase`,
+    /// down otherwise — clamping as [`SliderNode::set_value`]. Returns
+    /// whether the value actually changed. See [`crate::Ui::step_slider`].
+    pub fn step(&mut self, increase: bool) -> bool {
+        let old = self.value;
+        let new = if increase {
+            old.saturating_add(self.step_size)
+        } else {
+            old.saturating_sub(self.step_size)
+        };
+        self.set_value(new);
+        self.value != old
+    }
+
+    /// Recomputes the value from the cursor position relative to where the
+    /// drag started (see [`SliderNode::value_from_drag`]) and applies it.
+    /// Returns whether the value actually changed. See
+    /// [`crate::Ui::drag_slider`].
+    pub fn drag_to(&mut self, cursor: (f32, f32), thumb_extent: f32) -> bool {
+        let old = self.value;
+        self.set_value(self.value_from_drag(cursor, thumb_extent));
+        self.value != old
     }
 
     pub(crate) fn set_thumb(&mut self, idx: Option<usize>) {

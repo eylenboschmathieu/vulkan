@@ -1,4 +1,5 @@
-use crate::types::Rgba;
+use crate::font::FontAtlas;
+use crate::types::{Pos2, Rgba, Vertex, UV};
 
 use super::NodeBase;
 
@@ -31,7 +32,53 @@ impl LabelNode {
         self.max_len
     }
 
+    pub fn color(&self) -> Rgba { self.color }
     pub fn set_color(&mut self, color: Rgba) { self.color = color; }
+
+    /// Builds this label's quads for rendering, starting at `(start_x,
+    /// baseline_y)` and always emitting exactly [`LabelNode::max_len`] quads
+    /// — one per reserved character slot — so the label occupies a constant
+    /// amount of vertex-buffer space regardless of how long `text` currently
+    /// is. Slots with nothing to draw (a character missing from `atlas`, or
+    /// padding past the end of `text`) get a degenerate, zero-area quad,
+    /// which rasterizes to nothing.
+    pub fn quads(&self, atlas: &FontAtlas, start_x: f32, baseline_y: f32) -> Vec<Vertex> {
+        let mut verts: Vec<Vertex> = Vec::with_capacity(self.max_len * 4);
+        let mut cursor_x = start_x;
+        let mut chars = self.text.chars();
+
+        for _ in 0..self.max_len {
+            let c = chars.next();
+            let glyph = c.and_then(|c| atlas.glyphs.get(&c));
+
+            match glyph {
+                Some(g) => {
+                    let [u0, v0] = g.uv_min;
+                    let [u1, v1] = g.uv_max;
+                    let left   = cursor_x + g.bearing_x;
+                    let right  = left + g.width as f32;
+                    let top    = baseline_y - g.bearing_y - g.height as f32;
+                    let bottom = baseline_y - g.bearing_y;
+
+                    verts.push(Vertex::new(Pos2 { x: left,  y: top    }, UV::new(u0, v0), self.color));
+                    verts.push(Vertex::new(Pos2 { x: right, y: top    }, UV::new(u1, v0), self.color));
+                    verts.push(Vertex::new(Pos2 { x: right, y: bottom }, UV::new(u1, v1), self.color));
+                    verts.push(Vertex::new(Pos2 { x: left,  y: bottom }, UV::new(u0, v1), self.color));
+
+                    cursor_x += g.advance;
+                }
+                None => {
+                    let p = Pos2 { x: cursor_x, y: baseline_y };
+                    let degenerate = Vertex::new(p, UV::new(0.0, 0.0), self.color);
+                    verts.extend_from_slice(&[degenerate; 4]);
+
+                    if c.is_some() { cursor_x += 8.0; }
+                }
+            }
+        }
+
+        verts
+    }
 
     /// Replaces the text, growing `max_len` if it's now the longest this
     /// label has ever held. Returns `true` when `max_len` grows — the caller

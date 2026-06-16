@@ -4,19 +4,22 @@ mod container;
 mod group;
 mod label;
 mod panel;
+mod renderable;
 mod scroll_panel;
 mod slider;
 mod window;
 
 use crate::{Edges, Rect, Ui};
+use crate::types::{Rgba, Texture};
 
 pub use button::ButtonNode;
 pub use checkbox::CheckboxNode;
 pub use container::Container;
 pub use group::GroupNode;
 pub use label::LabelNode;
-pub use panel::{PanelNode, Scroll};
-pub use scroll_panel::ScrollPanelNode;
+pub use panel::PanelNode;
+pub use renderable::Renderable;
+pub use scroll_panel::{Scroll, ScrollPanelNode, SCROLLBAR_THUMB_PADDING};
 pub use slider::{Axis, SliderNode};
 pub use window::{WindowNode, TITLEBAR_HEIGHT, WINDOW_BORDER};
 
@@ -99,6 +102,12 @@ pub struct InteractionCb {
     /// [`Ui::end_key_capture`](crate::Ui::end_key_capture) once it's done
     /// with the key (e.g. after recording a new binding).
     pub on_key_capture: Option<Box<dyn FnMut(&mut Ui, &str)>>,
+    pub hover_color:     Option<Rgba>,
+    pub pressed_color:   Option<Rgba>,
+    pub focused_color:   Option<Rgba>,
+    pub hover_texture:   Option<Texture>,
+    pub pressed_texture: Option<Texture>,
+    pub focused_texture: Option<Texture>,
 }
 
 pub struct NodeBase {

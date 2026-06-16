@@ -1,6 +1,7 @@
-use crate::types::{Rgba, Texture};
+use anyhow::Result;
+use crate::{types::{Rgba, Texture}, Ui};
 
-use super::{Container, NodeBase};
+use super::{Anchor, Container, NodeBase, Renderable, UiNode};
 
 /// Height of a window's titlebar, in the same units as [`NodeBase::bounds`].
 pub const TITLEBAR_HEIGHT: f32 = 24.0;
@@ -35,8 +36,7 @@ impl WindowDrag {
 /// around `body`. Built by [`crate::Ui::create_window`].
 pub struct WindowNode {
     pub base: NodeBase,
-    pub(crate) color: Rgba,
-    pub(crate) texture: Texture,
+    pub(crate) renderable: Renderable,
     /// `PanelNode` spanning the top of the window, child of this node.
     pub titlebar: usize,
     /// `LabelNode` showing the window's title, child of `titlebar`.
@@ -57,11 +57,61 @@ pub struct WindowNode {
 }
 
 impl WindowNode {
+    /// Inserts this window and all its structural children (titlebar, title
+    /// label, close button + label, body panel) into the tree, wires their
+    /// indices, and sets all default colors and sizes. This is the full
+    /// construction logic for [`crate::Ui::create_window`].
+    pub fn build(ui: &mut Ui, parent: usize, width: f32, height: f32) -> Result<(usize, &mut Self)> {
+        let frame_color = Rgba::new(0.25, 0.25, 0.3, 1.0);
+
+        let window_idx = ui.add_node(UiNode::Window(Self::new()), parent)?;
+        let w = ui.get_node_mut::<Self>(window_idx)?;
+        w.base.set_size(width, height);
+        w.set_color(frame_color);
+
+        let (titlebar_idx, titlebar) = ui.create_panel(window_idx)?;
+        titlebar.base.set_position(Anchor::TopLeft, WINDOW_BORDER, WINDOW_BORDER);
+        titlebar.base.set_size(width - 2.0 * WINDOW_BORDER, TITLEBAR_HEIGHT);
+        titlebar.set_color(frame_color);
+
+        let (title_idx, title) = ui.create_label(titlebar_idx)?;
+        title.set_color(Rgba::new(1.0, 1.0, 1.0, 1.0));
+        title.base.set_position(Anchor::Left, 0.0, 0.0);
+
+        let (close_idx, close_btn) = ui.create_button(titlebar_idx)?;
+        close_btn.base.set_size(TITLEBAR_HEIGHT, TITLEBAR_HEIGHT);
+        close_btn.base.set_position(Anchor::TopRight, 0.0, 0.0);
+        close_btn.set_color(Rgba::new(1.0, 1.0, 1.0, 0.15));
+        close_btn.set_hover_color(Some(Rgba::new(0.8, 0.2, 0.2, 0.7)));
+        close_btn.interaction.on_release = Some(Box::new(move |ui: &mut Ui| {
+            let _ = ui.set_visible(window_idx, false);
+        }));
+
+        let close_label_width = ui.label_width("x");
+        let (_, close_label) = ui.create_label(close_idx)?;
+        close_label.set_text("x");
+        close_label.set_color(Rgba::new(1.0, 1.0, 1.0, 1.0));
+        close_label.base.set_width(close_label_width);
+        close_label.base.set_position(Anchor::Center, 0.0, 0.0);
+
+        let (body_idx, body) = ui.create_panel(window_idx)?;
+        body.base.set_position(Anchor::TopLeft, WINDOW_BORDER, TITLEBAR_HEIGHT + 2.0 * WINDOW_BORDER);
+        body.base.set_size(width - 2.0 * WINDOW_BORDER, height - TITLEBAR_HEIGHT - 3.0 * WINDOW_BORDER);
+        body.set_color(Rgba::new(0.15, 0.15, 0.17, 0.95));
+        body.container.clip_children = true;
+
+        let w = ui.get_node_mut::<Self>(window_idx)?;
+        w.titlebar = titlebar_idx;
+        w.title = title_idx;
+        w.close_button = close_idx;
+        w.body = body_idx;
+        Ok((window_idx, w))
+    }
+
     pub fn new() -> Self {
         Self {
             base: NodeBase::new(),
-            color: Rgba::new(0.0, 0.0, 0.0, 0.0),
-            texture: Texture::default(),
+            renderable: Renderable::default(),
             titlebar: 0,
             title: 0,
             close_button: 0,
@@ -72,11 +122,22 @@ impl WindowNode {
         }
     }
 
-    pub fn set_color(&mut self, color: Rgba) { self.color = color; }
-    pub fn set_texture(&mut self, texture: Texture) { self.texture = texture; }
+    pub fn set_color(&mut self, color: Rgba) { self.renderable.set_color(color); }
+    pub fn set_texture(&mut self, texture: Texture) { self.renderable.set_texture(texture); }
 
     /// Sets whether pressing this window's titlebar starts a drag-to-move.
     pub fn set_draggable(&mut self, draggable: bool) { self.draggable = draggable; }
+
+    /// Repositions this window by `cursor`'s delta from
+    /// [`WindowDrag::start_cursor`], relative to [`WindowDrag::start_pos`].
+    /// See [`crate::Ui::drag_window`], which additionally clamps the result
+    /// to the parent and marks the subtree dirty.
+    pub fn drag_to(&mut self, cursor: (f32, f32)) {
+        let dx = cursor.0 - self.drag.start_cursor.0;
+        let dy = cursor.1 - self.drag.start_cursor.1;
+        self.base.bounds.x = self.drag.start_pos.0 + dx;
+        self.base.bounds.y = self.drag.start_pos.1 + dy;
+    }
 }
 
 impl Default for WindowNode {

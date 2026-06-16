@@ -26,8 +26,6 @@ pub struct GlyphInfo {
 pub struct FontAtlas {
     pub texture_id:  TextureId,
     pub glyphs:      HashMap<char, GlyphInfo>,
-    /// UV coordinate of a single white texel, used for solid-color quads.
-    pub white_uv:    [f32; 2],
     pub line_height: f32,
     /// Height of uppercase letters — used for vertical centering.
     pub cap_height:  f32,

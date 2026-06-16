@@ -1,48 +1,11 @@
 use crate::types::{Rgba, Texture};
 
-use super::{Container, NodeBase};
-
-/// Scroll state for a [`PanelNode`] acting as a scroll panel: an offset
-/// applied to its children's resolved positions (shifting content within
-/// the panel's own bounds, which remain the clip/viewport rect via
-/// `clip_children`), and the total size of that content for clamping the
-/// offset.
-pub struct Scroll {
-    pub offset: (f32, f32),
-    pub content_size: (f32, f32),
-    /// Index of a [`super::SliderNode`] acting as this panel's scrollbar, if
-    /// any. When set, scroll-wheel input handled by
-    /// [`crate::Ui::handle_input`] also updates this slider's value and
-    /// thumb position to match the new offset (along the slider's own
-    /// [`super::Axis`]). The reverse direction - dragging the scrollbar
-    /// updating this panel's offset - is the host's responsibility via the
-    /// slider's `on_value_changed` callback.
-    pub scrollbar: Option<usize>,
-}
-
-impl Scroll {
-    pub fn new(content_size: (f32, f32)) -> Self {
-        Self { offset: (0.0, 0.0), content_size, scrollbar: None }
-    }
-
-    /// Maximum offset per axis before content's trailing edge would pass
-    /// the viewport's trailing edge.
-    pub fn max_offset(&self, viewport: (f32, f32)) -> (f32, f32) {
-        ((self.content_size.0 - viewport.0).max(0.0), (self.content_size.1 - viewport.1).max(0.0))
-    }
-
-    /// Sets `offset`, clamped to `[0, max_offset(viewport)]` per axis.
-    pub fn set_offset(&mut self, offset: (f32, f32), viewport: (f32, f32)) {
-        let max = self.max_offset(viewport);
-        self.offset = (offset.0.clamp(0.0, max.0), offset.1.clamp(0.0, max.1));
-    }
-}
+use super::{Container, NodeBase, Renderable, Scroll};
 
 /// Visible background panel. Labelable.
 pub struct PanelNode {
     pub base: NodeBase,
-    pub(crate) color: Rgba,
-    pub(crate) texture: Texture,
+    pub(crate) renderable: Renderable,
     pub container: Container,
     /// `Some` if this panel acts as a scroll viewport for its children; see
     /// [`Scroll`]. `None` by default.
@@ -53,15 +16,14 @@ impl PanelNode {
     pub fn new() -> Self {
         Self {
             base: NodeBase::new(),
-            color: Rgba::new(0.0, 0.0, 0.0, 0.0),
-            texture: Texture::default(),
+            renderable: Renderable::default(),
             container: Container::new(),
             scroll: None,
         }
     }
 
-    pub fn set_color(&mut self, color: Rgba) { self.color = color; }
-    pub fn set_texture(&mut self, texture: Texture) { self.texture = texture; }
+    pub fn set_color(&mut self, color: Rgba) { self.renderable.set_color(color); }
+    pub fn set_texture(&mut self, texture: Texture) { self.renderable.set_texture(texture); }
 
     /// Enables scrolling with the given total content size. This panel's
     /// own `base.bounds` size becomes the scroll viewport. Typically paired

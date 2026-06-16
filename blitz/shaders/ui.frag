@@ -17,6 +17,10 @@ void main() {
         gl_FragCoord.y < pc.clip_rect.y || gl_FragCoord.y > pc.clip_rect.w) {
         discard;
     }
-    float coverage = texture(atlas, fragUv).r;
-    outColor = vec4(1.0, 1.0, 1.0, coverage) * fragColor;
+    if (fragUv == vec2(0.0)) {
+        outColor = fragColor;
+    } else {
+        float coverage = texture(atlas, fragUv).r;
+        outColor = vec4(1.0, 1.0, 1.0, coverage) * fragColor;
+    }
 }

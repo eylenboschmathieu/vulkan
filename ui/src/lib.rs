@@ -21,17 +21,6 @@ use layers::LayerOrder;
 use navigator::Navigator;
 use nodes::*;
 
-/// Default scroll-wheel step, in UI pixels per wheel "line", for a scroll
-/// panel's axes that aren't covered by its [`Scroll::scrollbar`] (or for
-/// panels with no scrollbar at all). See [`Ui::line_scroll_step`].
-const DEFAULT_LINE_STEP: f32 = 48.0;
-
-/// Gap, in UI pixels, kept between a scroll panel's scrollbar thumb and the
-/// track's edges: split in half for the two ends along the track's main axis
-/// (via [`SliderNode::set_track_padding`]), and used in full to shrink the
-/// thumb's cross-axis size. See [`Ui::layout_scroll_panel`].
-const SCROLLBAR_THUMB_PADDING: f32 = 4.0;
-
 #[derive(Clone, Copy)]
 pub struct Rect {
     pub x: f32,
@@ -98,6 +87,11 @@ pub struct DrawBatch {
     pub first_quad: usize,
     /// Number of quads in this batch.
     pub quad_count: usize,
+    /// Index of the `clip_children` node that generated `clip_rect`, or
+    /// `None` for unclipped batches. Two batches that coincidentally resolve
+    /// to the same clip rect but from different ancestors are kept separate
+    /// so that [`Ui::refresh_batch_clip`] can never update the wrong one.
+    clip_source: Option<usize>,
 }
 
 // ── UiTree ───────────────────────────────────────────────────────────────────
@@ -268,72 +262,26 @@ pub struct Ui {
     events: Vec<UiEvent>,
 }
 
-/// Builds the quads for a label's text, starting at `(left, baseline_y)` and
-/// always emitting exactly `max_len` quads — one per reserved character slot —
-/// so a label occupies a constant amount of vertex-buffer space regardless of
-/// how long its current text is. Slots with nothing to draw (a character
-/// missing from the atlas, or padding past the end of `text`) get a
-/// degenerate, zero-area quad, which rasterizes to nothing.
-fn label_quads(atlas: &FontAtlas, text: &str, color: Rgba, start_x: f32, baseline_y: f32, max_len: usize) -> Vec<Vertex> {
-    let mut verts: Vec<Vertex> = Vec::with_capacity(max_len * 4);
-    let mut cursor_x = start_x;
-    let mut chars = text.chars();
-
-    for _ in 0..max_len {
-        let c = chars.next();
-        let glyph = c.and_then(|c| atlas.glyphs.get(&c));
-
-        match glyph {
-            Some(g) => {
-                let [u0, v0] = g.uv_min;
-                let [u1, v1] = g.uv_max;
-                let left   = cursor_x + g.bearing_x;
-                let right  = left + g.width as f32;
-                let top    = baseline_y - g.bearing_y - g.height as f32;
-                let bottom = baseline_y - g.bearing_y;
-
-                verts.push(Vertex::new(Pos2 { x: left,  y: top    }, UV::new(u0, v0), color));
-                verts.push(Vertex::new(Pos2 { x: right, y: top    }, UV::new(u1, v0), color));
-                verts.push(Vertex::new(Pos2 { x: right, y: bottom }, UV::new(u1, v1), color));
-                verts.push(Vertex::new(Pos2 { x: left,  y: bottom }, UV::new(u0, v1), color));
-
-                cursor_x += g.advance;
-            }
-            None => {
-                let p = Pos2 { x: cursor_x, y: baseline_y };
-                let degenerate = Vertex::new(p, UV::new(0.0, 0.0), color);
-                verts.extend_from_slice(&[degenerate; 4]);
-
-                if c.is_some() { cursor_x += 8.0; }
-            }
-        }
-    }
-
-    verts
-}
-
 /// Appends a `[first_quad, first_quad + quad_count)` range to `batches`,
 /// extending the last batch if it's contiguous and shares `clip`, or pushing
 /// a new one otherwise. A no-op if `quad_count == 0`.
 ///
 /// Merging is based on `clip` *value* equality, not on the two ranges
-/// sharing a `clip_children` ancestor. If two unrelated subtrees happen to
-/// resolve to numerically equal clip rects (or both `None`) at flush time,
-/// they'll share one batch. Should one of them later move,
-/// [`refresh_batch_clip`](Ui::refresh_batch_clip) updates that batch's
-/// single `clip_rect` from whichever dirty node it sees — so the other
-/// subtree's clip would silently follow along. This is a latent
-/// (currently unobserved) edge case rather than a guaranteed-safe
-/// invariant.
-fn push_batch(batches: &mut Vec<DrawBatch>, clip: Option<Edges>, first_quad: usize, quad_count: usize) {
+/// Merges require both a matching `clip` value and the same `clip_source`
+/// (the `clip_children` ancestor that produced the rect). This prevents two
+/// unrelated subtrees that coincidentally resolve to equal clip rects from
+/// sharing a batch, which would let [`Ui::refresh_batch_clip`] silently
+/// update the wrong subtree's scissor.
+fn push_batch(batches: &mut Vec<DrawBatch>, clip: Option<Edges>, clip_source: Option<usize>, first_quad: usize, quad_count: usize) {
     if quad_count == 0 { return; }
     if let Some(last) = batches.last_mut()
-        && last.clip_rect == clip && last.first_quad + last.quad_count == first_quad {
+        && last.clip_rect == clip && last.clip_source == clip_source
+        && last.first_quad + last.quad_count == first_quad {
         last.quad_count += quad_count;
         return;
     }
 
-    batches.push(DrawBatch { clip_rect: clip, first_quad, quad_count });
+    batches.push(DrawBatch { clip_rect: clip, clip_source, first_quad, quad_count });
 }
 
 /// Builds the 4 vertices of a quad filling `edges`, sampling `texture`'s UV
@@ -389,24 +337,18 @@ impl Ui {
         Ok((idx, c))
     }
 
-    /// The shared UI atlas's white texel, tagged with its texture id — the
-    /// default texture for nodes that render a solid color quad.
-    fn solid_texture(&self) -> Texture {
-        Texture { id: self.font_atlas.texture_id, uv_min: self.font_atlas.white_uv, uv_max: self.font_atlas.white_uv }
+    pub(crate) fn add_node(&mut self, node: UiNode, parent: usize) -> Result<usize> {
+        self.tree.add_child(node, parent)
     }
 
     pub fn create_panel(&mut self, parent: usize) -> Result<(usize, &mut PanelNode)> {
-        let mut p = PanelNode::new();
-        p.set_texture(self.solid_texture());
-        let idx = self.tree.add_child(UiNode::Panel(p), parent)?;
+        let idx = self.tree.add_child(UiNode::Panel(PanelNode::new()), parent)?;
         let p = self.tree.get_node_mut::<PanelNode>(idx)?;
         Ok((idx, p))
     }
 
     pub fn create_button(&mut self, parent: usize) -> Result<(usize, &mut ButtonNode)> {
-        let mut b = ButtonNode::new();
-        b.set_texture(self.solid_texture());
-        let idx = self.tree.add_child(UiNode::Button(b), parent)?;
+        let idx = self.tree.add_child(UiNode::Button(ButtonNode::new()), parent)?;
         let b = self.tree.get_node_mut::<ButtonNode>(idx)?;
         Ok((idx, b))
     }
@@ -421,9 +363,7 @@ impl Ui {
     }
 
     pub fn create_checkbox(&mut self, parent: usize) -> Result<(usize, &mut CheckboxNode)> {
-        let mut c = CheckboxNode::new();
-        c.set_texture(self.solid_texture());
-        let idx = self.tree.add_child(UiNode::Checkbox(c), parent)?;
+        let idx = self.tree.add_child(UiNode::Checkbox(CheckboxNode::new()), parent)?;
         let c = self.tree.get_node_mut::<CheckboxNode>(idx)?;
         Ok((idx, c))
     }
@@ -431,21 +371,7 @@ impl Ui {
     /// Also creates the slider's thumb (a [`ButtonNode`]) as a child and
     /// wires its index back into the returned `SliderNode`.
     pub fn create_slider(&mut self, parent: usize, axis: Axis) -> Result<(usize, &mut SliderNode)> {
-        let mut slider = SliderNode::new(axis);
-        slider.panel.set_texture(self.solid_texture());
-        let slider_idx = self.tree.add_child(UiNode::Slider(slider), parent)?;
-
-        let (thumb_idx, thumb) = self.create_button(slider_idx)?;
-        match axis {
-            Axis::Horizontal => thumb.base.set_size(16.0, 32.0),
-            Axis::Vertical   => thumb.base.set_size(32.0, 16.0),
-        }
-        thumb.set_color(Rgba::new(0.8, 0.8, 0.8, 0.9));
-        thumb.set_hover_color(Some(Rgba::new(0.3, 0.6, 1.0, 0.9)));
-
-        let s = self.tree.get_node_mut::<SliderNode>(slider_idx)?;
-        s.set_thumb(Some(thumb_idx));
-        Ok((slider_idx, s))
+        SliderNode::build(self, parent, axis)
     }
 
     /// Creates a floating window of the given size: a border/frame quad with
@@ -454,53 +380,7 @@ impl Ui {
     /// under the returned `WindowNode::body`, e.g. via
     /// `ui.create_panel(window.body)`.
     pub fn create_window(&mut self, parent: usize, width: f32, height: f32) -> Result<(usize, &mut WindowNode)> {
-        let solid = self.solid_texture();
-
-        let frame_color = Rgba::new(0.25, 0.25, 0.3, 1.0);
-
-        let window_idx = self.tree.add_child(UiNode::Window(WindowNode::new()), parent)?;
-        let w = self.tree.get_node_mut::<WindowNode>(window_idx)?;
-        w.base.set_size(width, height);
-        w.set_color(frame_color);
-        w.set_texture(solid);
-
-        let (titlebar_idx, titlebar) = self.create_panel(window_idx)?;
-        titlebar.base.set_position(Anchor::TopLeft, WINDOW_BORDER, WINDOW_BORDER);
-        titlebar.base.set_size(width - 2.0 * WINDOW_BORDER, TITLEBAR_HEIGHT);
-        titlebar.set_color(frame_color);
-
-        let (title_idx, title) = self.create_label(titlebar_idx)?;
-        title.set_color(Rgba::new(1.0, 1.0, 1.0, 1.0));
-        title.base.set_position(Anchor::Left, 0.0, 0.0);
-
-        let (close_idx, close_btn) = self.create_button(titlebar_idx)?;
-        close_btn.base.set_size(TITLEBAR_HEIGHT, TITLEBAR_HEIGHT);
-        close_btn.base.set_position(Anchor::TopRight, 0.0, 0.0);
-        close_btn.set_color(Rgba::new(1.0, 1.0, 1.0, 0.15));
-        close_btn.set_hover_color(Some(Rgba::new(0.8, 0.2, 0.2, 0.7)));
-        close_btn.interaction.on_release = Some(Box::new(move |ui: &mut Ui| {
-            let _ = ui.set_visible(window_idx, false);
-        }));
-
-        let close_label_width = self.label_width("x");
-        let (_, close_label) = self.create_label(close_idx)?;
-        close_label.set_text("x");
-        close_label.set_color(Rgba::new(1.0, 1.0, 1.0, 1.0));
-        close_label.base.set_width(close_label_width);
-        close_label.base.set_position(Anchor::Center, 0.0, 0.0);
-
-        let (body_idx, body) = self.create_panel(window_idx)?;
-        body.base.set_position(Anchor::TopLeft, WINDOW_BORDER, TITLEBAR_HEIGHT + 2.0 * WINDOW_BORDER);
-        body.base.set_size(width - 2.0 * WINDOW_BORDER, height - TITLEBAR_HEIGHT - 3.0 * WINDOW_BORDER);
-        body.set_color(Rgba::new(0.15, 0.15, 0.17, 0.95));
-        body.container.clip_children = true;
-
-        let w = self.tree.get_node_mut::<WindowNode>(window_idx)?;
-        w.titlebar = titlebar_idx;
-        w.title = title_idx;
-        w.close_button = close_idx;
-        w.body = body_idx;
-        Ok((window_idx, w))
+        WindowNode::build(self, parent, width, height)
     }
 
     /// Creates a scroll panel: a scroll-enabled content [`PanelNode`]
@@ -512,53 +392,7 @@ impl Ui {
     /// over. The scrollbar's `step_size` and all colors/textures are left at
     /// their defaults for the caller to set via the returned indices.
     pub fn create_scroll_panel(&mut self, parent: usize, axis: Axis, viewport: (f32, f32), scrollbar_width: f32, content_size: (f32, f32)) -> Result<(usize, &mut ScrollPanelNode)> {
-        let frame_idx = self.tree.add_child(UiNode::ScrollPanel(ScrollPanelNode::new(axis, scrollbar_width, 0, 0, 0, 0)), parent)?;
-
-        let (content_idx, content) = self.create_panel(frame_idx)?;
-        content.enable_scroll(content_size);
-        self.set_clip_children(content_idx, true)?;
-
-        let (scrollbar_idx, _) = self.create_slider(frame_idx, axis)?;
-
-        let (dec_idx, dec) = self.create_button(frame_idx)?;
-        dec.set_color(Rgba::new(0.8, 0.8, 0.8, 0.9));
-        dec.set_hover_color(Some(Rgba::new(0.3, 0.6, 1.0, 0.9)));
-        dec.interaction.on_release = Some(Box::new(move |ui: &mut Ui| {
-            let _ = ui.step_slider(scrollbar_idx, false);
-        }));
-
-        let (inc_idx, inc) = self.create_button(frame_idx)?;
-        inc.set_color(Rgba::new(0.8, 0.8, 0.8, 0.9));
-        inc.set_hover_color(Some(Rgba::new(0.3, 0.6, 1.0, 0.9)));
-        inc.interaction.on_release = Some(Box::new(move |ui: &mut Ui| {
-            let _ = ui.step_slider(scrollbar_idx, true);
-        }));
-
-        if let Some(scroll) = &mut self.get_node_mut::<PanelNode>(content_idx)?.scroll {
-            scroll.scrollbar = Some(scrollbar_idx);
-        }
-        self.get_node_mut::<SliderNode>(scrollbar_idx)?.on_value_changed = Some(Box::new(move |ui: &mut Ui| {
-            let value = ui.get_node::<SliderNode>(scrollbar_idx).map(|s| s.value).unwrap_or(0);
-            let offset = match axis {
-                Axis::Horizontal => (value as f32, 0.0),
-                Axis::Vertical   => (0.0, value as f32),
-            };
-            let _ = ui.set_scroll_offset(content_idx, offset);
-        }));
-
-        let frame_size = match axis {
-            Axis::Vertical   => (viewport.0 + scrollbar_width, viewport.1),
-            Axis::Horizontal => (viewport.0, viewport.1 + scrollbar_width),
-        };
-        let frame = self.get_node_mut::<ScrollPanelNode>(frame_idx)?;
-        frame.base.set_size(frame_size.0, frame_size.1);
-        frame.content_idx = content_idx;
-        frame.scrollbar_idx = scrollbar_idx;
-        frame.dec_idx = dec_idx;
-        frame.inc_idx = inc_idx;
-
-        self.layout_scroll_panel(frame_idx, content_size)?;
-        Ok((frame_idx, self.get_node_mut::<ScrollPanelNode>(frame_idx)?))
+        ScrollPanelNode::build(self, parent, axis, viewport, scrollbar_width, content_size)
     }
 
     /// The number of quads in the vertex buffer produced by the last
@@ -580,17 +414,17 @@ impl Ui {
     /// The (color, texture) to render for `idx`, accounting for its
     /// hover/press state, or `None` for node types that don't render a quad
     /// of their own (containers, labels — labels are handled separately by
-    /// [`label_quads`]).
+    /// [`LabelNode::quads`]).
     fn render_data(&self, idx: usize) -> Option<(Rgba, Texture)> {
         let hovered = self.hovered_node == Some(idx);
         let pressed = self.pressed_node == Some(idx);
         let focused = self.focused_node == Some(idx);
         match &self.tree.nodes[idx] {
-            UiNode::Panel(p)    => Some((p.color, p.texture)),
+            UiNode::Panel(p)    => Some((p.renderable.color(), p.renderable.texture())),
             UiNode::Button(b)   => Some((b.display_color(hovered, pressed, focused), b.display_texture(hovered, pressed, focused))),
             UiNode::Checkbox(c) => Some((c.display_color(hovered, pressed, focused), c.display_texture(hovered, pressed, focused))),
-            UiNode::Slider(s)   => Some((s.panel.color, s.panel.texture)),
-            UiNode::Window(w)   => Some((w.color, w.texture)),
+            UiNode::Slider(s)   => Some((s.panel.renderable.color(), s.panel.renderable.texture())),
+            UiNode::Window(w)   => Some((w.renderable.color(), w.renderable.texture())),
             _ => None,
         }
     }
@@ -602,7 +436,7 @@ impl Ui {
     /// Must be called whenever a node is added, removed, or its `max_len`
     /// grows, since those events shift `vertex_offset` bookkeeping for every
     /// node that follows.
-    pub fn flush_all(&mut self) -> UiUpdate {
+    pub(crate) fn flush_all(&mut self) -> UiUpdate {
         self.dirty = false;
         self.dirty_nodes.clear();
         let atlas = &*self.font_atlas;
@@ -618,38 +452,37 @@ impl Ui {
         // back into the correct forward order — giving a full pre-order DFS
         // per subtree, so a node's entire subtree (not just its own quad)
         // stays grouped relative to its siblings' subtrees.
-        let mut stack: Vec<(usize, Edges, Option<Edges>)> = self.tree.ordered_children(0).into_iter().rev()
-            .map(|idx| (idx, root_edges, None))
+        let mut stack: Vec<(usize, Edges, Option<Edges>, Option<usize>)> = self.tree.ordered_children(0).into_iter().rev()
+            .map(|idx| (idx, root_edges, None, None))
             .collect();
 
-        while let Some((node_idx, parent_edges, clip)) = stack.pop() {
+        while let Some((node_idx, parent_edges, clip, clip_source)) = stack.pop() {
             if !self.tree.nodes[node_idx].base().visible { continue; }
 
             let e = self.tree.nodes[node_idx].base().resolve(&parent_edges, &self.tree.nodes);
 
             match &self.tree.nodes[node_idx] {
                 UiNode::Label(l) => {
-                    let text    = l.text.clone();
-                    let color   = l.color;
                     let max_len = l.max_len();
+                    let quads   = l.quads(atlas, e.left, e.bottom);
 
                     let quad_start = verts.len() / 4;
                     self.tree.nodes[node_idx].base_mut().vertex_offset = verts.len();
-                    verts.extend(label_quads(atlas, &text, color, e.left, e.bottom, max_len));
-                    push_batch(&mut batches, clip, quad_start, max_len);
+                    verts.extend(quads);
+                    push_batch(&mut batches, clip, clip_source, quad_start, max_len);
                 }
                 _ => {
                     if let Some((color, texture)) = self.render_data(node_idx) {
                         let quad_start = verts.len() / 4;
                         self.tree.nodes[node_idx].base_mut().vertex_offset = verts.len();
                         verts.extend(quad_verts(&e, color, texture));
-                        push_batch(&mut batches, clip, quad_start, 1);
+                        push_batch(&mut batches, clip, clip_source, quad_start, 1);
                     }
 
-                    let child_clip = if self.tree.nodes[node_idx].clip_children() {
-                        Some(clip.map_or(e, |c| c.intersect(&e)))
+                    let (child_clip, child_clip_source) = if self.tree.nodes[node_idx].clip_children() {
+                        (Some(clip.map_or(e, |c| c.intersect(&e))), Some(node_idx))
                     } else {
-                        clip
+                        (clip, clip_source)
                     };
 
                     let child_edges = match self.tree.nodes[node_idx].scroll() {
@@ -658,7 +491,7 @@ impl Ui {
                     };
 
                     for child_idx in self.tree.ordered_children(node_idx).into_iter().rev() {
-                        stack.push((child_idx, child_edges, child_clip));
+                        stack.push((child_idx, child_edges, child_clip, child_clip_source));
                     }
                 }
             }
@@ -679,7 +512,7 @@ impl Ui {
     /// call returns [`UiUpdate::None`] until more nodes are marked dirty;
     /// `dirty` is left untouched (and should already be `false`, or
     /// [`flush_all`](Self::flush_all) should have been called instead).
-    pub fn flush_dirty(&mut self) -> UiUpdate {
+    pub(crate) fn flush_dirty(&mut self) -> UiUpdate {
         let dirty: Vec<usize> = self.dirty_nodes.drain(..).collect();
         if dirty.is_empty() {
             return UiUpdate::None;
@@ -690,14 +523,10 @@ impl Ui {
             self.refresh_batch_clip(node_idx);
             match &self.tree.nodes[node_idx] {
                 UiNode::Label(l) => {
-                    let text    = l.text.clone();
-                    let color   = l.color;
-                    let max_len = l.max_len();
-                    let atlas   = &*self.font_atlas;
-
-                    let e      = self.node_edges(node_idx);
-                    let offset = self.tree.nodes[node_idx].base().vertex_offset;
-                    let vertices = label_quads(atlas, &text, color, e.left, e.bottom, max_len);
+                    let e        = self.node_edges(node_idx);
+                    let offset   = self.tree.nodes[node_idx].base().vertex_offset;
+                    let atlas    = &*self.font_atlas;
+                    let vertices = l.quads(atlas, e.left, e.bottom);
 
                     patches.push((offset, vertices));
                 }
@@ -815,19 +644,11 @@ impl Ui {
     }
 
     /// The pixel distance to scroll `scroll_idx` per wheel "line", per axis.
-    /// If it has a [`Scroll::scrollbar`], that slider's `step_size` applies
-    /// along the slider's own [`Axis`] — so wheel-scrolling moves it by the
-    /// same amount as one click of its step buttons. The other axis (and
-    /// panels without a scrollbar) fall back to [`DEFAULT_LINE_STEP`].
+    /// See [`Scroll::line_step`].
     fn line_scroll_step(&self, scroll_idx: usize) -> (f32, f32) {
         let scrollbar = self.tree.nodes[scroll_idx].scroll().and_then(|s| s.scrollbar);
-        match scrollbar.and_then(|idx| self.tree.get_node::<SliderNode>(idx).ok()) {
-            Some(s) => match s.axis() {
-                Axis::Horizontal => (s.step_size as f32, DEFAULT_LINE_STEP),
-                Axis::Vertical   => (DEFAULT_LINE_STEP, s.step_size as f32),
-            },
-            None => (DEFAULT_LINE_STEP, DEFAULT_LINE_STEP),
-        }
+        let scrollbar = scrollbar.and_then(|idx| self.tree.get_node::<SliderNode>(idx).ok());
+        Scroll::line_step(scrollbar)
     }
 
     /// Marks `idx` and, recursively, all of its descendants dirty for the
@@ -842,7 +663,7 @@ impl Ui {
     /// stays at its default `0`, so [`refresh_batch_clip`](Self::refresh_batch_clip)
     /// would mistarget batch `0` for them. Their children are still
     /// recursed into and added if those render their own quad.
-    pub fn mark_dirty(&mut self, idx: usize) {
+    pub(crate) fn mark_dirty(&mut self, idx: usize) {
         if matches!(self.tree.nodes[idx], UiNode::Label(_)) || self.render_data(idx).is_some() {
             self.dirty_nodes.push(idx);
         }
@@ -857,7 +678,7 @@ impl Ui {
     /// for container-like nodes (`Group`, `Panel`, `ScrollPanel`, `Window`).
     /// Changes draw-batch boundaries, so marks the whole tree dirty for the
     /// next [`flush_all`](Self::flush_all).
-    pub fn set_clip_children(&mut self, idx: usize, clip: bool) -> Result<()> {
+    pub(crate) fn set_clip_children(&mut self, idx: usize, clip: bool) -> Result<()> {
         let node = self.tree.nodes.get_mut(idx)
             .ok_or_else(|| anyhow!("UI node index {idx} out of bounds"))?;
         *node.clip_children_mut()
@@ -886,29 +707,7 @@ impl Ui {
     /// external state, or after resizing the track set up by
     /// [`Ui::create_slider`]).
     pub fn layout_slider(&mut self, slider_idx: usize) -> Result<()> {
-        let (thumb_idx, axis) = {
-            let s = self.tree.get_node::<SliderNode>(slider_idx)?;
-            (s.get_thumb(), s.axis())
-        };
-
-        if let Some(thumb_idx) = thumb_idx {
-            let thumb_extent = match axis {
-                Axis::Horizontal => self.tree.nodes[thumb_idx].base().bounds.width,
-                Axis::Vertical   => self.tree.nodes[thumb_idx].base().bounds.height,
-            };
-            let offset = {
-                let s = self.tree.get_node::<SliderNode>(slider_idx)?;
-                s.thumb_offset(thumb_extent)
-            };
-            let thumb = self.tree.get_node_mut::<ButtonNode>(thumb_idx)?;
-            match axis {
-                Axis::Horizontal => thumb.base.set_position(Anchor::Left, offset, 0.0),
-                Axis::Vertical   => thumb.base.set_position(Anchor::Top, 0.0, offset),
-            }
-            self.dirty_nodes.push(thumb_idx);
-        }
-
-        Ok(())
+        SliderNode::layout(self, slider_idx)
     }
 
     /// After `scroll_idx`'s offset changes via scroll-wheel input, syncs its
@@ -937,7 +736,7 @@ impl Ui {
     /// the frame's current `base.bounds` minus its (fixed) `scrollbar_width`
     /// along `axis`. Shared by [`Ui::create_scroll_panel`] and
     /// [`Ui::resize_scroll_panel`].
-    fn layout_scroll_panel(&mut self, frame_idx: usize, content_size: (f32, f32)) -> Result<()> {
+    pub(crate) fn layout_scroll_panel(&mut self, frame_idx: usize, content_size: (f32, f32)) -> Result<()> {
         let (axis, scrollbar_width, content_idx, scrollbar_idx, dec_idx, inc_idx, frame_size) = {
             let f = self.get_node::<ScrollPanelNode>(frame_idx)?;
             (f.axis, f.scrollbar_width, f.content_idx, f.scrollbar_idx, f.dec_idx, f.inc_idx, (f.base.bounds.width, f.base.bounds.height))
@@ -1011,7 +810,7 @@ impl Ui {
     /// fixed `scrollbar_width`, resizes/re-clamps the content panel,
     /// repositions the scrollbar track and step buttons, and recomputes the
     /// scrollbar's range and thumb size.
-    pub fn resize_scroll_panel(&mut self, frame_idx: usize, content_size: (f32, f32)) -> Result<()> {
+    pub(crate) fn resize_scroll_panel(&mut self, frame_idx: usize, content_size: (f32, f32)) -> Result<()> {
         self.layout_scroll_panel(frame_idx, content_size)
     }
 
@@ -1020,7 +819,7 @@ impl Ui {
     /// and syncs its [`Scroll::scrollbar`] (if any) to match. Hosts should
     /// call this instead of mutating a fetched [`PanelNode`]'s scroll state
     /// directly, so the dirty-marking and scrollbar sync can't be forgotten.
-    pub fn set_scroll_offset(&mut self, idx: usize, offset: (f32, f32)) -> Result<()> {
+    pub(crate) fn set_scroll_offset(&mut self, idx: usize, offset: (f32, f32)) -> Result<()> {
         let panel = self.tree.get_node_mut::<PanelNode>(idx)?;
         panel.set_scroll_offset(offset);
         self.mark_dirty(idx);
@@ -1030,7 +829,7 @@ impl Ui {
     /// Adjusts a scroll panel's offset by `(dx, dy)`, clamped (see
     /// [`PanelNode::scroll_by`]). See [`Ui::set_scroll_offset`] re:
     /// dirty-marking and scrollbar sync.
-    pub fn scroll_by(&mut self, idx: usize, delta: (f32, f32)) -> Result<()> {
+    pub(crate) fn scroll_by(&mut self, idx: usize, delta: (f32, f32)) -> Result<()> {
         let panel = self.tree.get_node_mut::<PanelNode>(idx)?;
         panel.scroll_by(delta);
         self.mark_dirty(idx);
@@ -1055,7 +854,7 @@ impl Ui {
     /// Sets a window's frame color: both its own (border) quad and its
     /// titlebar, which share a color by convention. Marks both dirty for an
     /// in-place [`flush_dirty`](Self::flush_dirty) patch.
-    pub fn set_window_color(&mut self, idx: usize, color: Rgba) -> Result<()> {
+    pub(crate) fn set_window_color(&mut self, idx: usize, color: Rgba) -> Result<()> {
         let titlebar_idx = self.get_node::<WindowNode>(idx)?.titlebar;
         self.get_node_mut::<WindowNode>(idx)?.set_color(color);
         self.get_node_mut::<PanelNode>(titlebar_idx)?.set_color(color);
@@ -1066,7 +865,7 @@ impl Ui {
 
     /// Sets a window's background color, i.e. its [`WindowNode::body`] panel.
     /// Marks it dirty for an in-place [`flush_dirty`](Self::flush_dirty) patch.
-    pub fn set_window_background_color(&mut self, idx: usize, color: Rgba) -> Result<()> {
+    pub(crate) fn set_window_background_color(&mut self, idx: usize, color: Rgba) -> Result<()> {
         let body_idx = self.get_node::<WindowNode>(idx)?.body;
         self.get_node_mut::<PanelNode>(body_idx)?.set_color(color);
         self.dirty_nodes.push(body_idx);
@@ -1074,53 +873,24 @@ impl Ui {
     }
 
     /// Recomputes the slider's value from the cursor position relative to
-    /// where the drag started, then re-lays-out the thumb. Fires
-    /// `on_value_changed` if the value changed.
+    /// where the drag started (see [`SliderNode::drag_to`]), then re-lays-out
+    /// the thumb. Fires `on_value_changed` if the value changed.
     fn drag_slider(&mut self, slider_idx: usize, cursor: (f32, f32)) -> Result<()> {
-        let (new_value, old_value) = {
-            let s = self.tree.get_node::<SliderNode>(slider_idx)?;
-            let thumb_extent = s.get_thumb().map_or(0.0, |idx| match s.axis() {
-                Axis::Horizontal => self.tree.nodes[idx].base().bounds.width,
-                Axis::Vertical   => self.tree.nodes[idx].base().bounds.height,
-            });
-            (s.value_from_drag(cursor, thumb_extent), s.value)
-        };
-
-        let s = self.tree.get_node_mut::<SliderNode>(slider_idx)?;
-        s.set_value(new_value);
-
-        self.layout_slider(slider_idx)?;
-
-        if self.tree.get_node::<SliderNode>(slider_idx)?.value != old_value {
-            self.fire_slider_value_changed(slider_idx)?;
-        }
-
-        Ok(())
+        SliderNode::apply_drag(self, slider_idx, cursor)
     }
 
-    /// Adjusts a slider's value by one [`SliderNode::step_size`] — up if
-    /// `increase`, down otherwise — then re-lays-out the thumb and fires
-    /// `on_value_changed` if the value changed. Wired to a scroll panel's
-    /// dec/inc buttons (see [`Ui::create_scroll_panel`]); also callable
-    /// directly by hosts, e.g. for keyboard shortcuts.
-    pub fn step_slider(&mut self, slider_idx: usize, increase: bool) -> Result<()> {
-        let (new_value, old_value) = {
-            let s = self.tree.get_node::<SliderNode>(slider_idx)?;
-            let old = s.value;
-            let new = if increase {
-                old.saturating_add(s.step_size)
-            } else {
-                old.saturating_sub(s.step_size)
-            };
-            (new, old)
-        };
-
-        let s = self.tree.get_node_mut::<SliderNode>(slider_idx)?;
-        s.set_value(new_value);
+    /// Adjusts a slider's value by one [`SliderNode::step_size`] (see
+    /// [`SliderNode::step`]) — up if `increase`, down otherwise — then
+    /// re-lays-out the thumb and fires `on_value_changed` if the value
+    /// changed. Wired to a scroll panel's dec/inc buttons (see
+    /// [`Ui::create_scroll_panel`]); also callable directly by hosts, e.g.
+    /// for keyboard shortcuts.
+    pub(crate) fn step_slider(&mut self, slider_idx: usize, increase: bool) -> Result<()> {
+        let changed = self.tree.get_node_mut::<SliderNode>(slider_idx)?.step(increase);
 
         self.layout_slider(slider_idx)?;
 
-        if self.tree.get_node::<SliderNode>(slider_idx)?.value != old_value {
+        if changed {
             self.fire_slider_value_changed(slider_idx)?;
         }
 
@@ -1131,7 +901,7 @@ impl Ui {
     /// [`SliderNode::on_value_changed`]. Fired by [`drag_slider`](Self::drag_slider)
     /// and the track-click handler in [`handle_input`](Self::handle_input)
     /// when an interactive change actually moves the value.
-    fn fire_slider_value_changed(&mut self, slider_idx: usize) -> Result<()> {
+    pub(crate) fn fire_slider_value_changed(&mut self, slider_idx: usize) -> Result<()> {
         let UiNode::Slider(s) = &mut self.tree.nodes[slider_idx] else { return Ok(()) };
         let Some(mut callback) = s.on_value_changed.take() else { return Ok(()) };
         callback(self);
@@ -1148,11 +918,7 @@ impl Ui {
     /// resolved edges (or its `content_size`, if the parent is a scroll
     /// panel — see [`clamp_to_parent`](Self::clamp_to_parent)).
     fn drag_window(&mut self, window_idx: usize, cursor: (f32, f32)) -> Result<()> {
-        let w = self.tree.get_node_mut::<WindowNode>(window_idx)?;
-        let dx = cursor.0 - w.drag.start_cursor.0;
-        let dy = cursor.1 - w.drag.start_cursor.1;
-        w.base.bounds.x = w.drag.start_pos.0 + dx;
-        w.base.bounds.y = w.drag.start_pos.1 + dy;
+        self.tree.get_node_mut::<WindowNode>(window_idx)?.drag_to(cursor);
 
         let parent = self.tree.nodes[window_idx].base().parent;
         if parent.is_some_and(|p| self.tree.nodes[p].clamp_children()) {
@@ -1390,7 +1156,7 @@ impl Ui {
     /// around to the first. If nothing is currently focused (or the focused
     /// node is no longer focusable/visible), focuses the first one. No-op if
     /// there are no focusable nodes.
-    pub fn focus_next(&mut self) {
+    pub(crate) fn focus_next(&mut self) {
         let nodes = self.focusable_nodes();
         if nodes.is_empty() {
             return;
@@ -1406,7 +1172,7 @@ impl Ui {
     /// focusable node, wrapping around to the last. If nothing is currently
     /// focused (or the focused node is no longer focusable/visible), focuses
     /// the last one.
-    pub fn focus_prev(&mut self) {
+    pub(crate) fn focus_prev(&mut self) {
         let nodes = self.focusable_nodes();
         if nodes.is_empty() {
             return;
@@ -1440,7 +1206,7 @@ impl Ui {
     /// Tab/Enter/Escape handling, instead delivering
     /// [`UiInput::captured_key`] to `idx`'s
     /// [`InteractionCb::on_key_capture`].
-    pub fn start_key_capture(&mut self, idx: usize) {
+    pub(crate) fn start_key_capture(&mut self, idx: usize) {
         self.capturing_node = Some(idx);
         self.set_focus(Some(idx));
     }
@@ -1448,7 +1214,7 @@ impl Ui {
     /// Exits key-capture mode, restoring normal input handling. Call this
     /// from an `on_key_capture` callback once it's done with the key, or it
     /// happens automatically when the user presses Escape.
-    pub fn end_key_capture(&mut self) {
+    pub(crate) fn end_key_capture(&mut self) {
         if let Some(idx) = self.capturing_node.take()
             && matches!(self.tree.nodes[idx], UiNode::Button(_) | UiNode::Checkbox(_)) {
             self.dirty_nodes.push(idx);

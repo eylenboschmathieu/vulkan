@@ -9,7 +9,6 @@ fn test_atlas() -> Rc<FontAtlas> {
     Rc::new(FontAtlas {
         texture_id: TextureId(42),
         glyphs: HashMap::new(),
-        white_uv: [0.0, 0.0],
         line_height: 16.0,
         cap_height: 10.0,
     })
@@ -759,9 +758,9 @@ fn flush_all_groups_quads_into_clip_batches() {
     let p1_edges = ui.node_edges(p1_idx);
 
     assert_eq!(ui.batches(), &[
-        DrawBatch { clip_rect: None, first_quad: 0, quad_count: 1 },              // P1's own quad
-        DrawBatch { clip_rect: Some(p1_edges), first_quad: 1, quad_count: 2 },    // A and B
-        DrawBatch { clip_rect: None, first_quad: 3, quad_count: 1 },              // S
+        DrawBatch { clip_rect: None, clip_source: None, first_quad: 0, quad_count: 1 },
+        DrawBatch { clip_rect: Some(p1_edges), clip_source: Some(p1_idx), first_quad: 1, quad_count: 2 },
+        DrawBatch { clip_rect: None, clip_source: None, first_quad: 3, quad_count: 1 },
     ]);
 }
 

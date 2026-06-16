@@ -6,10 +6,10 @@ use cgmath::point3;
 use anyhow::Result;
 use log::*;
 use vulkanalia::vk::PresentModeKHR;
-use winit::{dpi::LogicalPosition, event::{ElementState, MouseScrollDelta}, window::{CursorGrabMode, Window}};
+use winit::{dpi::LogicalPosition, event::{ElementState, MouseScrollDelta}, keyboard::KeyCode, window::{CursorGrabMode, Window}};
 
 use blitz::VertexAllocId;
-use ui::{CursorRequest, MouseButton, UiEvent, UiInput, UiUpdate};
+use ui::{CursorRequest, Key, MouseButton, UiEvent, UiInput, UiUpdate};
 
 use crate::{camera::FpCamera, font::FontManager, input::{Action, Input, InputManager}, screens::{Screen, Screens}, world::World};
 
@@ -70,6 +70,11 @@ impl App {
     /// Update the state of keyboard or mouse buttons
     pub fn button_update<T: Into<Input>>(&mut self, button: T, state: ElementState) {
         self.input.button_update(button, state);
+    }
+
+    /// Append printable text typed this tick, forwarded from the OS keyboard event.
+    pub fn append_text(&mut self, text: &str) {
+        self.input.append_text(text);
     }
 
     /// Apply raw mouse delta to the camera. Ignored while a menu is open.
@@ -140,7 +145,27 @@ impl App {
             }
         }
 
-        let ui_input = UiInput::new(self.input.cursor())
+        const UI_KEY_MAP: &[(Key, &[KeyCode])] = &[
+            (Key::Tab,        &[KeyCode::Tab]),
+            (Key::Enter,      &[KeyCode::Enter, KeyCode::NumpadEnter]),
+            (Key::Escape,     &[KeyCode::Escape]),
+            (Key::Backspace,  &[KeyCode::Backspace]),
+            (Key::Delete,     &[KeyCode::Delete]),
+            (Key::Space,      &[KeyCode::Space]),
+            (Key::ArrowLeft,  &[KeyCode::ArrowLeft]),
+            (Key::ArrowRight, &[KeyCode::ArrowRight]),
+            (Key::ArrowUp,    &[KeyCode::ArrowUp]),
+            (Key::ArrowDown,  &[KeyCode::ArrowDown]),
+            (Key::Home,       &[KeyCode::Home]),
+            (Key::End,        &[KeyCode::End]),
+            (Key::PageUp,     &[KeyCode::PageUp]),
+            (Key::PageDown,   &[KeyCode::PageDown]),
+            (Key::Shift,      &[KeyCode::ShiftLeft,   KeyCode::ShiftRight]),
+            (Key::Control,    &[KeyCode::ControlLeft, KeyCode::ControlRight]),
+            (Key::Alt,        &[KeyCode::AltLeft,     KeyCode::AltRight]),
+        ];
+
+        let mut ui_input = UiInput::new(self.input.cursor())
             .with_mouse_button(
                 MouseButton::Primary,
                 self.input.is_held(Action::PrimaryAction),
@@ -154,6 +179,21 @@ impl App {
                 self.input.is_released(Action::SecondaryAction),
             )
             .with_scroll_delta(self.input.take_scroll());
+
+        for &(key, codes) in UI_KEY_MAP {
+            let held     = codes.iter().any(|&c| self.input.is_key_held(c));
+            let pressed  = codes.iter().any(|&c| self.input.is_key_pressed(c));
+            let released = codes.iter().any(|&c| self.input.is_key_released(c));
+            ui_input = ui_input.with_key(key, held, pressed, released);
+        }
+
+        let text = self.input.take_text();
+        if !text.is_empty() {
+            ui_input = ui_input.with_text(text);
+        }
+        if let Some(key_name) = self.input.take_captured_key() {
+            ui_input = ui_input.with_captured_key(key_name);
+        }
 
         if let Err(e) = self.ui.handle_input(&ui_input) {
             error!("UI input error: {e}");
@@ -184,6 +224,7 @@ impl App {
         }
 
         self.input.state.clear();
+        self.input.clear_raw();
         None
     }
 
@@ -223,21 +264,42 @@ impl App {
             }
         }
 
-        self.blitz.upload(|container| unsafe {
-            if self.world.has_dirty_chunks() {
-                self.world.flush_dirty(container);
-            }
-            match self.ui.flush() {
-                UiUpdate::Full(_texture_id, verts) => container.stage_vertex_update(self.ui_vertex_id, &verts),
-                UiUpdate::Partial(patches) => for (offset, verts) in patches {
-                    container.stage_vertex_update_at(self.ui_vertex_id, offset, &verts);
-                },
-                UiUpdate::None => {}
-            }
-            Ok(())
-        })?;
-
         if self.blitz.start_render(window)? {
+            // Upload happens here, AFTER start_render's fence waits, not before.
+            //
+            // The upload submits a vkCmdCopyBuffer on the transfer queue and then
+            // blocks the CPU via queue_wait_idle until the copy finishes. If the
+            // upload ran before start_render, the transfer write could race with
+            // the previous frame's graphics reads on the same vertex buffer —
+            // queue_wait_idle only tells the CPU the transfer is done; it says
+            // nothing about the graphics queue's in-flight commands on the GPU.
+            //
+            // start_render waits on two fences: the in-flight fence (frame N-2)
+            // and the image-in-flight fence (the last frame that used this
+            // swapchain image, which covers frame N-1 when using 2 images).
+            // Once both return, it is safe to write any buffer that those frames
+            // were reading.
+            //
+            // Spec note: strictly, Vulkan also requires a semaphore between the
+            // transfer submission and the graphics submission to establish a
+            // memory dependency across queues. queue_wait_idle + sequential CPU
+            // submission is reliable on NVIDIA in practice, but the correct fix
+            // is to signal a semaphore from the transfer submit and wait on it in
+            // the graphics submit before the first vertex read.
+            self.blitz.upload(|container| unsafe {
+                if self.world.has_dirty_chunks() {
+                    self.world.flush_dirty(container);
+                }
+                match self.ui.flush() {
+                    UiUpdate::Full(_texture_id, verts) => container.stage_vertex_update(self.ui_vertex_id, &verts),
+                    UiUpdate::Partial(patches) => for (offset, verts) in patches {
+                        container.stage_vertex_update_at(self.ui_vertex_id, offset, &verts);
+                    },
+                    UiUpdate::None => {}
+                }
+                Ok(())
+            })?;
+
             if self.current_screen() != Screen::Title {
                 self.world.draw(&mut self.blitz, &self.camera)?;
             }

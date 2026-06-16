@@ -197,9 +197,10 @@ impl UiTree {
         if !edges.contains(mx, my) { return None; }
         if !clip.is_none_or(|c| c.contains(mx, my)) { return None; }
 
-        // Containers and labels are transparent to input
+        // Containers, labels, and non-interactive overlay nodes are transparent to input.
         match node {
             UiNode::Group(_) | UiNode::Label(_) => None,
+            _ if !node.base().interactive => None,
             _ => Some(node_idx),
         }
     }
@@ -233,10 +234,23 @@ pub struct Ui {
     /// draggable window via its titlebar), if any.
     dragging_node: Option<usize>,
     /// The node with keyboard focus, if any — Tab/Shift+Tab move this
-    /// between [`UiNode::focusable`] nodes, and Enter/Space activate it. A
-    /// [`ButtonNode`] or [`CheckboxNode`]'s `focused_color`/`focused_texture`
-    /// applies while this is `Some(idx)` for its own index.
+    /// between [`UiNode::focusable`] nodes, and Enter/Space activate it.
     focused_node: Option<usize>,
+    /// Index of the focus-ring overlay panel, created lazily on the first
+    /// `set_focus(Some(_))` call. Lives at root with `band = u32::MAX` so it
+    /// always renders on top of everything else.
+    pub(crate) focus_ring_idx: Option<usize>,
+    /// Set to `true` by `flush_all` once the ring node has been assigned a
+    /// vertex slot. Guards `mark_dirty(ring_idx)` calls in `set_focus` so we
+    /// never patch a stale or uninitialized `vertex_offset`.
+    ring_has_slot: bool,
+    /// When `Some(scope)`, Tab cycles only within that node's subtree. Set to
+    /// the innermost orderable (`z_index > 0`) ancestor when the user clicks
+    /// any descendant of an orderable node; cleared when clicking outside any
+    /// orderable node or when the scoped node is hidden. Regardless of scope,
+    /// `collect_focusable` never descends into orderable nodes other than the
+    /// scope root — those form their own independent Tab scopes.
+    tab_scope: Option<usize>,
     /// The node currently capturing raw keyboard input, if any — see
     /// [`start_key_capture`](Self::start_key_capture). While `Some`,
     /// [`handle_input`](Self::handle_input) bypasses hit-testing and the
@@ -308,6 +322,9 @@ impl Ui {
             pressed_node: None,
             dragging_node: None,
             focused_node: None,
+            focus_ring_idx: None,
+            ring_has_slot: false,
+            tab_scope: None,
             capturing_node: None,
             dirty_nodes: Vec::new(),
             navigator: None,
@@ -418,11 +435,10 @@ impl Ui {
     fn render_data(&self, idx: usize) -> Option<(Rgba, Texture)> {
         let hovered = self.hovered_node == Some(idx);
         let pressed = self.pressed_node == Some(idx);
-        let focused = self.focused_node == Some(idx);
         match &self.tree.nodes[idx] {
             UiNode::Panel(p)    => Some((p.renderable.color(), p.renderable.texture())),
-            UiNode::Button(b)   => Some((b.display_color(hovered, pressed, focused), b.display_texture(hovered, pressed, focused))),
-            UiNode::Checkbox(c) => Some((c.display_color(hovered, pressed, focused), c.display_texture(hovered, pressed, focused))),
+            UiNode::Button(b)   => Some((b.display_color(hovered, pressed), b.display_texture(hovered, pressed))),
+            UiNode::Checkbox(c) => Some((c.display_color(hovered, pressed), c.display_texture(hovered, pressed))),
             UiNode::Slider(s)   => Some((s.panel.renderable.color(), s.panel.renderable.texture())),
             UiNode::Window(w)   => Some((w.renderable.color(), w.renderable.texture())),
             _ => None,
@@ -439,6 +455,7 @@ impl Ui {
     pub(crate) fn flush_all(&mut self) -> UiUpdate {
         self.dirty = false;
         self.dirty_nodes.clear();
+        self.ring_has_slot = false;
         let atlas = &*self.font_atlas;
         let mut verts: Vec<Vertex> = Vec::new();
         let mut batches: Vec<DrawBatch> = Vec::new();
@@ -467,16 +484,21 @@ impl Ui {
                     let quads   = l.quads(atlas, e.left, e.bottom);
 
                     let quad_start = verts.len() / 4;
-                    self.tree.nodes[node_idx].base_mut().vertex_offset = verts.len();
+                    let slot = verts.len();
                     verts.extend(quads);
+                    self.tree.nodes[node_idx].base_mut().vertex_offset = slot;
                     push_batch(&mut batches, clip, clip_source, quad_start, max_len);
                 }
                 _ => {
                     if let Some((color, texture)) = self.render_data(node_idx) {
                         let quad_start = verts.len() / 4;
-                        self.tree.nodes[node_idx].base_mut().vertex_offset = verts.len();
+                        let slot = verts.len();
                         verts.extend(quad_verts(&e, color, texture));
+                        self.tree.nodes[node_idx].base_mut().vertex_offset = slot;
                         push_batch(&mut batches, clip, clip_source, quad_start, 1);
+                        if Some(node_idx) == self.focus_ring_idx {
+                            self.ring_has_slot = true;
+                        }
                     }
 
                     let (child_clip, child_clip_source) = if self.tree.nodes[node_idx].clip_children() {
@@ -518,25 +540,54 @@ impl Ui {
             return UiUpdate::None;
         }
 
+        let focused_was_dirty = self.focused_node.is_some_and(|f| dirty.contains(&f));
+
         let mut patches: Vec<(usize, Vec<Vertex>)> = Vec::with_capacity(dirty.len());
         for node_idx in dirty {
             self.refresh_batch_clip(node_idx);
+            let e = self.node_edges(node_idx);
+
             match &self.tree.nodes[node_idx] {
                 UiNode::Label(l) => {
-                    let e        = self.node_edges(node_idx);
                     let offset   = self.tree.nodes[node_idx].base().vertex_offset;
                     let atlas    = &*self.font_atlas;
                     let vertices = l.quads(atlas, e.left, e.bottom);
-
                     patches.push((offset, vertices));
                 }
                 _ => {
                     if let Some((color, texture)) = self.render_data(node_idx) {
-                        let e      = self.node_edges(node_idx);
                         let offset = self.tree.nodes[node_idx].base().vertex_offset;
                         patches.push((offset, quad_verts(&e, color, texture).to_vec()));
                     }
                 }
+            }
+        }
+
+        // If the focused node moved this frame (e.g. its own bounds changed),
+        // recompute the ring's local position and patch its vertex. Skip until
+        // flush_all has assigned the ring a vertex slot (ring_has_slot guard).
+        if focused_was_dirty
+            && let Some(focused_idx) = self.focused_node
+            && let Some(ring_idx)    = self.focus_ring_idx
+            && self.ring_has_slot
+        {
+            let focused_e  = self.node_edges(focused_idx);
+            let parent_idx = self.tree.nodes[ring_idx].base().parent.unwrap_or(0);
+            let parent_abs = self.node_edges(parent_idx);
+            let (sx, sy)   = self.tree.nodes[parent_idx].scroll()
+                .map(|s| (s.offset.0, s.offset.1))
+                .unwrap_or((0.0, 0.0));
+            {
+                let ring = self.tree.nodes[ring_idx].base_mut();
+                ring.bounds.x      = focused_e.left   - (parent_abs.left - sx);
+                ring.bounds.y      = focused_e.top    - (parent_abs.top  - sy);
+                ring.bounds.width  = focused_e.right  - focused_e.left;
+                ring.bounds.height = focused_e.bottom - focused_e.top;
+            }
+            if let Some((color, texture)) = self.render_data(ring_idx) {
+                let ring_e = self.node_edges(ring_idx);
+                let offset = self.tree.nodes[ring_idx].base().vertex_offset;
+                patches.push((offset, quad_verts(&ring_e, color, texture).to_vec()));
             }
         }
 
@@ -826,6 +877,38 @@ impl Ui {
         self.sync_scrollbar(idx)
     }
 
+    /// Scrolls `node_idx`'s nearest scrollable ancestor just enough to make
+    /// `node_idx` fully visible within the viewport. A no-op if the node is
+    /// already fully visible, has no scrollable ancestor, or its
+    /// [`NodeBase::cached_edges`] have not yet been written by a
+    /// [`flush_all`](Self::flush_all) call.
+    fn scroll_into_view(&mut self, node_idx: usize) -> Result<()> {
+        let Some(scroll_idx) = self.scrollable_ancestor(node_idx) else { return Ok(()) };
+        let node_e = self.node_edges(node_idx);
+        let viewport = self.node_edges(scroll_idx);
+
+        let dx = if node_e.left < viewport.left {
+            node_e.left - viewport.left
+        } else if node_e.right > viewport.right {
+            node_e.right - viewport.right
+        } else {
+            0.0
+        };
+
+        let dy = if node_e.top < viewport.top {
+            node_e.top - viewport.top
+        } else if node_e.bottom > viewport.bottom {
+            node_e.bottom - viewport.bottom
+        } else {
+            0.0
+        };
+
+        if dx != 0.0 || dy != 0.0 {
+            self.scroll_by(scroll_idx, (dx, dy))?;
+        }
+        Ok(())
+    }
+
     /// Adjusts a scroll panel's offset by `(dx, dy)`, clamped (see
     /// [`PanelNode::scroll_by`]). See [`Ui::set_scroll_offset`] re:
     /// dirty-marking and scrollbar sync.
@@ -894,6 +977,23 @@ impl Ui {
             self.fire_slider_value_changed(slider_idx)?;
         }
 
+        Ok(())
+    }
+
+    /// Jumps a slider to its minimum (`to_max = false`) or maximum (`to_max =
+    /// true`) value, then re-lays-out the thumb and fires `on_value_changed`
+    /// if the value changed. Used by Ctrl+Arrow key on a focused slider.
+    pub(crate) fn jump_slider(&mut self, slider_idx: usize, to_max: bool) -> Result<()> {
+        let target = {
+            let s = self.tree.get_node::<SliderNode>(slider_idx)?;
+            if to_max { s.max_value() } else { s.min_value() }
+        };
+        let old = self.tree.get_node::<SliderNode>(slider_idx)?.value;
+        self.tree.get_node_mut::<SliderNode>(slider_idx)?.set_value(target);
+        self.layout_slider(slider_idx)?;
+        if self.tree.get_node::<SliderNode>(slider_idx)?.value != old {
+            self.fire_slider_value_changed(slider_idx)?;
+        }
         Ok(())
     }
 
@@ -1026,12 +1126,17 @@ impl Ui {
             if let Some(focused) = self.focused_node
                 && self.is_or_contains(idx, focused)
             {
-                self.focused_node = None;
+                self.set_focus(None);
             }
             if let Some(capturing) = self.capturing_node
                 && self.is_or_contains(idx, capturing)
             {
                 self.capturing_node = None;
+            }
+            if let Some(scope) = self.tab_scope
+                && self.is_or_contains(idx, scope)
+            {
+                self.tab_scope = None;
             }
         }
 
@@ -1109,23 +1214,92 @@ impl Ui {
         Ok(())
     }
 
-    /// Changes [`focused_node`](Self::focused_node) to `new`, marking the
-    /// old and new focused nodes (if `Button`/`Checkbox`) dirty so their
-    /// `focused_color`/`focused_texture` is repainted. No-op if `new` is
-    /// already the focused node.
+    /// Changes [`focused_node`](Self::focused_node) to `new`. Repositions the
+    /// focus-ring overlay over the new node (creating it lazily on first use),
+    /// or hides it when `new` is `None`. No-op if `new` is already focused.
     fn set_focus(&mut self, new: Option<usize>) {
         if self.focused_node == new {
             return;
         }
-        if let Some(old) = self.focused_node
-            && matches!(self.tree.nodes[old], UiNode::Button(_) | UiNode::Checkbox(_)) {
-            self.dirty_nodes.push(old);
-        }
-        if let Some(idx) = new
-            && matches!(self.tree.nodes[idx], UiNode::Button(_) | UiNode::Checkbox(_)) {
-            self.dirty_nodes.push(idx);
-        }
         self.focused_node = new;
+
+        if let Some(idx) = new {
+            let _ = self.scroll_into_view(idx);
+
+            // The ring lives as a sibling of the focused node (same parent).
+            // This gives it the correct clip ancestry and z-order: it renders
+            // after the focused node in insertion order (z_index=0, added last),
+            // so it overlays the focused node but is occluded by any higher-z
+            // siblings such as nested windows.
+            let focused_parent = self.tree.nodes[idx].base().parent.unwrap_or(0);
+
+            // Lazily allocate the ring node on the first focus event.
+            // Parent and children-list wiring happen in the block below.
+            if self.focus_ring_idx.is_none() {
+                let ring_idx = self.tree.nodes.len();
+                let mut node = UiNode::Panel(PanelNode::new());
+                node.base_mut().interactive = false;
+                if let UiNode::Panel(p) = &mut node {
+                    p.renderable.set_color(Rgba::new(0.0, 0.0, 0.0, 0.0));
+                }
+                self.tree.nodes.push(node);
+                self.focus_ring_idx = Some(ring_idx);
+            }
+
+            if let Some(ring_idx) = self.focus_ring_idx {
+                // Remove the ring from wherever it currently lives.
+                if let Some(old_parent) = self.tree.nodes[ring_idx].base().parent {
+                    if let Some(ch) = self.tree.nodes[old_parent].children_mut() {
+                        ch.retain(|&c| c != ring_idx);
+                    }
+                }
+
+                // Insert ring immediately after the focused node so it renders
+                // directly on top of its button. Siblings with z_index >= 1
+                // (sub-windows) sort after all z=0 nodes → they correctly
+                // occlude the ring regardless of unregistered z=0 sub-windows.
+                let n = self.tree.nodes[focused_parent].children().map(|ch| ch.len()).unwrap_or(0);
+                let insert_pos = self.tree.nodes[focused_parent].children()
+                    .and_then(|ch| ch.iter().position(|&c| c == idx))
+                    .map(|p| p + 1)
+                    .unwrap_or(n);
+                if let Some(ch) = self.tree.nodes[focused_parent].children_mut() {
+                    ch.insert(insert_pos, ring_idx);
+                }
+                self.tree.nodes[ring_idx].base_mut().parent = Some(focused_parent);
+                // Vertex order changed → always rebuild.
+                self.dirty = true;
+
+                // Express the ring's position as LOCAL coords relative to
+                // focused_parent's reference point (parent edges adjusted for
+                // scroll), so it automatically tracks the focused node when
+                // the parent moves or scrolls.
+                let focused_e  = self.node_edges(idx);
+                let parent_abs = self.node_edges(focused_parent);
+                let (sx, sy)   = self.tree.nodes[focused_parent].scroll()
+                    .map(|s| (s.offset.0, s.offset.1))
+                    .unwrap_or((0.0, 0.0));
+                {
+                    let ring = self.tree.nodes[ring_idx].base_mut();
+                    ring.bounds.x      = focused_e.left   - (parent_abs.left - sx);
+                    ring.bounds.y      = focused_e.top    - (parent_abs.top  - sy);
+                    ring.bounds.width  = focused_e.right  - focused_e.left;
+                    ring.bounds.height = focused_e.bottom - focused_e.top;
+                }
+                if let UiNode::Panel(p) = &mut self.tree.nodes[ring_idx] {
+                    p.renderable.set_color(Rgba::new(0.3, 0.6, 1.0, 0.35));
+                }
+                // dirty=true above means flush_all is coming; it positions the
+                // ring from ring.bounds — no mark_dirty needed here.
+            }
+        } else if let Some(ring_idx) = self.focus_ring_idx {
+            if let UiNode::Panel(p) = &mut self.tree.nodes[ring_idx] {
+                p.renderable.set_color(Rgba::new(0.0, 0.0, 0.0, 0.0));
+            }
+            if self.ring_has_slot {
+                self.mark_dirty(ring_idx);
+            }
+        }
     }
 
     /// All [`UiNode::focusable`] nodes, in Tab order: a depth-first walk from
@@ -1135,7 +1309,11 @@ impl Ui {
     /// [`hit_test`](UiTree::hit_test)'s early return).
     fn focusable_nodes(&self) -> Vec<usize> {
         let mut out = Vec::new();
-        self.collect_focusable(0, &mut out);
+        let root = match self.tab_scope {
+            Some(scope) if self.tree.nodes[scope].base().visible => scope,
+            _ => 0,
+        };
+        self.collect_focusable(root, &mut out);
         out
     }
 
@@ -1147,6 +1325,16 @@ impl Ui {
             out.push(idx);
         }
         for child in self.tree.ordered_children(idx) {
+            // Orderable nodes (z_index > 0) and Window nodes each form their
+            // own Tab scope — never descend into them from outside. Tab enters
+            // one only when it IS the scope root (started from `tab_scope`).
+            // This prevents the close button of a nested window from appearing
+            // in the parent window's Tab order.
+            if self.tree.nodes[child].base().z_index > 0
+                || matches!(self.tree.nodes[child], UiNode::Window(_))
+            {
+                continue;
+            }
             self.collect_focusable(child, out);
         }
     }
@@ -1382,16 +1570,23 @@ impl Ui {
     /// [`handle_input`](Self::handle_input) on press.
     fn raise(&mut self, idx: usize) -> Result<()> {
         let mut current = idx;
+        let mut innermost_window: Option<usize> = None;
         loop {
             if self.tree.nodes[current].base().z_index > 0 {
                 self.bump_z_index(current)?;
                 self.dirty = true;
+            }
+            // Windows are Tab scope boundaries regardless of z_index — a
+            // sub-window that isn't registered as orderable still scopes Tab.
+            if matches!(self.tree.nodes[current], UiNode::Window(_)) && innermost_window.is_none() {
+                innermost_window = Some(current);
             }
             match self.tree.nodes[current].base().parent {
                 Some(parent) => current = parent,
                 None => break,
             }
         }
+        self.tab_scope = innermost_window;
         Ok(())
     }
 
@@ -1460,10 +1655,7 @@ impl Ui {
             Some(idx) => {
                 if input.primary_pressed() {
                     self.raise(idx)?;
-
-                    if self.tree.nodes[idx].focusable() {
-                        self.set_focus(Some(idx));
-                    }
+                    self.set_focus(None);
 
                     // Track pressed state for the "pressed" color/texture
                     // variants, independent of any host-attached callback.
@@ -1547,8 +1739,13 @@ impl Ui {
             }
             // A click landed on nothing the UI owns — the host decides what
             // to do with it (e.g. world interaction / selection).
-            None => if input.any_click() {
-                self.events.push(UiEvent::Unhandled);
+            None => {
+                if input.primary_pressed() {
+                    self.tab_scope = None;
+                }
+                if input.any_click() {
+                    self.events.push(UiEvent::Unhandled);
+                }
             }
         }
 
@@ -1564,6 +1761,51 @@ impl Ui {
             && let Some(idx) = self.focused_node
         {
             self.activate_focused(idx)?;
+        }
+
+        if input.key_pressed(Key::PageUp) || input.key_pressed(Key::PageDown) {
+            // Prefer the hovered scroll panel; fall back to the focused node's
+            // nearest scrollable ancestor (e.g. scrollbar slider has focus).
+            let scroll_idx = self.hovered_node
+                .and_then(|h| self.scrollable_ancestor(h))
+                .or_else(|| self.focused_node.and_then(|f| self.scrollable_ancestor(f)));
+            if let Some(scroll_idx) = scroll_idx {
+                let page_up = input.key_pressed(Key::PageUp);
+                let scrollbar_axis = {
+                    let scrollbar = self.tree.nodes[scroll_idx].scroll().and_then(|s| s.scrollbar);
+                    scrollbar.and_then(|sb| self.tree.get_node::<SliderNode>(sb).ok()).map(|s| s.axis())
+                };
+                let bounds = self.tree.nodes[scroll_idx].base().bounds;
+                let delta = match scrollbar_axis {
+                    Some(Axis::Horizontal) => if page_up { (-bounds.width, 0.0) } else { (bounds.width, 0.0) },
+                    _                      => if page_up { (0.0, -bounds.height) } else { (0.0, bounds.height) },
+                };
+                self.scroll_by(scroll_idx, delta)?;
+            }
+        }
+
+        // Arrow keys step the focused slider; Ctrl+Arrow jumps to the end.
+        // ArrowRight/ArrowDown = increase, ArrowLeft/ArrowUp = decrease — works
+        // for both horizontal and vertical sliders intuitively.
+        if let Some(idx) = self.focused_node
+            && matches!(self.tree.nodes[idx], UiNode::Slider(_))
+        {
+            let right = input.key_pressed(Key::ArrowRight);
+            let left  = input.key_pressed(Key::ArrowLeft);
+            let down  = input.key_pressed(Key::ArrowDown);
+            let up    = input.key_pressed(Key::ArrowUp);
+            let ctrl  = input.key_held(Key::Control);
+
+            let increase = right || down;
+            let decrease = left  || up;
+
+            if increase || decrease {
+                if ctrl {
+                    self.jump_slider(idx, increase)?;
+                } else {
+                    self.step_slider(idx, increase)?;
+                }
+            }
         }
 
         Ok(())

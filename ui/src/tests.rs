@@ -272,7 +272,7 @@ fn track_click_gives_teleported_thumb_hover_color_during_drag() {
     let UiUpdate::Full(_, _) = ui.flush_all() else { panic!("expected UiUpdate::Full") };
     let thumb_idx = ui.get_node::<SliderNode>(slider_idx).unwrap().get_thumb().unwrap();
     let thumb_offset = ui.get_node::<ButtonNode>(thumb_idx).unwrap().base.vertex_offset;
-    let hover_color = ui.get_node::<ButtonNode>(thumb_idx).unwrap().display_color(true, false, false);
+    let hover_color = ui.get_node::<ButtonNode>(thumb_idx).unwrap().display_color(true, false);
 
     // Click the track far to the right of the thumb (which spans [92, 108]).
     let press = UiInput::new((192.0, 16.0)).with_mouse_button(MouseButton::Primary, true, true, false);
@@ -561,7 +561,11 @@ fn raise_propagates_to_orderable_ancestor() {
     let press = UiInput::new((54.0, 54.0)).with_mouse_button(MouseButton::Primary, true, true, false);
     ui.handle_input(&press).unwrap();
 
-    assert_eq!(ui.tree.ordered_children(0), vec![win2_idx, win1_idx]);
+    // Focus ring is lazily created on click and appended at band=u32::MAX (always last).
+    let children: Vec<usize> = ui.tree.ordered_children(0).into_iter()
+        .filter(|&i| Some(i) != ui.focus_ring_idx)
+        .collect();
+    assert_eq!(children, vec![win2_idx, win1_idx]);
 }
 
 /// Bands assigned via `register_layer` (in registration order) take priority
@@ -1332,6 +1336,42 @@ fn tab_skips_invisible_subtree() {
 }
 
 #[test]
+fn tab_scrolls_focused_node_into_view() {
+    // A scroll panel 100px tall with 300px of content; two buttons, the second
+    // sitting below the visible fold at y=200.
+    let mut ui = Ui::new((800.0, 600.0), test_atlas());
+
+    let (content_idx, content) = ui.create_panel(0).unwrap();
+    content.base.set_position(Anchor::TopLeft, 0.0, 0.0);
+    content.base.set_size(200.0, 100.0);
+    content.enable_scroll((200.0, 300.0));
+    ui.set_clip_children(content_idx, true).unwrap();
+
+    let (_, b1) = ui.create_button(content_idx).unwrap();
+    b1.base.set_position(Anchor::TopLeft, 0.0, 0.0);
+    b1.base.set_size(50.0, 50.0);
+
+    let (b2_idx, b2) = ui.create_button(content_idx).unwrap();
+    b2.base.set_position(Anchor::TopLeft, 0.0, 200.0);
+    b2.base.set_size(50.0, 50.0);
+
+    // Render once so cached_edges are populated.
+    ui.flush_all();
+
+    // Tab twice to reach b2 (below the fold at y=200, viewport height=100).
+    let tab = UiInput::new((-1.0, -1.0)).with_key(Key::Tab, false, true, false);
+    ui.handle_input(&tab).unwrap(); // focus b1
+    ui.flush_dirty();
+
+    let tab = UiInput::new((-1.0, -1.0)).with_key(Key::Tab, false, true, false);
+    ui.handle_input(&tab).unwrap(); // focus b2 → scroll_into_view fires
+
+    let scroll = ui.get_node::<PanelNode>(content_idx).unwrap().scroll.as_ref().unwrap();
+    // b2 bottom = 250, viewport height = 100 → needs offset_y = 250 - 100 = 150.
+    assert_eq!(scroll.offset.1, 150.0);
+}
+
+#[test]
 fn enter_and_space_activate_focused_button() {
     let mut ui = Ui::new((800.0, 600.0), test_atlas());
 
@@ -1381,45 +1421,50 @@ fn enter_activates_focused_checkbox_and_toggles() {
 }
 
 #[test]
-fn focused_color_applies_via_render_data() {
+fn focus_ring_appears_on_tab_and_hides_on_clear() {
     let mut ui = Ui::new((800.0, 600.0), test_atlas());
 
-    let (b_idx, b) = ui.create_button(0).unwrap();
+    let (_, b) = ui.create_button(0).unwrap();
     b.base.set_position(Anchor::TopLeft, 0.0, 0.0);
     b.base.set_size(32.0, 32.0);
-    let base_color = b.display_color(false, false, false);
-    let focused_color = Rgba::new(1.0, 0.0, 0.0, 1.0);
-    b.set_focused_color(Some(focused_color));
 
-    let UiUpdate::Full(_, verts) = ui.flush_all() else { panic!("expected UiUpdate::Full") };
-    let offset = ui.get_node::<ButtonNode>(b_idx).unwrap().base.vertex_offset;
-    assert_eq!(verts[offset].color, base_color);
+    // First flush_all: ring doesn't exist yet (transparent, no slot).
+    let UiUpdate::Full(_, _) = ui.flush_all() else { panic!("expected Full") };
 
+    // Tab focuses the button: ring is lazily created, dirty=true.
     let tab = UiInput::new((-1.0, -1.0)).with_key(Key::Tab, false, true, false);
     ui.handle_input(&tab).unwrap();
 
-    let UiUpdate::Partial(patches) = ui.flush_dirty() else { panic!("expected UiUpdate::Partial") };
-    let patch = patches.iter().find(|(o, _)| *o == offset).expect("focused patch");
-    assert_eq!(patch.1[0].color, focused_color);
+    // flush_all assigns the ring its slot; ring renders with blue color.
+    let UiUpdate::Full(_, verts) = ui.flush_all() else { panic!("expected Full after ring creation") };
+    let ring_idx = ui.focus_ring_idx.expect("ring created on Tab");
+    let ring_offset = ui.tree.nodes[ring_idx].base().vertex_offset;
+    let ring_color = Rgba::new(0.3, 0.6, 1.0, 0.35);
+    assert_eq!(verts[ring_offset].color, ring_color, "ring should be visible (blue) when focused");
 
-    // Moving focus away restores the base color.
+    // Clear focus: ring color becomes transparent.
     ui.set_focus(None);
-    let UiUpdate::Partial(patches) = ui.flush_dirty() else { panic!("expected UiUpdate::Partial") };
-    let patch = patches.iter().find(|(o, _)| *o == offset).expect("unfocused patch");
-    assert_eq!(patch.1[0].color, base_color);
+    let UiUpdate::Partial(patches) = ui.flush_dirty() else { panic!("expected Partial") };
+    let ring_patch = patches.iter().find(|(o, _)| *o == ring_offset).expect("ring should be patched");
+    assert_eq!(ring_patch.1[0].color, Rgba::new(0.0, 0.0, 0.0, 0.0), "ring should be transparent when unfocused");
 }
 
 #[test]
-fn clicking_a_button_gives_it_focus() {
+fn clicking_a_button_does_not_give_tab_focus() {
     let mut ui = Ui::new((800.0, 600.0), test_atlas());
 
     let (b_idx, b) = ui.create_button(0).unwrap();
     b.base.set_position(Anchor::TopLeft, 0.0, 0.0);
     b.base.set_size(32.0, 32.0);
 
+    // Tab to focus the button first, then click — click should clear focus.
+    let tab = UiInput::new((16.0, 16.0)).with_key(Key::Tab, false, true, false);
+    ui.handle_input(&tab).unwrap();
+    assert_eq!(ui.focused_node, Some(b_idx));
+
     let press = UiInput::new((16.0, 16.0)).with_mouse_button(MouseButton::Primary, true, true, false);
     ui.handle_input(&press).unwrap();
-    assert_eq!(ui.focused_node, Some(b_idx));
+    assert_eq!(ui.focused_node, None);
 }
 
 #[test]
@@ -1516,17 +1561,15 @@ fn navigating_away_does_not_leave_stale_focus_to_clobber_other_batches() {
 
     let UiUpdate::Full(_, _) = ui.flush_all() else { panic!("expected UiUpdate::Full") };
 
-    // Click "Keybinds": presses (and focuses) the button, then navigates.
-    let press = UiInput::new((100.0, 110.0)).with_mouse_button(MouseButton::Primary, true, true, false);
-    ui.handle_input(&press).unwrap();
+    // Tab to focus the "Keybinds" button, then navigate away.
+    let tab = UiInput::new((-1.0, -1.0)).with_key(Key::Tab, false, true, false);
+    ui.handle_input(&tab).unwrap();
     assert_eq!(ui.focused_node, Some(keybind_btn_idx));
 
-    let release = UiInput::new((100.0, 110.0)).with_mouse_button(MouseButton::Primary, false, false, true);
-    ui.handle_input(&release).unwrap();
     ui.set_visible(main_idx, false).unwrap();
     ui.set_visible(keybind_idx, true).unwrap();
 
-    // Hiding `main_idx` clears the stale focus reference.
+    // Hiding `main_idx` clears the stale focus reference (and hides ring).
     assert_eq!(ui.focused_node, None);
 
     // The screen switch marks everything dirty -> full re-flush.
@@ -1536,10 +1579,10 @@ fn navigating_away_does_not_leave_stale_focus_to_clobber_other_batches() {
     let content_batch = *ui.batches().iter().find(|b| b.clip_rect.is_some())
         .expect("scroll content batch should be clipped");
 
-    // Clicking "Back" focuses it - no stale node to clobber another batch.
+    // Clicking "Back" does not re-focus, but also does not clobber the batch.
     let press = UiInput::new((100.0, 210.0)).with_mouse_button(MouseButton::Primary, true, true, false);
     ui.handle_input(&press).unwrap();
-    assert_eq!(ui.focused_node, Some(back_idx));
+    assert_eq!(ui.focused_node, None);
     let _ = ui.flush_dirty();
 
     // The scroll content's batch is still clipped.

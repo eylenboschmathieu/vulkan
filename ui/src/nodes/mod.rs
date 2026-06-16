@@ -104,10 +104,8 @@ pub struct InteractionCb {
     pub on_key_capture: Option<Box<dyn FnMut(&mut Ui, &str)>>,
     pub hover_color:     Option<Rgba>,
     pub pressed_color:   Option<Rgba>,
-    pub focused_color:   Option<Rgba>,
     pub hover_texture:   Option<Texture>,
     pub pressed_texture: Option<Texture>,
-    pub focused_texture: Option<Texture>,
 }
 
 pub struct NodeBase {
@@ -117,6 +115,14 @@ pub struct NodeBase {
     pub visible:       bool,
     pub vertex_offset: usize,
     pub visibility:    VisibilityCb,
+    /// When `false`, `hit_test` treats this node as transparent to pointer
+    /// events (children remain hit-testable). Used for overlay nodes like the
+    /// focus ring that must render on top but must never absorb input.
+    pub interactive:   bool,
+    /// When `false`, this node is excluded from Tab/Shift+Tab keyboard
+    /// navigation. Set to `false` on structural buttons (window close,
+    /// scroll-panel step, slider thumb) so only semantic controls participate.
+    pub tab_stop:      bool,
     /// This node's position among its parent's children, low to high
     /// (painter's algorithm: higher renders later/on top, and is hit-tested
     /// first). `0` means "not orderable" — such nodes sort below any sibling
@@ -144,6 +150,8 @@ impl NodeBase {
             visibility:    VisibilityCb::default(),
             z_index:       0,
             band:          0,
+            interactive:   true,
+            tab_stop:      true,
         }
     }
 
@@ -370,11 +378,12 @@ impl UiNode {
     /// Whether this node can receive keyboard focus via Tab/Shift+Tab
     /// traversal ([`Ui::focus_next`](crate::Ui::focus_next)/
     /// [`focus_prev`](crate::Ui::focus_prev)) and activation via Enter/Space.
-    /// Currently `Button` and `Checkbox` — this automatically covers any
-    /// plain `ButtonNode` such as a window's close button or a scroll
-    /// panel's step buttons.
+    /// Currently `Button`, `Checkbox`, and `Slider`, subject to
+    /// [`NodeBase::tab_stop`] being `true`. Structural buttons (window close,
+    /// scroll-panel steps, slider thumb) have `tab_stop = false` set at build
+    /// time.
     pub fn focusable(&self) -> bool {
-        matches!(self, UiNode::Button(_) | UiNode::Checkbox(_))
+        self.base().tab_stop && matches!(self, UiNode::Button(_) | UiNode::Checkbox(_) | UiNode::Slider(_))
     }
 }
 

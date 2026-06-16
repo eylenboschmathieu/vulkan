@@ -125,6 +125,7 @@ impl SliderNode {
         let slider_idx = ui.add_node(UiNode::Slider(Self::new(axis)), parent)?;
 
         let (thumb_idx, thumb) = ui.create_button(slider_idx)?;
+        thumb.base.tab_stop = false;
         match axis {
             Axis::Horizontal => thumb.base.set_size(16.0, 32.0),
             Axis::Vertical   => thumb.base.set_size(32.0, 16.0),
@@ -163,6 +164,9 @@ impl SliderNode {
     pub fn axis(&self) -> Axis {
         self.axis
     }
+
+    pub fn min_value(&self) -> u32 { self.min_value }
+    pub fn max_value(&self) -> u32 { self.max_value }
 
     pub fn get_thumb(&self) -> Option<usize> {
         self.thumb_idx

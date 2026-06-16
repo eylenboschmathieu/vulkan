@@ -108,6 +108,7 @@ impl ScrollPanelNode {
         let (scrollbar_idx, _) = ui.create_slider(frame_idx, axis)?;
 
         let (dec_idx, dec) = ui.create_button(frame_idx)?;
+        dec.base.tab_stop = false;
         dec.set_color(Rgba::new(0.8, 0.8, 0.8, 0.9));
         dec.set_hover_color(Some(Rgba::new(0.3, 0.6, 1.0, 0.9)));
         dec.interaction.on_release = Some(Box::new(move |ui: &mut Ui| {
@@ -115,6 +116,7 @@ impl ScrollPanelNode {
         }));
 
         let (inc_idx, inc) = ui.create_button(frame_idx)?;
+        inc.base.tab_stop = false;
         inc.set_color(Rgba::new(0.8, 0.8, 0.8, 0.9));
         inc.set_hover_color(Some(Rgba::new(0.3, 0.6, 1.0, 0.9)));
         inc.interaction.on_release = Some(Box::new(move |ui: &mut Ui| {

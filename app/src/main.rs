@@ -80,6 +80,11 @@ fn main() -> Result<()> {
                     if let PhysicalKey::Code(code) = event.physical_key {
                         app.button_update(code, event.state);
                     }
+                    if event.state.is_pressed() {
+                        if let Some(text) = event.text.as_deref() {
+                            app.append_text(text);
+                        }
+                    }
                 },
                 WindowEvent::RedrawRequested if !elwt.exiting() && !minimized => unsafe {
                     app.render(&window).expect("Failed to render.");

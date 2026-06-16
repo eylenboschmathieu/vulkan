@@ -147,9 +147,16 @@ impl InputState {
 pub struct InputManager {
     pub bindings: InputBindings,
     pub state:    InputState,
-    cursor: (f32, f32), // Mouse position on screen in range of [0, 0] -> [screen_width, screen_height]
-    window_size: (f32, f32), // inner width and height of the window
-    scroll: (f32, f32), // accumulated scroll-wheel delta, in wheel lines, since the last `take_scroll`
+    cursor: (f32, f32),
+    window_size: (f32, f32),
+    scroll: (f32, f32),
+    raw_held:     HashSet<KeyCode>,
+    raw_pressed:  HashSet<KeyCode>,
+    raw_released: HashSet<KeyCode>,
+    /// Typed text accumulated this tick (printable chars only).
+    text: String,
+    /// Name of the first key newly pressed this tick, for key-capture mode.
+    captured_key: Option<String>,
 }
 
 impl InputManager {
@@ -165,14 +172,65 @@ impl InputManager {
             cursor: ( (area.width as f32) / 2.0, (area.height as f32) / 2.0 ),
             window_size: (area.width as f32, area.height as f32),
             scroll: (0.0, 0.0),
+            raw_held:     HashSet::new(),
+            raw_pressed:  HashSet::new(),
+            raw_released: HashSet::new(),
+            text: String::new(),
+            captured_key: None,
         }
     }
 
     /// Update state for keyboard and mouse button
     pub fn button_update<T: Into<Input>>(&mut self, button: T, state: ElementState) {
-        if let Some(&action) = self.bindings.reverse.get(&button.into()) {
+        let input = button.into();
+        if let Some(&action) = self.bindings.reverse.get(&input) {
             self.state.update(action, state);
         }
+        if let Input::Keyboard(code) = input {
+            if state.is_pressed() {
+                if !self.raw_held.contains(&code) {
+                    self.raw_pressed.insert(code);
+                    if self.captured_key.is_none() {
+                        self.captured_key = Some(format!("{code:?}"));
+                    }
+                }
+                self.raw_held.insert(code);
+            } else {
+                self.raw_held.remove(&code);
+                self.raw_released.insert(code);
+            }
+        }
+    }
+
+    /// Append typed text (printable chars) received from the OS this tick.
+    pub fn append_text(&mut self, text: &str) {
+        self.text.push_str(text);
+    }
+
+    pub fn is_key_held(&self, code: KeyCode) -> bool {
+        self.raw_held.contains(&code)
+    }
+
+    pub fn is_key_pressed(&self, code: KeyCode) -> bool {
+        self.raw_pressed.contains(&code)
+    }
+
+    pub fn is_key_released(&self, code: KeyCode) -> bool {
+        self.raw_released.contains(&code)
+    }
+
+    pub fn take_text(&mut self) -> String {
+        std::mem::take(&mut self.text)
+    }
+
+    pub fn take_captured_key(&mut self) -> Option<String> {
+        self.captured_key.take()
+    }
+
+    /// Clear per-tick raw key state. Call after building `UiInput` each tick.
+    pub fn clear_raw(&mut self) {
+        self.raw_pressed.clear();
+        self.raw_released.clear();
     }
 
     pub fn cursor_update(&mut self, x: f32, y: f32) {

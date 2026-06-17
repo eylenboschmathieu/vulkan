@@ -7,6 +7,8 @@ mod panel;
 mod renderable;
 mod scroll_panel;
 mod slider;
+mod tab_list;
+mod tab_panel;
 mod window;
 
 use crate::{Edges, Rect, Ui};
@@ -21,7 +23,9 @@ pub use panel::PanelNode;
 pub use renderable::Renderable;
 pub use scroll_panel::{Scroll, ScrollPanelNode, SCROLLBAR_THUMB_PADDING};
 pub use slider::{Axis, SliderNode};
-pub use window::{WindowNode, TITLEBAR_HEIGHT, WINDOW_BORDER};
+pub use tab_list::TabListNode;
+pub use tab_panel::{TabBody, TabPanelNode};
+pub use window::{WindowBody, WindowNode, TITLEBAR_HEIGHT, WINDOW_BORDER};
 
 // ── Layout primitives ────────────────────────────────────────────────────────
 
@@ -237,6 +241,8 @@ pub enum UiNode {
     Label(LabelNode),
     ScrollPanel(ScrollPanelNode),
     Slider(SliderNode),
+    TabList(TabListNode),
+    TabPanel(TabPanelNode),
     Window(WindowNode),
 }
 
@@ -245,12 +251,14 @@ impl UiNode {
         match self {
             UiNode::Group(n)       => &n.base,
             UiNode::Panel(n)       => &n.base,
-            UiNode::Button(n)     => &n.base,
-            UiNode::Checkbox(n) => &n.base,
+            UiNode::Button(n)      => &n.base,
+            UiNode::Checkbox(n)    => &n.base,
             UiNode::Label(n)       => &n.base,
             UiNode::ScrollPanel(n) => &n.base,
-            UiNode::Slider(n)     => &n.panel.base,
-            UiNode::Window(n)     => &n.base,
+            UiNode::Slider(n)      => &n.panel.base,
+            UiNode::TabList(n)     => &n.panel.base,
+            UiNode::TabPanel(n)    => &n.group.base,
+            UiNode::Window(n)      => &n.base,
         }
     }
 
@@ -258,12 +266,14 @@ impl UiNode {
         match self {
             UiNode::Group(n)       => &mut n.base,
             UiNode::Panel(n)       => &mut n.base,
-            UiNode::Button(n)     => &mut n.base,
-            UiNode::Checkbox(n) => &mut n.base,
+            UiNode::Button(n)      => &mut n.base,
+            UiNode::Checkbox(n)    => &mut n.base,
             UiNode::Label(n)       => &mut n.base,
             UiNode::ScrollPanel(n) => &mut n.base,
-            UiNode::Slider(n)     => &mut n.panel.base,
-            UiNode::Window(n)     => &mut n.base,
+            UiNode::Slider(n)      => &mut n.panel.base,
+            UiNode::TabList(n)     => &mut n.panel.base,
+            UiNode::TabPanel(n)    => &mut n.group.base,
+            UiNode::Window(n)      => &mut n.base,
         }
     }
 
@@ -272,12 +282,14 @@ impl UiNode {
     /// types, which cannot have children.
     pub fn children(&self) -> Option<&[usize]> {
         match self {
-            UiNode::Group(n)      => Some(&n.container.children),
-            UiNode::Panel(n)           => Some(&n.container.children),
-            UiNode::Button(n)         => Some(&n.children),
-            UiNode::ScrollPanel(n)    => Some(&n.container.children),
-            UiNode::Slider(n)         => Some(&n.panel.container.children),
-            UiNode::Window(n)         => Some(&n.container.children),
+            UiNode::Group(n)       => Some(&n.container.children),
+            UiNode::Panel(n)       => Some(&n.container.children),
+            UiNode::Button(n)      => Some(&n.children),
+            UiNode::ScrollPanel(n) => Some(&n.container.children),
+            UiNode::Slider(n)      => Some(&n.panel.container.children),
+            UiNode::TabList(n)     => Some(&n.panel.container.children),
+            UiNode::TabPanel(n)    => Some(&n.group.container.children),
+            UiNode::Window(n)      => Some(&n.container.children),
             UiNode::Checkbox(_) | UiNode::Label(_) => None,
         }
     }
@@ -285,13 +297,15 @@ impl UiNode {
     /// Mutable child indices; see [`UiNode::children`].
     pub fn children_mut(&mut self) -> Option<&mut Vec<usize>> {
         match self {
-            UiNode::Group(n)      => Some(&mut n.container.children),
-            UiNode::Panel(n)         => Some(&mut n.container.children),
-            UiNode::Button(n)       => Some(&mut n.children),
-            UiNode::ScrollPanel(n)  => Some(&mut n.container.children),
-            UiNode::Slider(n)       => Some(&mut n.panel.container.children),
-            UiNode::Window(n)       => Some(&mut n.container.children),
-            UiNode::Checkbox(_) | UiNode::Label(_)   => None,
+            UiNode::Group(n)       => Some(&mut n.container.children),
+            UiNode::Panel(n)       => Some(&mut n.container.children),
+            UiNode::Button(n)      => Some(&mut n.children),
+            UiNode::ScrollPanel(n) => Some(&mut n.container.children),
+            UiNode::Slider(n)      => Some(&mut n.panel.container.children),
+            UiNode::TabList(n)     => Some(&mut n.panel.container.children),
+            UiNode::TabPanel(n)    => Some(&mut n.group.container.children),
+            UiNode::Window(n)      => Some(&mut n.container.children),
+            UiNode::Checkbox(_) | UiNode::Label(_) => None,
         }
     }
 
@@ -300,13 +314,15 @@ impl UiNode {
     /// types, which cannot have children.
     pub fn z_sentinel_mut(&mut self) -> Option<&mut u32> {
         match self {
-            UiNode::Group(n)      => Some(&mut n.container.z_sentinel),
-            UiNode::Panel(n)         => Some(&mut n.container.z_sentinel),
-            UiNode::Button(n)       => Some(&mut n.z_sentinel),
-            UiNode::ScrollPanel(n)  => Some(&mut n.container.z_sentinel),
-            UiNode::Slider(n)       => Some(&mut n.panel.container.z_sentinel),
-            UiNode::Window(n)       => Some(&mut n.container.z_sentinel),
-            UiNode::Checkbox(_) | UiNode::Label(_)   => None,
+            UiNode::Group(n)       => Some(&mut n.container.z_sentinel),
+            UiNode::Panel(n)       => Some(&mut n.container.z_sentinel),
+            UiNode::Button(n)      => Some(&mut n.z_sentinel),
+            UiNode::ScrollPanel(n) => Some(&mut n.container.z_sentinel),
+            UiNode::Slider(n)      => Some(&mut n.panel.container.z_sentinel),
+            UiNode::TabList(n)     => Some(&mut n.panel.container.z_sentinel),
+            UiNode::TabPanel(n)    => Some(&mut n.group.container.z_sentinel),
+            UiNode::Window(n)      => Some(&mut n.container.z_sentinel),
+            UiNode::Checkbox(_) | UiNode::Label(_) => None,
         }
     }
 
@@ -317,6 +333,8 @@ impl UiNode {
             UiNode::Group(n)       => Some(&n.container),
             UiNode::Panel(n)       => Some(&n.container),
             UiNode::ScrollPanel(n) => Some(&n.container),
+            UiNode::TabList(n)     => Some(&n.panel.container),
+            UiNode::TabPanel(n)    => Some(&n.group.container),
             UiNode::Window(n)      => Some(&n.container),
             _ => None,
         }
@@ -328,6 +346,8 @@ impl UiNode {
             UiNode::Group(n)       => Some(&mut n.container),
             UiNode::Panel(n)       => Some(&mut n.container),
             UiNode::ScrollPanel(n) => Some(&mut n.container),
+            UiNode::TabList(n)     => Some(&mut n.panel.container),
+            UiNode::TabPanel(n)    => Some(&mut n.group.container),
             UiNode::Window(n)      => Some(&mut n.container),
             _ => None,
         }
@@ -419,4 +439,6 @@ ui_node_variant!(CheckboxNode,    Checkbox);
 ui_node_variant!(LabelNode,       Label);
 ui_node_variant!(ScrollPanelNode, ScrollPanel);
 ui_node_variant!(SliderNode,      Slider);
+ui_node_variant!(TabListNode,     TabList);
+ui_node_variant!(TabPanelNode,    TabPanel);
 ui_node_variant!(WindowNode,      Window);

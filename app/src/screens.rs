@@ -5,7 +5,7 @@ use std::{cell::Cell, rc::Rc};
 use anyhow::Result;
 use log::error;
 
-use ui::{Anchor, Axis, CheckboxNode, CursorRequest, GroupNode, LabelNode, PanelNode, Rect, Rgba, SliderNode, Ui};
+use ui::{Anchor, Axis, CheckboxNode, CursorRequest, GroupNode, LabelNode, PanelNode, Rect, Rgba, SliderNode, Ui, TITLEBAR_HEIGHT, WINDOW_BORDER};
 
 const HOTBAR_SLOTS:       usize = 10;
 const SLOT_SIZE:          f32   = 48.0;
@@ -192,7 +192,7 @@ impl Screens {
         // ── Z-order test windows ─────────────────────────────────────────────
         // Two overlapping windows on the right side, registered as orderable
         // so clicking either (or its titlebar/body) raises it above the other.
-        let (win_a_idx, window) = ui.create_window(main_idx, 240.0, 160.0)?;
+        let (win_a_idx, window) = ui.create_window(main_idx, 240.0, 160.0, ui::WindowBody::Panel)?;
         window.base.set_position(Anchor::TopLeft, panel_w + 40.0, 80.0);
         window.set_draggable(true);
         let title_a_idx = window.title;
@@ -213,13 +213,13 @@ impl Screens {
         // `clip_children = true` (the default for any window body), so the
         // overflowing portion should be invisible -- including while dragging
         // either window.
-        let (_, nested) = ui.create_window(body_a_idx, 150.0, 100.0)?;
+        let (_, nested) = ui.create_window(body_a_idx, 150.0, 100.0, ui::WindowBody::Panel)?;
         nested.base.set_position(Anchor::TopLeft, 150.0, 80.0);
         nested.set_draggable(true);
         let nested_title_idx = nested.title;
         ui.get_node_mut::<LabelNode>(nested_title_idx)?.set_text("Nested");
 
-        let (win_b_idx, window) = ui.create_window(main_idx, 240.0, 160.0)?;
+        let (win_b_idx, window) = ui.create_window(main_idx, 240.0, 160.0, ui::WindowBody::Panel)?;
         window.base.set_position(Anchor::TopLeft, panel_w + 140.0, 160.0);
         window.set_draggable(true);
         let title_b_idx = window.title;
@@ -240,7 +240,7 @@ impl Screens {
         // body keeps it fully inside the body while dragging, instead of
         // letting it overflow (and get clipped) like the "Nested" window in
         // Window A.
-        let (_clamped_idx, clamped) = ui.create_window(body_b_idx, 110.0, 90.0)?;
+        let (_clamped_idx, clamped) = ui.create_window(body_b_idx, 110.0, 90.0, ui::WindowBody::Panel)?;
         clamped.base.set_position(Anchor::TopLeft, 20.0, 30.0);
         clamped.set_draggable(true);
         let clamped_title_idx = clamped.title;
@@ -250,6 +250,90 @@ impl Screens {
         // Registration order sets the initial z-order: B starts on top of A.
         ui.register_orderable(win_a_idx)?;
         ui.register_orderable(win_b_idx)?;
+
+        // ── Tab panel test ───────────────────────────────────────────────────
+        // Six tabs whose total width exceeds 360 px, so the overflow scrollbar
+        // appears on hover. Hosted inside a draggable window.
+        let tab_w         = 360.0;
+        let tab_h         = 32.0;
+        let sb_h          = 2.5;
+        let body_h        = 180.0;
+        let tab_label_pad = 12.0; // 6px each side
+
+        let tab_list_bg  = Rgba::new(0.20, 0.20, 0.23, 1.0);
+        let tab_btn      = Rgba::new(0.28, 0.28, 0.32, 1.0);
+        let tab_hover    = Rgba::new(0.35, 0.55, 0.85, 1.0);
+        let tab_body     = Rgba::new(0.08, 0.08, 0.10, 1.0);
+
+        let win_w = tab_w + 2.0 * WINDOW_BORDER;
+        let win_h = tab_h + body_h + TITLEBAR_HEIGHT + 3.0 * WINDOW_BORDER;
+        let (_, win) = ui.create_window(main_idx, win_w, win_h, ui::WindowBody::TabPanel {
+            tab_height:       tab_h,
+            scrollbar_height: sb_h,
+            tab_body:         ui::TabBody::Panel,
+        })?;
+        win.base.set_position(Anchor::TopLeft, panel_w + 40.0, 360.0);
+        win.set_draggable(true);
+        let win_title = win.title;
+        let tp_idx    = win.body;
+        ui.get_node_mut::<LabelNode>(win_title)?.set_text("Settings");
+
+        let body_idx = ui.get_node::<ui::TabPanelNode>(tp_idx)?.body_idx;
+        ui.get_node_mut::<ui::PanelNode>(body_idx)?.set_color(tab_body);
+
+        {
+            let tl_idx = ui.get_node::<ui::TabPanelNode>(tp_idx)?.tab_list_idx;
+            ui.get_node_mut::<ui::TabListNode>(tl_idx)?.set_color(tab_list_bg);
+        }
+
+        {
+            let tp = ui.get_node_mut::<ui::TabPanelNode>(tp_idx)?;
+            tp.selected_tab_color = Some(tab_body);
+            tp.default_tab_color  = Some(tab_btn);
+            tp.tab_hover_color    = Some(tab_hover);
+        }
+
+        let tab_labels = ["General", "Display", "Audio", "Controls", "Network", "Advanced"];
+        for (i, label_text) in tab_labels.iter().enumerate() {
+            let btn_w = ui.label_width(label_text) + tab_label_pad;
+            let (btn_idx, content_idx) = ui.add_tab(tp_idx, btn_w)?;
+
+            {
+                let btn = ui.get_node_mut::<ui::ButtonNode>(btn_idx)?;
+                btn.set_color(tab_btn);
+                btn.set_hover_color(Some(tab_hover));
+            }
+            {
+                let (_, lbl) = ui.create_label(btn_idx)?;
+                lbl.set_text(*label_text);
+                lbl.base.set_position(Anchor::Left, 6.0, 0.0);
+            }
+
+
+            {
+                let (_, content_lbl) = ui.create_label(content_idx)?;
+                content_lbl.set_text(format!("{label_text} settings"));
+                content_lbl.base.set_position(Anchor::TopLeft, 12.0, 12.0);
+            }
+
+            // First tab gets an extra button to test focus and interaction.
+            if i == 0 {
+                let (test_btn, _) = ui.create_button(content_idx)?;
+                {
+                    let btn = ui.get_node_mut::<ui::ButtonNode>(test_btn)?;
+                    btn.base.set_position(Anchor::TopLeft, 12.0, 40.0);
+                    btn.base.set_size(120.0, 28.0);
+                    btn.set_color(tab_btn);
+                    btn.set_hover_color(Some(tab_hover));
+                }
+                let (_, bl) = ui.create_label(test_btn)?;
+                bl.set_text("Apply");
+                bl.base.set_position(Anchor::Left, 8.0, 0.0);
+            }
+        }
+
+        // Apply tab colors to the initial selection (tab 0 is active by default).
+        ui.select_tab(tp_idx, 0)?;
 
         // ── Game Options ─────────────────────────────────────────────────────
         let (game_idx, panel) = ui.create_panel(0)?;

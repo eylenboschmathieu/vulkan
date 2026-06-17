@@ -14,7 +14,7 @@ use anyhow::{anyhow, Result};
 
 pub use font::{FontAtlas, GlyphInfo};
 pub use input::{Key, MouseButton, UiInput};
-pub use nodes::{Anchor, Axis, ButtonNode, CheckboxNode, Container, GroupNode, LabelNode, PanelNode, Scroll, ScrollPanelNode, SliderNode, UiNode, UiNodeVariant, WindowNode, TITLEBAR_HEIGHT, WINDOW_BORDER};
+pub use nodes::{Anchor, Axis, ButtonNode, CheckboxNode, Container, GroupNode, LabelNode, PanelNode, Scroll, ScrollPanelNode, SliderNode, TabBody, TabListNode, TabPanelNode, UiNode, UiNodeVariant, WindowBody, WindowNode, TITLEBAR_HEIGHT, WINDOW_BORDER};
 pub use output::{CursorRequest, UiEvent, UiUpdate};
 pub use types::{Pos2, Rgba, Texture, TextureId, Vertex, UV};
 use layers::LayerOrder;
@@ -270,6 +270,12 @@ pub struct Ui {
     /// layer type — `Ui` doesn't need to know what it is.
     layer_order: Option<Box<dyn Any>>,
 
+    /// Indices of all [`TabPanelNode`]s, accumulated by
+    /// [`create_tab_panel`](Self::create_tab_panel). Used by
+    /// [`handle_input`](Self::handle_input) to update each tab list's
+    /// scrollbar visibility on hover.
+    pub(crate) tab_panels: Vec<usize>,
+
     // ── Events ────────────────────────────────────────────────────────────
     // Pushed by node callbacks (which only have `&mut Ui`, never `&mut Host`)
     // and drained by the host via `take_events` after each `handle_input` call.
@@ -329,6 +335,7 @@ impl Ui {
             dirty_nodes: Vec::new(),
             navigator: None,
             layer_order: None,
+            tab_panels: Vec::new(),
             events: Vec::new(),
         }
     }
@@ -391,13 +398,15 @@ impl Ui {
         SliderNode::build(self, parent, axis)
     }
 
-    /// Creates a floating window of the given size: a border/frame quad with
-    /// a titlebar (holding a title label and a close button that hides the
-    /// window) and an inset body panel for content. Content should be added
-    /// under the returned `WindowNode::body`, e.g. via
-    /// `ui.create_panel(window.body)`.
-    pub fn create_window(&mut self, parent: usize, width: f32, height: f32) -> Result<(usize, &mut WindowNode)> {
-        WindowNode::build(self, parent, width, height)
+    /// Creates a floating window: a border/frame quad with a titlebar (title
+    /// label + close button) and, depending on `body`, an inset body node.
+    /// [`WindowBody::Panel`] creates a default clipped panel; [`WindowBody::TabPanel`]
+    /// and [`WindowBody::ScrollPanel`] create their composite equivalents;
+    /// [`WindowBody::None`] creates no body — use [`WindowNode::body_rect`]
+    /// to position a custom child. The body node's index is stored in
+    /// [`WindowNode::body`] for all variants except `None`.
+    pub fn create_window(&mut self, parent: usize, width: f32, height: f32, body: WindowBody) -> Result<(usize, &mut WindowNode)> {
+        WindowNode::build(self, parent, width, height, body)
     }
 
     /// Creates a scroll panel: a scroll-enabled content [`PanelNode`]
@@ -410,6 +419,132 @@ impl Ui {
     /// their defaults for the caller to set via the returned indices.
     pub fn create_scroll_panel(&mut self, parent: usize, axis: Axis, viewport: (f32, f32), scrollbar_width: f32, content_size: (f32, f32)) -> Result<(usize, &mut ScrollPanelNode)> {
         ScrollPanelNode::build(self, parent, axis, viewport, scrollbar_width, content_size)
+    }
+
+    /// Creates a tab panel: a [`TabListNode`] strip at the top and a body
+    /// panel below. `tab_height` is the height of the button row;
+    /// `scrollbar_height` is the thin scrollbar beneath it. Use
+    /// [`Ui::add_tab`] to append tabs afterward.
+    pub fn create_tab_panel(
+        &mut self,
+        parent:           usize,
+        width:            f32,
+        height:           f32,
+        tab_height:       f32,
+        scrollbar_height: f32,
+        body:             TabBody,
+    ) -> Result<(usize, usize)> {
+        TabPanelNode::build(self, parent, width, height, tab_height, scrollbar_height, body)
+    }
+
+    /// Appends a tab to a [`TabPanelNode`]. Adds a button to the tab strip
+    /// and a hidden content panel to the body; the first tab's content panel
+    /// is made visible automatically. Returns `(button_idx, content_panel_idx)`
+    /// — the caller sets the button's label, texture, colors, etc.
+    pub fn add_tab(&mut self, tab_panel_idx: usize, button_width: f32) -> Result<(usize, usize)> {
+        let (tab_list_idx, body_content_idx, n_tabs, content_idx, content_width,
+             tab_height, button_margin, button_gap, body_w, body_h) = {
+            let tp = self.get_node::<TabPanelNode>(tab_panel_idx)?;
+            let tl = self.get_node::<TabListNode>(tp.tab_list_idx)?;
+            let body_bounds = self.tree.nodes[tp.body_content_idx].base().bounds;
+            (tp.tab_list_idx, tp.body_content_idx, tp.tabs.len(),
+             tl.content_idx, tl.content_width, tl.tab_height,
+             tl.button_margin, tl.button_gap,
+             body_bounds.width, body_bounds.height)
+        };
+
+        // First button is flush with the left edge; subsequent follow after a gap.
+        // Buttons are inset from the top (button_margin) but flush at the bottom
+        // so the active-tab color visually connects with the body below.
+        let btn_x = if n_tabs == 0 { 0.0 } else { content_width + button_gap };
+        let btn_h = tab_height - button_margin;
+
+        let (btn_idx, btn) = self.create_button(content_idx)?;
+        btn.base.bounds.x = btn_x;
+        btn.base.bounds.y = button_margin;
+        btn.base.set_size(button_width, btn_h);
+        btn.base.tab_stop = false;
+        let tab_idx = n_tabs;
+        btn.interaction.on_release = Some(Box::new(move |ui: &mut Ui| {
+            let _ = ui.select_tab(tab_panel_idx, tab_idx);
+        }));
+
+        // Content panel in the body, hidden until selected.
+        let (content_panel_idx, panel) = self.create_panel(body_content_idx)?;
+        panel.base.set_size(body_w, body_h);
+        panel.base.visible = n_tabs == 0;
+
+        // content_width = right edge of the last button (used to place the next one).
+        self.get_node_mut::<TabListNode>(tab_list_idx)?.content_width = btn_x + button_width;
+        self.get_node_mut::<TabPanelNode>(tab_panel_idx)?.tabs.push((btn_idx, content_panel_idx));
+
+        self.layout_tab_list(tab_list_idx)?;
+        self.dirty = true;
+        Ok((btn_idx, content_panel_idx))
+    }
+
+    /// Shows the content panel for `tab_idx` and hides all others. No-op if
+    /// `tab_idx` is already active.
+    pub fn select_tab(&mut self, tab_panel_idx: usize, tab_idx: usize) -> Result<()> {
+        let (tabs, selected_color, default_color, hover_color, active_tab) = {
+            let tp = self.get_node::<TabPanelNode>(tab_panel_idx)?;
+            (tp.tabs.clone(), tp.selected_tab_color, tp.default_tab_color,
+             tp.tab_hover_color, tp.active_tab)
+        };
+        // Skip if already on this tab and there are no colors to (re-)apply.
+        if active_tab == tab_idx && tab_idx < tabs.len() && selected_color.is_none() {
+            return Ok(());
+        }
+        for (i, (btn_idx, content_idx)) in tabs.iter().enumerate() {
+            let want = i == tab_idx;
+            if self.tree.nodes[*content_idx].base().visible != want {
+                self.tree.nodes[*content_idx].base_mut().visible = want;
+                self.dirty = true;
+            }
+            if let (Some(sel_c), Some(def_c)) = (selected_color, default_color) {
+                let color = if want { sel_c } else { def_c };
+                // Active tab: clear hover so the body color shows through even
+                // when the cursor is over it. Inactive tabs restore the hover color.
+                let btn_hover = if want { None } else { hover_color };
+                if let Ok(btn) = self.get_node_mut::<ButtonNode>(*btn_idx) {
+                    btn.set_color(color);
+                    btn.set_hover_color(btn_hover);
+                    self.dirty = true;
+                }
+            }
+        }
+        self.get_node_mut::<TabPanelNode>(tab_panel_idx)?.active_tab = tab_idx;
+        Ok(())
+    }
+
+    /// Updates the tab list's scrollbar range and proportional thumb size
+    /// after `content_width` or the viewport width changes.
+    fn layout_tab_list(&mut self, tab_list_idx: usize) -> Result<()> {
+        let (content_idx, scrollbar_idx, content_width, tab_height, scrollbar_height) = {
+            let tl = self.get_node::<TabListNode>(tab_list_idx)?;
+            (tl.content_idx, tl.scrollbar_idx, tl.content_width, tl.tab_height, tl.scrollbar_height)
+        };
+        let viewport_w = self.get_node::<PanelNode>(content_idx)?.base.bounds.width;
+
+        self.get_node_mut::<PanelNode>(content_idx)?
+            .set_content_size((content_width, tab_height));
+
+        let max_offset = (content_width - viewport_w).max(0.0).round() as u32;
+        self.get_node_mut::<SliderNode>(scrollbar_idx)?.set_min_max(0, max_offset);
+
+        // Proportional thumb sized to fill the track height; minimum width 32px.
+        let track_w = viewport_w;
+        if let Some(thumb_idx) = self.get_node::<SliderNode>(scrollbar_idx)?.get_thumb() {
+            let thumb_w = if content_width > 0.0 {
+                (track_w * track_w / content_width).max(32.0).min(track_w)
+            } else {
+                track_w
+            };
+            let btn = self.get_node_mut::<ButtonNode>(thumb_idx)?;
+            btn.base.bounds.width  = thumb_w;
+            btn.base.bounds.height = scrollbar_height;
+        }
+        SliderNode::layout(self, scrollbar_idx)
     }
 
     /// The number of quads in the vertex buffer produced by the last
@@ -441,6 +576,9 @@ impl Ui {
             UiNode::Checkbox(c) => Some((c.display_color(hovered, pressed), c.display_texture(hovered, pressed))),
             UiNode::Slider(s)   => Some((s.panel.renderable.color(), s.panel.renderable.texture())),
             UiNode::Window(w)   => Some((w.renderable.color(), w.renderable.texture())),
+            UiNode::TabList(tl) => Some((tl.panel.renderable.color(), tl.panel.renderable.texture())),
+            // TabPanel is a structural container only; children handle rendering.
+            UiNode::TabPanel(_) => None,
             _ => None,
         }
     }
@@ -709,12 +847,21 @@ impl Ui {
     /// [`PanelNode::set_scroll_offset`]/[`PanelNode::scroll_by`] — call this
     /// after mutating a fetched panel's scroll offset directly).
     ///
-    /// Nodes that don't occupy a vertex slot of their own (`Group`s,
-    /// whose `render_data` is `None`) are skipped: their `vertex_offset`
-    /// stays at its default `0`, so [`refresh_batch_clip`](Self::refresh_batch_clip)
-    /// would mistarget batch `0` for them. Their children are still
-    /// recursed into and added if those render their own quad.
+    /// Invisible nodes (and their entire subtrees) are pruned: they have no
+    /// vertex slot in the current buffer, so patching them via
+    /// [`flush_dirty`](Self::flush_dirty) with a stale `vertex_offset`
+    /// (typically `0`) would corrupt another node's quad.
+    ///
+    /// Within a visible subtree, nodes that don't occupy a vertex slot of
+    /// their own (`Group`s, whose `render_data` is `None`) are skipped but
+    /// their children are still recursed into and added.
     pub(crate) fn mark_dirty(&mut self, idx: usize) {
+        // Invisible nodes are skipped by flush_all and have no vertex slot in the
+        // current buffer. Patching them via flush_dirty with a stale vertex_offset
+        // (usually 0) would corrupt another node's quad, so skip them entirely.
+        if !self.tree.nodes[idx].base().visible {
+            return;
+        }
         if matches!(self.tree.nodes[idx], UiNode::Label(_)) || self.render_data(idx).is_some() {
             self.dirty_nodes.push(idx);
         }
@@ -1550,11 +1697,12 @@ impl Ui {
 
     /// Marks `idx` as participating in z-ordering among its siblings,
     /// placing it above any sibling registered so far. Call once per node
-    /// during setup, in the desired initial back-to-front order — later
-    /// calls to [`raise`](Self::raise) (on press) will only affect nodes
-    /// registered this way; siblings that are never registered keep
-    /// [`z_index`](NodeBase::z_index) `0` and always sort below registered
-    /// ones.
+    /// during setup, in the desired initial back-to-front order. On press,
+    /// [`raise`](Self::raise) will bump any registered node (and any draggable
+    /// [`WindowNode`] — those are implicitly orderable without a prior call
+    /// here). Siblings that are never registered and are not draggable windows
+    /// keep [`z_index`](NodeBase::z_index) `0` and always sort below
+    /// registered ones.
     pub fn register_orderable(&mut self, idx: usize) -> Result<()> {
         self.bump_z_index(idx)
     }
@@ -1562,17 +1710,20 @@ impl Ui {
     /// Raises `idx` to the front of its parent's orderable siblings, and
     /// propagates the same operation up through every container-like
     /// ancestor to the root — each level only competes with its own
-    /// siblings (CSS stacking-context semantics). A no-op at any level whose
-    /// node has [`z_index`](NodeBase::z_index) `0`, i.e. was never
-    /// [`register_orderable`](Self::register_orderable)d: such nodes are
-    /// never reordered, so e.g. a debug overlay that never registers stays
-    /// fixed regardless of clicks elsewhere. Called automatically by
+    /// siblings (CSS stacking-context semantics). A node is raised at any
+    /// level where it has [`z_index`](NodeBase::z_index) `> 0` (explicitly
+    /// registered via [`register_orderable`](Self::register_orderable)) *or*
+    /// is a draggable [`WindowNode`] — draggable windows are always raiseable
+    /// regardless of prior registration, so they never lose to non-draggable
+    /// siblings based on insertion order alone. Called automatically by
     /// [`handle_input`](Self::handle_input) on press.
     fn raise(&mut self, idx: usize) -> Result<()> {
         let mut current = idx;
         let mut innermost_window: Option<usize> = None;
         loop {
-            if self.tree.nodes[current].base().z_index > 0 {
+            let raiseable = self.tree.nodes[current].base().z_index > 0
+                || matches!(&self.tree.nodes[current], UiNode::Window(w) if w.draggable);
+            if raiseable {
                 self.bump_z_index(current)?;
                 self.dirty = true;
             }
@@ -1781,6 +1932,29 @@ impl Ui {
                     _                      => if page_up { (0.0, -bounds.height) } else { (0.0, bounds.height) },
                 };
                 self.scroll_by(scroll_idx, delta)?;
+            }
+        }
+
+        // Tab list scrollbar hover visibility: show the thin scrollbar when the
+        // cursor is anywhere inside the tab list AND the content overflows. Hide
+        // it otherwise. Uses is_or_contains so hovering over any button in the
+        // strip counts as hovering the list.
+        for tp_idx in self.tab_panels.clone() {
+            let (tab_list_idx, scrollbar_idx, content_w, viewport_w) = {
+                let Ok(tp) = self.get_node::<TabPanelNode>(tp_idx) else { continue };
+                let tl_idx = tp.tab_list_idx;
+                let Ok(tl) = self.get_node::<TabListNode>(tl_idx) else { continue };
+                let sb_idx = tl.scrollbar_idx;
+                let vp_w   = self.tree.nodes[tl.content_idx].base().bounds.width;
+                (tl_idx, sb_idx, tl.content_width, vp_w)
+            };
+            let overflows = content_w > viewport_w;
+            let hovered   = overflows && self.hovered_node
+                .is_some_and(|h| self.is_or_contains(tab_list_idx, h));
+            let visible   = self.tree.nodes[scrollbar_idx].base().visible;
+            if hovered != visible {
+                self.tree.nodes[scrollbar_idx].base_mut().visible = hovered;
+                self.dirty = true;
             }
         }
 

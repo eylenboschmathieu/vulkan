@@ -24,7 +24,7 @@ pub struct App {
     input: InputManager,
     camera: FpCamera,
     world: World,
-    ui: ui::Ui,
+    ui: Box<ui::Ui>,
     ui_vertex_id: VertexAllocId,
     screens: Screens,
 
@@ -46,8 +46,9 @@ impl App {
 
         let area = window.inner_size();
         let screen_size = (area.width as f32, area.height as f32);
-        let mut ui = ui::Ui::new(screen_size, fonts.ui_atlas);
+        let mut ui = Box::new(ui::Ui::new(screen_size, fonts.ui_atlas));
         let screens = Screens::build(&mut ui, screen_size)?;
+        ui.register_global();
         let ui_vertex_id = blitz.ui_vertex_id();
 
         let camera = FpCamera::new(point3(0.0, 2.0, 0.0), 0.0, 0.0);

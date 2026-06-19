@@ -33,7 +33,7 @@ impl LabelNode {
     }
 
     pub fn color(&self) -> Rgba { self.color }
-    pub fn set_color(&mut self, color: Rgba) { self.color = color; }
+    pub fn set_color(&mut self, color: Rgba) { self.color = color; self.base.mark_dirty(); }
 
     /// Builds this label's quads for rendering, starting at `(start_x,
     /// baseline_y)` and always emitting exactly [`LabelNode::max_len`] quads
@@ -81,18 +81,17 @@ impl LabelNode {
     }
 
     /// Replaces the text, growing `max_len` if it's now the longest this
-    /// label has ever held. Returns `true` when `max_len` grows — the caller
-    /// must rebuild the whole tree (`Ui::dirty = true`) so
-    /// [`crate::Ui::flush_all`] reserves the larger allocation; otherwise an
-    /// in-place [`crate::Ui::flush_dirty`] update is enough.
-    pub fn set_text(&mut self, text: impl Into<String>) -> bool {
+    /// label has ever held. Schedules a full tree rebuild when `max_len`
+    /// grows (so [`crate::Ui::flush_all`] reserves the larger allocation);
+    /// otherwise queues an in-place patch via the global dirty list.
+    pub fn set_text(&mut self, text: impl Into<String>) {
         self.text = text.into();
         let len = self.text.chars().count();
         if len > self.max_len {
             self.max_len = len;
-            true
+            self.base.mark_full_dirty();
         } else {
-            false
+            self.base.mark_dirty();
         }
     }
 }

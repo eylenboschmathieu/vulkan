@@ -1,6 +1,8 @@
 #![allow(dead_code, unused_variables, clippy::too_many_arguments, clippy::unnecessary_wraps, clippy::type_complexity)]
 
+mod axis;
 mod font;
+mod global;
 mod input;
 mod layers;
 mod navigator;
@@ -14,7 +16,8 @@ use anyhow::{anyhow, Result};
 
 pub use font::{FontAtlas, GlyphInfo};
 pub use input::{Key, MouseButton, UiInput};
-pub use nodes::{Anchor, Axis, ButtonNode, CheckboxNode, Container, GroupNode, LabelNode, PanelNode, Scroll, ScrollPanelNode, SliderNode, TabBody, TabListNode, TabPanelNode, UiNode, UiNodeVariant, WindowBody, WindowNode, TITLEBAR_HEIGHT, WINDOW_BORDER};
+pub use nodes::{Anchor, Axis, ButtonNode, CheckboxNode, Container, GroupNode, LabelNode, PanelNode, ProgressBarNode, Scroll, ScrollPanelNode, SliderNode, TabBody, TabListNode, TabPanelNode, UiNode, UiNodeVariant, WindowBody, WindowNode, TITLEBAR_HEIGHT, WINDOW_BORDER};
+pub use axis::HasAxis;
 pub use output::{CursorRequest, UiEvent, UiUpdate};
 pub use types::{Pos2, Rgba, Texture, TextureId, Vertex, UV};
 use layers::LayerOrder;
@@ -129,6 +132,7 @@ impl UiTree {
     pub fn add_child(&mut self, mut node: UiNode, parent_idx: usize) -> Result<usize> {
         let idx = self.nodes.len();
         node.base_mut().parent = Some(parent_idx);
+        node.base_mut().idx    = idx;
         self.nodes.push(node);
         self.nodes[parent_idx].children_mut()
             .ok_or_else(|| anyhow!("UI node {parent_idx} cannot have children"))?
@@ -340,6 +344,20 @@ impl Ui {
         }
     }
 
+    /// Registers this `Ui` instance as the global dirty-flagging target so
+    /// that node setters (e.g. [`PanelNode::set_color`]) can schedule
+    /// re-renders without a `&mut Ui` parameter. Call this once, after the
+    /// `Ui` is in its final heap location and before any rendering begins.
+    /// The `Ui` must not be moved after this call.
+    pub fn register_global(&mut self) {
+        unsafe {
+            global::init(
+                &mut self.dirty       as *mut bool,
+                &mut self.dirty_nodes as *mut Vec<usize>,
+            );
+        }
+    }
+
     /// Resizes the root container to match the window's new size, and marks
     /// the UI dirty for a full re-flush. The host calls this whenever its
     /// window is resized — every anchor-relative node ultimately resolves
@@ -396,6 +414,39 @@ impl Ui {
     /// wires its index back into the returned `SliderNode`.
     pub fn create_slider(&mut self, parent: usize, axis: Axis) -> Result<(usize, &mut SliderNode)> {
         SliderNode::build(self, parent, axis)
+    }
+
+    /// Creates a progress bar: a track quad with a single fill child panel
+    /// whose size along `axis` is kept at `value × track_size`. The fill's
+    /// color and texture are set via `ui.get_node_mut::<PanelNode>(pb.fill_idx)`.
+    /// Use [`Ui::set_progress`] to update the value and resize the fill.
+    pub fn create_progress_bar(&mut self, parent: usize, axis: Axis, width: f32, height: f32) -> Result<(usize, &mut ProgressBarNode)> {
+        ProgressBarNode::build(self, parent, axis, width, height)
+    }
+
+    /// Sets the fill fraction of a [`ProgressBarNode`] (clamped to `0.0..=1.0`),
+    /// resizes its fill panel along the bar's axis, and marks it dirty.
+    /// For [`Axis::Vertical`], the fill is pinned to the bottom edge and grows upward.
+    ///
+    /// Always updates the fill panel's bounds so the stored state stays consistent,
+    /// but skips [`mark_dirty`](Self::mark_dirty) when the bar is invisible — an
+    /// invisible bar has no vertex slot, so patching its fill would corrupt another
+    /// node's quad (same invariant as [`mark_dirty`](Self::mark_dirty)).
+    pub fn set_progress(&mut self, pb_idx: usize, value: f32) -> Result<()> {
+        let pb = self.get_node_mut::<ProgressBarNode>(pb_idx)?;
+        let value = value.clamp(0.0, 1.0);
+        pb.set_value(value);
+        let (fill_idx, axis, w, h, visible) =
+            (pb.fill_idx, pb.axis, pb.base.bounds.width, pb.base.bounds.height, pb.base.visible);
+        let fill = self.get_node_mut::<PanelNode>(fill_idx)?;
+        match axis {
+            Axis::Horizontal => fill.base.bounds.width  = w * value,
+            Axis::Vertical   => fill.base.bounds.height = h * value,
+        }
+        if visible {
+            self.mark_dirty(fill_idx);
+        }
+        Ok(())
     }
 
     /// Creates a floating window: a border/frame quad with a titlebar (title
@@ -575,6 +626,7 @@ impl Ui {
             UiNode::Button(b)   => Some((b.display_color(hovered, pressed), b.display_texture(hovered, pressed))),
             UiNode::Checkbox(c) => Some((c.display_color(hovered, pressed), c.display_texture(hovered, pressed))),
             UiNode::Slider(s)   => Some((s.panel.renderable.color(), s.panel.renderable.texture())),
+            UiNode::ProgressBar(pb) => Some((pb.renderable.color(), pb.renderable.texture())),
             UiNode::Window(w)   => Some((w.renderable.color(), w.renderable.texture())),
             UiNode::TabList(tl) => Some((tl.panel.renderable.color(), tl.panel.renderable.texture())),
             // TabPanel is a structural container only; children handle rendering.
@@ -905,7 +957,41 @@ impl Ui {
     /// external state, or after resizing the track set up by
     /// [`Ui::create_slider`]).
     pub fn layout_slider(&mut self, slider_idx: usize) -> Result<()> {
-        SliderNode::layout(self, slider_idx)
+        SliderNode::layout(self, slider_idx)?;
+        self.mark_dirty(slider_idx);
+        Ok(())
+    }
+
+    /// Sets the axis of a node to the given value and propagates the change:
+    /// the fill is recalculated for [`ProgressBarNode`] (using the current
+    /// bounds and anchors), and the thumb is re-laid-out for [`SliderNode`].
+    /// The caller is responsible for updating the node's bounds (size and
+    /// position) before this call if the new axis requires different dimensions.
+    pub fn set_axis<T: HasAxis>(&mut self, idx: usize, axis: Axis) -> Result<()> {
+        self.get_node_mut::<T>(idx)?.set_axis_in_place(axis);
+        T::sync_after(self, idx)
+    }
+
+    /// Reverses the fill direction of a progress bar: right-to-left for
+    /// [`Axis::Horizontal`], top-to-bottom for [`Axis::Vertical`]. The
+    /// direction is stored in the fill panel's anchor — no separate field is
+    /// needed on [`ProgressBarNode`]. Re-anchors the fill and marks dirty.
+    pub fn set_fill_reversed(&mut self, pb_idx: usize, reversed: bool) -> Result<()> {
+        let pb = self.get_node_mut::<ProgressBarNode>(pb_idx)?;
+        let value = pb.value();
+        let (fill_idx, axis, w, h, visible) =
+            (pb.fill_idx, pb.axis, pb.base.bounds.width, pb.base.bounds.height, pb.base.visible);
+        let anchor = ProgressBarNode::fill_anchor(axis, reversed);
+        let fill = self.get_node_mut::<PanelNode>(fill_idx)?;
+        fill.base.set_position(anchor, 0.0, 0.0);
+        match axis {
+            Axis::Horizontal => fill.base.set_size(w * value, h),
+            Axis::Vertical   => fill.base.set_size(w, h * value),
+        }
+        if visible {
+            self.mark_dirty(pb_idx);
+        }
+        Ok(())
     }
 
     /// After `scroll_idx`'s offset changes via scroll-wheel input, syncs its
@@ -1072,12 +1158,7 @@ impl Ui {
     /// this to update a label from their own code (e.g. a per-frame debug
     /// overlay).
     pub fn set_label_text(&mut self, idx: usize, text: impl Into<String>) -> Result<()> {
-        let label = self.tree.get_node_mut::<LabelNode>(idx)?;
-        if label.set_text(text) {
-            self.dirty = true;
-        } else {
-            self.dirty_nodes.push(idx);
-        }
+        self.get_node_mut::<LabelNode>(idx)?.set_text(text);
         Ok(())
     }
 
@@ -1088,17 +1169,21 @@ impl Ui {
         let titlebar_idx = self.get_node::<WindowNode>(idx)?.titlebar;
         self.get_node_mut::<WindowNode>(idx)?.set_color(color);
         self.get_node_mut::<PanelNode>(titlebar_idx)?.set_color(color);
-        self.dirty_nodes.push(idx);
-        self.dirty_nodes.push(titlebar_idx);
+        Ok(())
+    }
+
+    /// Sets a checkbox's [`CheckboxNode::selected`] state and marks it dirty.
+    /// Hosts use this to change a checkbox programmatically without touching
+    /// the dirty machinery by hand.
+    pub fn set_checkbox_selected(&mut self, idx: usize, selected: bool) -> Result<()> {
+        self.get_node_mut::<CheckboxNode>(idx)?.set_selected(selected);
         Ok(())
     }
 
     /// Sets a window's background color, i.e. its [`WindowNode::body`] panel.
-    /// Marks it dirty for an in-place [`flush_dirty`](Self::flush_dirty) patch.
     pub(crate) fn set_window_background_color(&mut self, idx: usize, color: Rgba) -> Result<()> {
         let body_idx = self.get_node::<WindowNode>(idx)?.body;
         self.get_node_mut::<PanelNode>(body_idx)?.set_color(color);
-        self.dirty_nodes.push(body_idx);
         Ok(())
     }
 
@@ -1386,8 +1471,9 @@ impl Ui {
                 let ring_idx = self.tree.nodes.len();
                 let mut node = UiNode::Panel(PanelNode::new());
                 node.base_mut().interactive = false;
+                node.base_mut().idx         = ring_idx;
                 if let UiNode::Panel(p) = &mut node {
-                    p.renderable.set_color(Rgba::new(0.0, 0.0, 0.0, 0.0));
+                    p.set_color(Rgba::new(0.0, 0.0, 0.0, 0.0));
                 }
                 self.tree.nodes.push(node);
                 self.focus_ring_idx = Some(ring_idx);
@@ -1434,14 +1520,14 @@ impl Ui {
                     ring.bounds.height = focused_e.bottom - focused_e.top;
                 }
                 if let UiNode::Panel(p) = &mut self.tree.nodes[ring_idx] {
-                    p.renderable.set_color(Rgba::new(0.3, 0.6, 1.0, 0.35));
+                    p.set_color(Rgba::new(0.3, 0.6, 1.0, 0.35));
                 }
                 // dirty=true above means flush_all is coming; it positions the
                 // ring from ring.bounds — no mark_dirty needed here.
             }
         } else if let Some(ring_idx) = self.focus_ring_idx {
             if let UiNode::Panel(p) = &mut self.tree.nodes[ring_idx] {
-                p.renderable.set_color(Rgba::new(0.0, 0.0, 0.0, 0.0));
+                p.set_color(Rgba::new(0.0, 0.0, 0.0, 0.0));
             }
             if self.ring_has_slot {
                 self.mark_dirty(ring_idx);

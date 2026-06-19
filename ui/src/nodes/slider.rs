@@ -36,10 +36,19 @@ impl Draggable {
     }
 }
 
-/// Slider
+/// A draggable slider with a track panel and a thumb button.
+///
+/// Implements [`crate::HasAxis`]; use [`crate::Ui::set_axis`] to switch
+/// orientation at runtime (caller updates `panel.base` bounds first).
 pub struct SliderNode {
     pub panel: PanelNode,
-    axis: Axis,
+    pub(crate) axis: Axis,
+    /// When `true`, the slider's value increases toward the track's start:
+    /// right-to-left for [`Axis::Horizontal`], top-to-bottom for
+    /// [`Axis::Vertical`]. Default `false` (left-to-right / top-to-bottom
+    /// increase). Set this for fader-style controls where max should be at
+    /// the top or right.
+    pub reversed: bool,
     min_value: u32,
     max_value: u32,
     pub value: u32,
@@ -142,6 +151,7 @@ impl SliderNode {
         let mut this = Self {
             panel: PanelNode::new(),
             axis,
+            reversed: false,
             min_value: 0,
             max_value: 0,
             value: 0,
@@ -261,14 +271,16 @@ impl SliderNode {
     /// The thumb's offset from the track's start edge (left/top) for the
     /// current value, along [`SliderNode::axis`].
     pub fn thumb_offset(&self, thumb_extent: f32) -> f32 {
-        self.track_padding + self.value_fraction() * (self.main_extent() - thumb_extent)
+        let frac = if self.reversed { 1.0 - self.value_fraction() } else { self.value_fraction() };
+        self.track_padding + frac * (self.main_extent() - thumb_extent)
     }
 
     /// The value implied by dragging the cursor away from where the drag started.
     pub fn value_from_drag(&self, cursor: (f32, f32), thumb_extent: f32) -> u32 {
         let usable_extent = (self.main_extent() - thumb_extent).max(1.0);
-        let delta_value   = (self.cursor_main(cursor) - self.cursor_main(self.drag.start_cursor)) / usable_extent
-            * (self.max_value - self.min_value) as f32;
+        let raw_delta     = self.cursor_main(cursor) - self.cursor_main(self.drag.start_cursor);
+        let signed_delta  = if self.reversed { -raw_delta } else { raw_delta };
+        let delta_value = signed_delta / usable_extent * (self.max_value - self.min_value) as f32;
         (self.drag.start_value + delta_value).round().clamp(self.min_value as f32, self.max_value as f32) as u32
     }
 
@@ -278,6 +290,7 @@ impl SliderNode {
     pub fn value_from_track_position(&self, local_pos: f32, thumb_extent: f32) -> u32 {
         let usable_extent = (self.main_extent() - thumb_extent).max(1.0);
         let fraction = ((local_pos - self.track_padding - thumb_extent / 2.0) / usable_extent).clamp(0.0, 1.0);
+        let fraction = if self.reversed { 1.0 - fraction } else { fraction };
         (self.min_value as f32 + fraction * (self.max_value - self.min_value) as f32).round() as u32
     }
 }
@@ -287,3 +300,4 @@ impl Default for SliderNode {
         Self::new(Axis::Horizontal)
     }
 }
+

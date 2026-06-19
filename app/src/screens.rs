@@ -5,7 +5,7 @@ use std::{cell::Cell, rc::Rc};
 use anyhow::Result;
 use log::error;
 
-use ui::{Anchor, Axis, CheckboxNode, CursorRequest, GroupNode, LabelNode, PanelNode, Rect, Rgba, SliderNode, Ui, TITLEBAR_HEIGHT, WINDOW_BORDER};
+use ui::{Anchor, Axis, ButtonNode, CheckboxNode, CursorRequest, GroupNode, LabelNode, PanelNode, ProgressBarNode, Rect, Rgba, SliderNode, Ui, TITLEBAR_HEIGHT, WINDOW_BORDER};
 
 const HOTBAR_SLOTS:       usize = 10;
 const SLOT_SIZE:          f32   = 48.0;
@@ -32,6 +32,7 @@ pub enum Screen {
     GameOptions,
     SystemOptions,
     Keybinds,
+    UiTest,
 }
 
 /// Identifies a rendering/z-order band. Used as the `L` type parameter of
@@ -180,160 +181,24 @@ impl Screens {
         label.set_text("Keybinds");
         label.base.set_position(Anchor::Left, 10.0, 0.0);
 
-        let (quit_btn_idx, btn) = ui.create_button(main_idx)?;
+        let (ui_test_btn_idx, btn) = ui.create_button(main_idx)?;
         btn.base.bounds = Rect { x: 64.0, y: 584.0, width: 400.0, height: 48.0 };
+        btn.set_color(button_color);
+        btn.set_hover_color(Some(button_hover_color));
+        btn.interaction.on_release = Some(Box::new(move |ui: &mut Ui| navigate(ui, ui_test_btn_idx)));
+        ui.set_navigation(ui_test_btn_idx, Screen::UiTest)?;
+        let (_, label) = ui.create_label(ui_test_btn_idx)?;
+        label.set_text("UI Tests");
+        label.base.set_position(Anchor::Left, 10.0, 0.0);
+
+        let (quit_btn_idx, btn) = ui.create_button(main_idx)?;
+        btn.base.bounds = Rect { x: 64.0, y: 680.0, width: 400.0, height: 48.0 };
         btn.set_color(button_color);
         btn.set_hover_color(Some(button_hover_color));
         btn.interaction.on_release = Some(Box::new(|ui: &mut Ui| ui.request_exit()));
         let (_, label) = ui.create_label(quit_btn_idx)?;
         label.set_text("Quit");
         label.base.set_position(Anchor::Left, 10.0, 0.0);
-
-        // ── Z-order test windows ─────────────────────────────────────────────
-        // Two overlapping windows on the right side, registered as orderable
-        // so clicking either (or its titlebar/body) raises it above the other.
-        let (win_a_idx, window) = ui.create_window(main_idx, 240.0, 160.0, ui::WindowBody::Panel)?;
-        window.base.set_position(Anchor::TopLeft, panel_w + 40.0, 80.0);
-        window.set_draggable(true);
-        let title_a_idx = window.title;
-        let body_a_idx  = window.body;
-        ui.get_node_mut::<LabelNode>(title_a_idx)?.set_text("Window A");
-        ui.get_node_mut::<PanelNode>(body_a_idx)?.set_color(Rgba::new(0.8, 0.2, 0.2, 1.0));
-        let (a_btn_idx, btn) = ui.create_button(body_a_idx)?;
-        btn.base.set_position(Anchor::TopLeft, 10.0, 10.0);
-        btn.base.set_size(100.0, 32.0);
-        btn.set_color(Rgba::new(1.0, 1.0, 1.0, 0.4));
-        btn.set_hover_color(Some(Rgba::new(1.0, 1.0, 1.0, 0.7)));
-        let (_, label) = ui.create_label(a_btn_idx)?;
-        label.set_text("Button A");
-        label.base.set_position(Anchor::Left, 8.0, 0.0);
-
-        // Manual clip test: a window nested inside Window A's body, positioned
-        // to overflow the body's bottom-right corner. Window A's body has
-        // `clip_children = true` (the default for any window body), so the
-        // overflowing portion should be invisible -- including while dragging
-        // either window.
-        let (_, nested) = ui.create_window(body_a_idx, 150.0, 100.0, ui::WindowBody::Panel)?;
-        nested.base.set_position(Anchor::TopLeft, 150.0, 80.0);
-        nested.set_draggable(true);
-        let nested_title_idx = nested.title;
-        ui.get_node_mut::<LabelNode>(nested_title_idx)?.set_text("Nested");
-
-        let (win_b_idx, window) = ui.create_window(main_idx, 240.0, 160.0, ui::WindowBody::Panel)?;
-        window.base.set_position(Anchor::TopLeft, panel_w + 140.0, 160.0);
-        window.set_draggable(true);
-        let title_b_idx = window.title;
-        let body_b_idx  = window.body;
-        ui.get_node_mut::<LabelNode>(title_b_idx)?.set_text("Window B");
-        ui.get_node_mut::<PanelNode>(body_b_idx)?.set_color(Rgba::new(0.2, 0.2, 0.8, 1.0));
-        let (b_btn_idx, btn) = ui.create_button(body_b_idx)?;
-        btn.base.set_position(Anchor::TopLeft, 10.0, 10.0);
-        btn.base.set_size(100.0, 32.0);
-        btn.set_color(Rgba::new(1.0, 1.0, 1.0, 0.4));
-        btn.set_hover_color(Some(Rgba::new(1.0, 1.0, 1.0, 0.7)));
-        let (_, label) = ui.create_label(b_btn_idx)?;
-        label.set_text("Button B");
-        label.base.set_position(Anchor::Left, 8.0, 0.0);
-
-        // Manual clamp test: a window nested inside Window B's body, small
-        // enough to fit within the body's bounds. `clamp_children` on the
-        // body keeps it fully inside the body while dragging, instead of
-        // letting it overflow (and get clipped) like the "Nested" window in
-        // Window A.
-        let (_clamped_idx, clamped) = ui.create_window(body_b_idx, 110.0, 90.0, ui::WindowBody::Panel)?;
-        clamped.base.set_position(Anchor::TopLeft, 20.0, 30.0);
-        clamped.set_draggable(true);
-        let clamped_title_idx = clamped.title;
-        ui.get_node_mut::<LabelNode>(clamped_title_idx)?.set_text("Clamped");
-        ui.set_clamp_children(body_b_idx, true)?;
-
-        // Registration order sets the initial z-order: B starts on top of A.
-        ui.register_orderable(win_a_idx)?;
-        ui.register_orderable(win_b_idx)?;
-
-        // ── Tab panel test ───────────────────────────────────────────────────
-        // Six tabs whose total width exceeds 360 px, so the overflow scrollbar
-        // appears on hover. Hosted inside a draggable window.
-        let tab_w         = 360.0;
-        let tab_h         = 32.0;
-        let sb_h          = 2.5;
-        let body_h        = 180.0;
-        let tab_label_pad = 12.0; // 6px each side
-
-        let tab_list_bg  = Rgba::new(0.20, 0.20, 0.23, 1.0);
-        let tab_btn      = Rgba::new(0.28, 0.28, 0.32, 1.0);
-        let tab_hover    = Rgba::new(0.35, 0.55, 0.85, 1.0);
-        let tab_body     = Rgba::new(0.08, 0.08, 0.10, 1.0);
-
-        let win_w = tab_w + 2.0 * WINDOW_BORDER;
-        let win_h = tab_h + body_h + TITLEBAR_HEIGHT + 3.0 * WINDOW_BORDER;
-        let (_, win) = ui.create_window(main_idx, win_w, win_h, ui::WindowBody::TabPanel {
-            tab_height:       tab_h,
-            scrollbar_height: sb_h,
-            tab_body:         ui::TabBody::Panel,
-        })?;
-        win.base.set_position(Anchor::TopLeft, panel_w + 40.0, 360.0);
-        win.set_draggable(true);
-        let win_title = win.title;
-        let tp_idx    = win.body;
-        ui.get_node_mut::<LabelNode>(win_title)?.set_text("Settings");
-
-        let body_idx = ui.get_node::<ui::TabPanelNode>(tp_idx)?.body_idx;
-        ui.get_node_mut::<ui::PanelNode>(body_idx)?.set_color(tab_body);
-
-        {
-            let tl_idx = ui.get_node::<ui::TabPanelNode>(tp_idx)?.tab_list_idx;
-            ui.get_node_mut::<ui::TabListNode>(tl_idx)?.set_color(tab_list_bg);
-        }
-
-        {
-            let tp = ui.get_node_mut::<ui::TabPanelNode>(tp_idx)?;
-            tp.selected_tab_color = Some(tab_body);
-            tp.default_tab_color  = Some(tab_btn);
-            tp.tab_hover_color    = Some(tab_hover);
-        }
-
-        let tab_labels = ["General", "Display", "Audio", "Controls", "Network", "Advanced"];
-        for (i, label_text) in tab_labels.iter().enumerate() {
-            let btn_w = ui.label_width(label_text) + tab_label_pad;
-            let (btn_idx, content_idx) = ui.add_tab(tp_idx, btn_w)?;
-
-            {
-                let btn = ui.get_node_mut::<ui::ButtonNode>(btn_idx)?;
-                btn.set_color(tab_btn);
-                btn.set_hover_color(Some(tab_hover));
-            }
-            {
-                let (_, lbl) = ui.create_label(btn_idx)?;
-                lbl.set_text(*label_text);
-                lbl.base.set_position(Anchor::Left, 6.0, 0.0);
-            }
-
-
-            {
-                let (_, content_lbl) = ui.create_label(content_idx)?;
-                content_lbl.set_text(format!("{label_text} settings"));
-                content_lbl.base.set_position(Anchor::TopLeft, 12.0, 12.0);
-            }
-
-            // First tab gets an extra button to test focus and interaction.
-            if i == 0 {
-                let (test_btn, _) = ui.create_button(content_idx)?;
-                {
-                    let btn = ui.get_node_mut::<ui::ButtonNode>(test_btn)?;
-                    btn.base.set_position(Anchor::TopLeft, 12.0, 40.0);
-                    btn.base.set_size(120.0, 28.0);
-                    btn.set_color(tab_btn);
-                    btn.set_hover_color(Some(tab_hover));
-                }
-                let (_, bl) = ui.create_label(test_btn)?;
-                bl.set_text("Apply");
-                bl.base.set_position(Anchor::Left, 8.0, 0.0);
-            }
-        }
-
-        // Apply tab colors to the initial selection (tab 0 is active by default).
-        ui.select_tab(tp_idx, 0)?;
 
         // ── Game Options ─────────────────────────────────────────────────────
         let (game_idx, panel) = ui.create_panel(0)?;
@@ -515,6 +380,264 @@ impl Screens {
             label.set_text(format!("Action {}", i + 1));
             label.base.set_position(Anchor::TopLeft, 8.0, row_offset / 2.0 + i as f32 * row_pitch);
         }
+
+        // ── UI Tests ─────────────────────────────────────────────────────────
+        let (ui_test_idx, panel) = ui.create_panel(0)?;
+        panel.base.set_size(screen_size.0, screen_size.1);
+        panel.set_color(panel_color);
+        panel.base.visible = false;
+        ui.register_screen(Screen::UiTest, ui_test_idx)?;
+        ui.register_layer(ui_test_idx, Layer::Content)?;
+
+        let (_, label) = ui.create_label(ui_test_idx)?;
+        label.set_text("UI Tests");
+        label.base.set_position(Anchor::TopLeft, 100.0, 100.0);
+
+        let (back_idx, btn) = ui.create_button(ui_test_idx)?;
+        btn.base.bounds = Rect { x: 64.0, y: 200.0, width: 400.0, height: 48.0 };
+        btn.set_color(button_color);
+        btn.set_hover_color(Some(button_hover_color));
+        btn.interaction.on_release = Some(Box::new(move |ui: &mut Ui| navigate(ui, back_idx)));
+        ui.set_navigation(back_idx, Screen::Main)?;
+        let (_, label) = ui.create_label(back_idx)?;
+        label.set_text("Back");
+        label.base.set_position(Anchor::Left, 10.0, 0.0);
+
+        // ── Z-order / clip / clamp window tests ──────────────────────────────
+        // Two overlapping windows, registered as orderable so clicking either
+        // raises it above the other.
+        let (win_a_idx, window) = ui.create_window(ui_test_idx, 240.0, 160.0, ui::WindowBody::Panel)?;
+        window.base.set_position(Anchor::TopLeft, panel_w + 40.0, 80.0);
+        window.set_draggable(true);
+        let title_a_idx = window.title;
+        let body_a_idx  = window.body;
+        ui.get_node_mut::<LabelNode>(title_a_idx)?.set_text("Window A");
+        ui.get_node_mut::<PanelNode>(body_a_idx)?.set_color(Rgba::new(0.8, 0.2, 0.2, 1.0));
+        let (a_btn_idx, btn) = ui.create_button(body_a_idx)?;
+        btn.base.set_position(Anchor::TopLeft, 10.0, 10.0);
+        btn.base.set_size(100.0, 32.0);
+        btn.set_color(Rgba::new(1.0, 1.0, 1.0, 0.4));
+        btn.set_hover_color(Some(Rgba::new(1.0, 1.0, 1.0, 0.7)));
+        let (_, label) = ui.create_label(a_btn_idx)?;
+        label.set_text("Button A");
+        label.base.set_position(Anchor::Left, 8.0, 0.0);
+
+        // Clip test: nested window overflows Window A's body — the overflowing
+        // portion should be clipped, including while dragging.
+        let (_, nested) = ui.create_window(body_a_idx, 150.0, 100.0, ui::WindowBody::Panel)?;
+        nested.base.set_position(Anchor::TopLeft, 150.0, 80.0);
+        nested.set_draggable(true);
+        let nested_title_idx = nested.title;
+        ui.get_node_mut::<LabelNode>(nested_title_idx)?.set_text("Nested");
+
+        let (win_b_idx, window) = ui.create_window(ui_test_idx, 240.0, 160.0, ui::WindowBody::Panel)?;
+        window.base.set_position(Anchor::TopLeft, panel_w + 140.0, 160.0);
+        window.set_draggable(true);
+        let title_b_idx = window.title;
+        let body_b_idx  = window.body;
+        ui.get_node_mut::<LabelNode>(title_b_idx)?.set_text("Window B");
+        ui.get_node_mut::<PanelNode>(body_b_idx)?.set_color(Rgba::new(0.2, 0.2, 0.8, 1.0));
+        let (b_btn_idx, btn) = ui.create_button(body_b_idx)?;
+        btn.base.set_position(Anchor::TopLeft, 10.0, 10.0);
+        btn.base.set_size(100.0, 32.0);
+        btn.set_color(Rgba::new(1.0, 1.0, 1.0, 0.4));
+        btn.set_hover_color(Some(Rgba::new(1.0, 1.0, 1.0, 0.7)));
+        let (_, label) = ui.create_label(b_btn_idx)?;
+        label.set_text("Button B");
+        label.base.set_position(Anchor::Left, 8.0, 0.0);
+
+        // Clamp test: nested window inside Window B's body with clamp_children,
+        // so dragging keeps it fully within the body bounds.
+        let (_clamped_idx, clamped) = ui.create_window(body_b_idx, 110.0, 90.0, ui::WindowBody::Panel)?;
+        clamped.base.set_position(Anchor::TopLeft, 20.0, 30.0);
+        clamped.set_draggable(true);
+        let clamped_title_idx = clamped.title;
+        ui.get_node_mut::<LabelNode>(clamped_title_idx)?.set_text("Clamped");
+        ui.set_clamp_children(body_b_idx, true)?;
+
+        // Registration order sets initial z-order: B starts on top of A.
+        ui.register_orderable(win_a_idx)?;
+        ui.register_orderable(win_b_idx)?;
+
+        // ── Tab panel test ────────────────────────────────────────────────────
+        // Six tabs whose total width exceeds 360 px, so the overflow scrollbar
+        // appears on hover.
+        let tab_w         = 360.0;
+        let tab_h         = 32.0;
+        let sb_h          = 2.5;
+        let tab_body_h    = 180.0;
+        let tab_label_pad = 12.0;
+
+        let tab_list_bg = Rgba::new(0.20, 0.20, 0.23, 1.0);
+        let tab_btn     = Rgba::new(0.28, 0.28, 0.32, 1.0);
+        let tab_hover   = Rgba::new(0.35, 0.55, 0.85, 1.0);
+        let tab_body    = Rgba::new(0.08, 0.08, 0.10, 1.0);
+
+        let tab_win_w = tab_w + 2.0 * WINDOW_BORDER;
+        let tab_win_h = tab_h + tab_body_h + TITLEBAR_HEIGHT + 3.0 * WINDOW_BORDER;
+        let (_, win) = ui.create_window(ui_test_idx, tab_win_w, tab_win_h, ui::WindowBody::TabPanel {
+            tab_height:       tab_h,
+            scrollbar_height: sb_h,
+            tab_body:         ui::TabBody::Panel,
+        })?;
+        win.base.set_position(Anchor::TopLeft, panel_w + 40.0, 360.0);
+        win.set_draggable(true);
+        let win_title = win.title;
+        let tp_idx    = win.body;
+        ui.get_node_mut::<LabelNode>(win_title)?.set_text("Settings");
+
+        let tab_body_idx = ui.get_node::<ui::TabPanelNode>(tp_idx)?.body_idx;
+        ui.get_node_mut::<ui::PanelNode>(tab_body_idx)?.set_color(tab_body);
+        {
+            let tl_idx = ui.get_node::<ui::TabPanelNode>(tp_idx)?.tab_list_idx;
+            ui.get_node_mut::<ui::TabListNode>(tl_idx)?.set_color(tab_list_bg);
+        }
+        {
+            let tp = ui.get_node_mut::<ui::TabPanelNode>(tp_idx)?;
+            tp.selected_tab_color = Some(tab_body);
+            tp.default_tab_color  = Some(tab_btn);
+            tp.tab_hover_color    = Some(tab_hover);
+        }
+
+        let tab_labels = ["General", "Display", "Audio", "Controls", "Network", "Advanced"];
+        for (i, label_text) in tab_labels.iter().enumerate() {
+            let btn_w = ui.label_width(label_text) + tab_label_pad;
+            let (btn_idx, content_idx) = ui.add_tab(tp_idx, btn_w)?;
+            {
+                let btn = ui.get_node_mut::<ui::ButtonNode>(btn_idx)?;
+                btn.set_color(tab_btn);
+                btn.set_hover_color(Some(tab_hover));
+            }
+            {
+                let (_, lbl) = ui.create_label(btn_idx)?;
+                lbl.set_text(*label_text);
+                lbl.base.set_position(Anchor::Left, 6.0, 0.0);
+            }
+            {
+                let (_, content_lbl) = ui.create_label(content_idx)?;
+                content_lbl.set_text(format!("{label_text} settings"));
+                content_lbl.base.set_position(Anchor::TopLeft, 12.0, 12.0);
+            }
+            if i == 0 {
+                let (test_btn, _) = ui.create_button(content_idx)?;
+                {
+                    let btn = ui.get_node_mut::<ui::ButtonNode>(test_btn)?;
+                    btn.base.set_position(Anchor::TopLeft, 12.0, 40.0);
+                    btn.base.set_size(120.0, 28.0);
+                    btn.set_color(tab_btn);
+                    btn.set_hover_color(Some(tab_hover));
+                }
+                let (_, bl) = ui.create_label(test_btn)?;
+                bl.set_text("Apply");
+                bl.base.set_position(Anchor::Left, 8.0, 0.0);
+            }
+        }
+        ui.select_tab(tp_idx, 0)?;
+
+        // ── Progress bar test ─────────────────────────────────────────────────
+        // A draggable window containing a horizontal/vertical progress bar
+        // controlled by a slider; a checkbox toggles the axis.
+        let pb_win_w = 260.0;
+        let pb_win_h = 246.0;
+        let (_, pb_win) = ui.create_window(ui_test_idx, pb_win_w, pb_win_h, ui::WindowBody::Panel)?;
+        pb_win.base.set_position(Anchor::TopLeft, panel_w + 300.0, 80.0);
+        pb_win.set_draggable(true);
+        let pb_win_title = pb_win.title;
+        let pb_body_idx  = pb_win.body;
+        ui.get_node_mut::<LabelNode>(pb_win_title)?.set_text("Progress Bar");
+        ui.get_node_mut::<PanelNode>(pb_body_idx)?.set_color(Rgba::new(0.1, 0.1, 0.12, 1.0));
+
+        let pb_track_color = Rgba::new(0.18, 0.18, 0.20, 1.0);
+        let pb_fill_color  = Rgba::new(0.20, 0.68, 0.32, 1.0);
+
+        let (pb_idx, pb) = ui.create_progress_bar(pb_body_idx, Axis::Horizontal, 236.0, 14.0)?;
+        pb.base.set_position(Anchor::TopLeft, 8.0, 54.0);
+        pb.set_track_color(pb_track_color);
+        let pb_fill_idx = pb.fill_idx;
+        ui.get_node_mut::<PanelNode>(pb_fill_idx)?.set_color(pb_fill_color);
+        ui.set_progress(pb_idx, 0.5)?;
+
+        // "Vertical" label + checkbox.
+        let vert_label_w = ui.label_width("Vertical:");
+        let (_, vt_lbl) = ui.create_label(pb_body_idx)?;
+        vt_lbl.set_text("Vertical:");
+        vt_lbl.base.set_position(Anchor::TopLeft, 8.0, 12.0);
+
+        let (pb_checkbox_idx, checkbox) = ui.create_checkbox(pb_body_idx)?;
+        checkbox.base.set_position(Anchor::TopLeft, 8.0 + vert_label_w + 8.0, 6.0);
+        checkbox.base.set_size(20.0, 20.0);
+        checkbox.set_hover_color(Some(button_hover_color));
+
+        // "Reversed" label + checkbox.
+        let rev_label_w = ui.label_width("Reversed:");
+        let (_, rev_lbl) = ui.create_label(pb_body_idx)?;
+        rev_lbl.set_text("Reversed:");
+        rev_lbl.base.set_position(Anchor::TopLeft, 8.0, 34.0);
+
+        let (pb_rev_checkbox_idx, checkbox) = ui.create_checkbox(pb_body_idx)?;
+        checkbox.base.set_position(Anchor::TopLeft, 8.0 + rev_label_w + 8.0, 28.0);
+        checkbox.base.set_size(20.0, 20.0);
+        checkbox.set_hover_color(Some(button_hover_color));
+
+        // Percentage label + slider.
+        let pct_w = ui.label_width("100%");
+        let (pb_pct_idx, pct_lbl) = ui.create_label(pb_body_idx)?;
+        pct_lbl.set_text("50%");
+        pct_lbl.base.set_width(pct_w);
+        pct_lbl.base.set_position(Anchor::TopLeft, 200.0, 188.0);
+
+        let (pb_slider_idx, slider) = ui.create_slider(pb_body_idx, Axis::Horizontal)?;
+        slider.panel.base.set_position(Anchor::TopLeft, 8.0, 186.0);
+        slider.panel.base.set_size(186.0, 16.0);
+        slider.set_min_max(0, 100);
+        slider.step_size = 1;
+        slider.set_value(50);
+
+        ui.get_node_mut::<SliderNode>(pb_slider_idx)?.on_value_changed = Some(Box::new(move |ui: &mut Ui| {
+            let v = ui.get_node::<SliderNode>(pb_slider_idx).map(|s| s.value).unwrap_or(50);
+            let frac = v as f32 / 100.0;
+            let _ = ui.set_progress(pb_idx, frac);
+            let _ = ui.set_label_text(pb_pct_idx, format!("{v}%"));
+        }));
+        ui.layout_slider(pb_slider_idx)?;
+
+        ui.get_node_mut::<CheckboxNode>(pb_rev_checkbox_idx)?.interaction.on_release = Some(Box::new(move |ui: &mut Ui| {
+            let reversed = ui.get_node::<CheckboxNode>(pb_rev_checkbox_idx).map(|c| c.selected).unwrap_or(false);
+            let _ = ui.set_fill_reversed(pb_idx, reversed);
+        }));
+
+        ui.get_node_mut::<CheckboxNode>(pb_checkbox_idx)?.interaction.on_release = Some(Box::new(move |ui: &mut Ui| {
+            let vertical = ui.get_node::<CheckboxNode>(pb_checkbox_idx).map(|c| c.selected).unwrap_or(false);
+            let axis = if vertical { Axis::Vertical } else { Axis::Horizontal };
+            // Axis change resets fill direction; uncheck the Reversed box to match.
+            let _ = ui.set_checkbox_selected(pb_rev_checkbox_idx, false);
+            let thumb_idx = ui.get_node::<SliderNode>(pb_slider_idx).ok().and_then(|s| s.get_thumb());
+            if vertical {
+                let _ = ui.get_node_mut::<ProgressBarNode>(pb_idx).map(|pb| pb.base.set_size(14.0, 120.0));
+                let _ = ui.set_axis::<ProgressBarNode>(pb_idx, axis);
+                let _ = ui.get_node_mut::<SliderNode>(pb_slider_idx).map(|s| {
+                    s.panel.base.set_position(Anchor::TopLeft, 30.0, 54.0);
+                    s.panel.base.set_size(16.0, 120.0);
+                    s.reversed = true;
+                });
+                if let Some(idx) = thumb_idx {
+                    let _ = ui.get_node_mut::<ButtonNode>(idx).map(|b| b.base.set_size(32.0, 16.0));
+                }
+                let _ = ui.set_axis::<SliderNode>(pb_slider_idx, axis);
+            } else {
+                let _ = ui.get_node_mut::<ProgressBarNode>(pb_idx).map(|pb| pb.base.set_size(236.0, 14.0));
+                let _ = ui.set_axis::<ProgressBarNode>(pb_idx, axis);
+                let _ = ui.get_node_mut::<SliderNode>(pb_slider_idx).map(|s| {
+                    s.panel.base.set_position(Anchor::TopLeft, 8.0, 186.0);
+                    s.panel.base.set_size(186.0, 16.0);
+                    s.reversed = false;
+                });
+                if let Some(idx) = thumb_idx {
+                    let _ = ui.get_node_mut::<ButtonNode>(idx).map(|b| b.base.set_size(16.0, 32.0));
+                }
+                let _ = ui.set_axis::<SliderNode>(pb_slider_idx, axis);
+            }
+        }));
 
         // ── World UI ─────────────────────────────────────────────────────────
         let (world_idx, world) = ui.create_group(0)?;

@@ -22,8 +22,15 @@ impl PanelNode {
         }
     }
 
-    pub fn set_color(&mut self, color: Rgba) { self.renderable.set_color(color); }
-    pub fn set_texture(&mut self, texture: Texture) { self.renderable.set_texture(texture); }
+    pub fn set_color(&mut self, color: Rgba) {
+        self.renderable.set_color(color);
+        self.base.mark_dirty();
+    }
+
+    pub fn set_texture(&mut self, texture: Texture) {
+        self.renderable.set_texture(texture);
+        self.base.mark_dirty();
+    }
 
     /// Enables scrolling with the given total content size. This panel's
     /// own `base.bounds` size becomes the scroll viewport. Typically paired

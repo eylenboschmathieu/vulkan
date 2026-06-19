@@ -23,13 +23,20 @@ impl CheckboxNode {
         }
     }
 
-    pub fn set_color(&mut self, color: Rgba) { self.renderable.set_color(color); }
-    pub fn set_selected_color(&mut self, color: Rgba) { self.selected_color = color; }
-    pub fn set_hover_color(&mut self, color: Option<Rgba>) { self.interaction.hover_color = color; }
-    pub fn set_pressed_color(&mut self, color: Option<Rgba>) { self.interaction.pressed_color = color; }
-    pub fn set_texture(&mut self, texture: Texture) { self.renderable.set_texture(texture); }
-    pub fn set_hover_texture(&mut self, texture: Option<Texture>) { self.interaction.hover_texture = texture; }
-    pub fn set_pressed_texture(&mut self, texture: Option<Texture>) { self.interaction.pressed_texture = texture; }
+    pub fn set_color(&mut self, color: Rgba) { self.renderable.set_color(color); self.base.mark_dirty(); }
+    pub fn set_selected_color(&mut self, color: Rgba) { self.selected_color = color; self.base.mark_dirty(); }
+    pub fn set_hover_color(&mut self, color: Option<Rgba>) { self.interaction.hover_color = color; self.base.mark_dirty(); }
+    pub fn set_pressed_color(&mut self, color: Option<Rgba>) { self.interaction.pressed_color = color; self.base.mark_dirty(); }
+    pub fn set_texture(&mut self, texture: Texture) { self.renderable.set_texture(texture); self.base.mark_dirty(); }
+    pub fn set_hover_texture(&mut self, texture: Option<Texture>) { self.interaction.hover_texture = texture; self.base.mark_dirty(); }
+    pub fn set_pressed_texture(&mut self, texture: Option<Texture>) { self.interaction.pressed_texture = texture; self.base.mark_dirty(); }
+
+    pub fn set_selected(&mut self, selected: bool) {
+        if self.selected != selected {
+            self.selected = selected;
+            self.base.mark_dirty();
+        }
+    }
 
     /// The color to render given the node's current hover/press state and its
     /// own `selected` state. Focus is shown by the dedicated focus-ring overlay.

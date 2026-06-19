@@ -633,7 +633,7 @@ fn take_events_drains_queued_events_in_order() {
 fn create_window_wires_titlebar_title_close_and_body() {
     let mut ui = Ui::new((800.0, 600.0), test_atlas());
 
-    let (window_idx, window) = ui.create_window(0, 200.0, 150.0).unwrap();
+    let (window_idx, window) = ui.create_window(0, 200.0, 150.0, WindowBody::Panel).unwrap();
     let titlebar_idx = window.titlebar;
     let title_idx    = window.title;
     let close_idx    = window.close_button;
@@ -667,7 +667,7 @@ fn create_window_wires_titlebar_title_close_and_body() {
 fn close_button_hides_window() {
     let mut ui = Ui::new((800.0, 600.0), test_atlas());
 
-    let (window_idx, _) = ui.create_window(0, 200.0, 150.0).unwrap();
+    let (window_idx, _) = ui.create_window(0, 200.0, 150.0, WindowBody::Panel).unwrap();
 
     // Inside the close button, in the titlebar's top-right corner.
     let click = UiInput::new((190.0, 12.0)).with_mouse_button(MouseButton::Primary, false, false, true);
@@ -680,7 +680,7 @@ fn close_button_hides_window() {
 fn window_drag_requires_draggable_and_moves_subtree() {
     let mut ui = Ui::new((800.0, 600.0), test_atlas());
 
-    let (window_idx, window) = ui.create_window(0, 200.0, 150.0).unwrap();
+    let (window_idx, window) = ui.create_window(0, 200.0, 150.0, WindowBody::Panel).unwrap();
     window.base.set_position(Anchor::TopLeft, 10.0, 10.0);
     let body_idx = window.body;
 
@@ -806,7 +806,7 @@ fn flush_all_nested_clip_children_intersects_ancestors() {
 fn flush_dirty_refreshes_clip_rect_on_window_drag() {
     let mut ui = Ui::new((800.0, 600.0), test_atlas());
 
-    let (_window_idx, window) = ui.create_window(0, 200.0, 150.0).unwrap();
+    let (_window_idx, window) = ui.create_window(0, 200.0, 150.0, WindowBody::Panel).unwrap();
     window.base.set_position(Anchor::TopLeft, 10.0, 10.0);
     window.set_draggable(true);
     let body_idx = window.body;
@@ -848,7 +848,7 @@ fn flush_dirty_skips_containers_and_does_not_clobber_unrelated_batch() {
     other.base.set_position(Anchor::TopLeft, 300.0, 300.0);
     other.base.set_size(50.0, 50.0);
 
-    let (_window_idx, window) = ui.create_window(0, 200.0, 150.0).unwrap();
+    let (_window_idx, window) = ui.create_window(0, 200.0, 150.0, WindowBody::Panel).unwrap();
     window.base.set_position(Anchor::TopLeft, 10.0, 10.0);
     window.set_draggable(true);
     let body_idx = window.body;
@@ -905,11 +905,11 @@ fn hit_test_respects_clip_children() {
 fn window_drag_clamps_to_parent_when_set() {
     let mut ui = Ui::new((800.0, 600.0), test_atlas());
 
-    let (_outer_idx, outer) = ui.create_window(0, 200.0, 150.0).unwrap();
+    let (_outer_idx, outer) = ui.create_window(0, 200.0, 150.0, WindowBody::Panel).unwrap();
     outer.base.set_position(Anchor::TopLeft, 10.0, 10.0);
     let body_idx = outer.body;
 
-    let (inner_idx, inner) = ui.create_window(body_idx, 50.0, 40.0).unwrap();
+    let (inner_idx, inner) = ui.create_window(body_idx, 50.0, 40.0, WindowBody::Panel).unwrap();
     inner.base.set_position(Anchor::TopLeft, 10.0, 10.0);
     inner.set_draggable(true);
 
@@ -952,7 +952,7 @@ fn window_drag_clamps_to_scroll_panel_content_size() {
     ui.set_clamp_children(p_idx, true).unwrap();
     ui.set_scroll_offset(p_idx, (20.0, 20.0)).unwrap();
 
-    let (inner_idx, inner) = ui.create_window(p_idx, 40.0, 30.0).unwrap();
+    let (inner_idx, inner) = ui.create_window(p_idx, 40.0, 30.0, WindowBody::Panel).unwrap();
     inner.base.set_position(Anchor::TopLeft, 30.0, 30.0);
     inner.set_draggable(true);
 
@@ -1615,4 +1615,124 @@ fn capturing_node_bypasses_tab_and_clicks() {
     ui.handle_input(&click).unwrap();
     assert_eq!(ui.hovered_node, None);
     assert_eq!(ui.focused_node, Some(b1_idx));
+}
+
+// ── ProgressBarNode ──────────────────────────────────────────────────────────
+
+#[test]
+fn progress_bar_build_creates_track_and_zero_fill() {
+    let mut ui = Ui::new((800.0, 600.0), test_atlas());
+
+    let (pb_idx, pb) = ui.create_progress_bar(0, Axis::Horizontal, 200.0, 12.0).unwrap();
+    let fill_idx = pb.fill_idx;
+
+    // Track has the requested size and is not interactive.
+    let pb = ui.get_node::<ProgressBarNode>(pb_idx).unwrap();
+    assert_eq!(pb.base.bounds.width,  200.0);
+    assert_eq!(pb.base.bounds.height, 12.0);
+    assert!(!pb.base.interactive);
+    assert!(!pb.base.tab_stop);
+
+    // Fill starts at zero width (0% progress).
+    let fill = ui.get_node::<PanelNode>(fill_idx).unwrap();
+    assert_eq!(fill.base.bounds.width,  0.0);
+    assert_eq!(fill.base.bounds.height, 12.0);
+    assert!(!fill.base.interactive);
+    assert!(!fill.base.tab_stop);
+}
+
+#[test]
+fn progress_bar_vertical_build_has_zero_height_fill_pinned_at_bottom() {
+    let mut ui = Ui::new((800.0, 600.0), test_atlas());
+
+    let (pb_idx, pb) = ui.create_progress_bar(0, Axis::Vertical, 12.0, 100.0).unwrap();
+    let fill_idx = pb.fill_idx;
+
+    let pb = ui.get_node::<ProgressBarNode>(pb_idx).unwrap();
+    assert_eq!(pb.base.bounds.width,  12.0);
+    assert_eq!(pb.base.bounds.height, 100.0);
+
+    // Fill starts with zero height; BottomLeft anchor pins it to the bottom
+    // edge at render time — bounds.y is 0 and the anchor does the work.
+    let fill = ui.get_node::<PanelNode>(fill_idx).unwrap();
+    assert_eq!(fill.base.bounds.y,        0.0);
+    assert_eq!(fill.base.bounds.height,   0.0);
+    assert_eq!(fill.base.bounds.width,   12.0);
+    assert!(matches!(fill.base.anchoring.src, Anchor::BottomLeft));
+}
+
+#[test]
+fn set_progress_horizontal_resizes_fill_width() {
+    let mut ui = Ui::new((800.0, 600.0), test_atlas());
+
+    let (pb_idx, pb) = ui.create_progress_bar(0, Axis::Horizontal, 200.0, 12.0).unwrap();
+    let fill_idx = pb.fill_idx;
+
+    ui.set_progress(pb_idx, 0.75).unwrap();
+
+    let pb   = ui.get_node::<ProgressBarNode>(pb_idx).unwrap();
+    let fill = ui.get_node::<PanelNode>(fill_idx).unwrap();
+
+    assert_eq!(pb.value(), 0.75);
+    assert_eq!(fill.base.bounds.width,  150.0); // 200 * 0.75
+    assert_eq!(fill.base.bounds.height, 12.0);  // unchanged
+}
+
+#[test]
+fn set_progress_vertical_resizes_fill_height_and_pins_to_bottom() {
+    let mut ui = Ui::new((800.0, 600.0), test_atlas());
+
+    let (pb_idx, pb) = ui.create_progress_bar(0, Axis::Vertical, 12.0, 100.0).unwrap();
+    let fill_idx = pb.fill_idx;
+
+    ui.set_progress(pb_idx, 0.4).unwrap();
+
+    let fill = ui.get_node::<PanelNode>(fill_idx).unwrap();
+    // BottomLeft anchor pins the fill to the track's bottom; only height
+    // is stored in bounds (bounds.y stays 0 — the anchor does the work).
+    assert_eq!(fill.base.bounds.height, 40.0); // 100 * 0.4
+    assert_eq!(fill.base.bounds.y,       0.0);
+    assert_eq!(fill.base.bounds.width,  12.0); // unchanged
+}
+
+#[test]
+fn set_progress_clamps_value_to_zero_one() {
+    let mut ui = Ui::new((800.0, 600.0), test_atlas());
+
+    let (pb_idx, _) = ui.create_progress_bar(0, Axis::Horizontal, 200.0, 12.0).unwrap();
+
+    ui.set_progress(pb_idx, -0.5).unwrap();
+    assert_eq!(ui.get_node::<ProgressBarNode>(pb_idx).unwrap().value(), 0.0);
+
+    ui.set_progress(pb_idx, 1.5).unwrap();
+    assert_eq!(ui.get_node::<ProgressBarNode>(pb_idx).unwrap().value(), 1.0);
+}
+
+#[test]
+fn set_progress_on_invisible_bar_does_not_dirty_fill() {
+    // When a progress bar is invisible its fill has no vertex slot. If
+    // set_progress called mark_dirty on the fill anyway, flush_dirty would
+    // patch whatever quad happens to live at offset 0 — corrupting it. The
+    // guard is: if `pb.base.visible == false`, skip mark_dirty entirely.
+    let mut ui = Ui::new((800.0, 600.0), test_atlas());
+
+    let (pb_idx, _) = ui.create_progress_bar(0, Axis::Horizontal, 200.0, 12.0).unwrap();
+
+    // Flush once with bar visible so vertex slots are assigned.
+    let _ = ui.flush_all();
+
+    // Hide the bar; dirty=true (structural change). flush_all settles layout.
+    ui.set_visible(pb_idx, false).unwrap();
+    let _ = ui.flush_all(); // dirty=false after this
+
+    // Call set_progress on the invisible bar. The visibility guard must skip
+    // mark_dirty, leaving dirty_nodes empty.
+    ui.set_progress(pb_idx, 0.8).unwrap();
+
+    // flush_dirty should see no dirty nodes and return None.
+    let update = ui.flush_dirty();
+    assert!(
+        matches!(update, UiUpdate::None),
+        "set_progress on invisible bar must not push any dirty_nodes"
+    );
 }

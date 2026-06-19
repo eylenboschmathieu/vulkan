@@ -203,8 +203,8 @@ impl WindowNode {
         }
     }
 
-    pub fn set_color(&mut self, color: Rgba) { self.renderable.set_color(color); }
-    pub fn set_texture(&mut self, texture: Texture) { self.renderable.set_texture(texture); }
+    pub fn set_color(&mut self, color: Rgba) { self.renderable.set_color(color); self.base.mark_dirty(); }
+    pub fn set_texture(&mut self, texture: Texture) { self.renderable.set_texture(texture); self.base.mark_dirty(); }
 
     /// Sets whether pressing this window's titlebar starts a drag-to-move.
     /// Draggable windows are implicitly raised to the front of their siblings

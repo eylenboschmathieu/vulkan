@@ -1,6 +1,6 @@
 use crate::types::{Rgba, Texture};
 
-use super::{InteractionCb, NodeBase, Renderable};
+use super::{Anchor, InteractionCb, NodeBase, Renderable};
 
 /// Toggleable checkbox with distinct unselected, selected, hovered, and
 /// pressed appearances.
@@ -22,6 +22,9 @@ impl CheckboxNode {
             interaction:     InteractionCb::default(),
         }
     }
+
+    pub fn set_position(&mut self, anchor: Anchor, x: f32, y: f32) { self.base.set_position(anchor, x, y); }
+    pub fn set_size(&mut self, width: f32, height: f32) { self.base.set_size(width, height); }
 
     pub fn set_color(&mut self, color: Rgba) { self.renderable.set_color(color); self.base.mark_dirty(); }
     pub fn set_selected_color(&mut self, color: Rgba) { self.selected_color = color; self.base.mark_dirty(); }

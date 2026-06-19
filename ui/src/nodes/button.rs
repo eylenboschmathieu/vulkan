@@ -1,6 +1,6 @@
 use crate::types::{Rgba, Texture};
 
-use super::{InteractionCb, NodeBase, Renderable};
+use super::{Anchor, InteractionCb, NodeBase, Renderable};
 
 /// Interactive button. Labelable.
 pub struct ButtonNode {
@@ -23,6 +23,9 @@ impl ButtonNode {
             z_sentinel:      1,
         }
     }
+
+    pub fn set_position(&mut self, anchor: Anchor, x: f32, y: f32) { self.base.set_position(anchor, x, y); }
+    pub fn set_size(&mut self, width: f32, height: f32) { self.base.set_size(width, height); }
 
     pub fn set_color(&mut self, color: Rgba) { self.renderable.set_color(color); self.base.mark_dirty(); }
     pub fn set_hover_color(&mut self, color: Option<Rgba>) { self.interaction.hover_color = color; self.base.mark_dirty(); }

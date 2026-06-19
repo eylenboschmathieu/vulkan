@@ -1,7 +1,7 @@
 use crate::font::FontAtlas;
 use crate::types::{Pos2, Rgba, Vertex, UV};
 
-use super::NodeBase;
+use super::{Anchor, NodeBase};
 
 /// Text label. Not interactive, not labelable itself.
 pub struct LabelNode {
@@ -26,6 +26,13 @@ impl LabelNode {
             color: Rgba::new(0.0, 0.0, 0.0, 1.0),
             max_len,
         }
+    }
+
+    pub fn set_position(&mut self, anchor: Anchor, x: f32, y: f32) { self.base.set_position(anchor, x, y); }
+    pub fn set_size(&mut self, width: f32, height: f32) { self.base.set_size(width, height); }
+    pub fn set_width(&mut self, width: f32) { self.base.set_width(width); }
+    pub fn set_position_anchored_to(&mut self, src: Anchor, target: usize, dst: Anchor, x: f32, y: f32) {
+        self.base.set_position_anchored_to(src, target, dst, x, y);
     }
 
     pub fn max_len(&self) -> usize {

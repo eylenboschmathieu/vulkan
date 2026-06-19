@@ -203,6 +203,9 @@ impl WindowNode {
         }
     }
 
+    pub fn set_position(&mut self, anchor: Anchor, x: f32, y: f32) { self.base.set_position(anchor, x, y); }
+    pub fn set_size(&mut self, width: f32, height: f32) { self.base.set_size(width, height); }
+
     pub fn set_color(&mut self, color: Rgba) { self.renderable.set_color(color); self.base.mark_dirty(); }
     pub fn set_texture(&mut self, texture: Texture) { self.renderable.set_texture(texture); self.base.mark_dirty(); }
 

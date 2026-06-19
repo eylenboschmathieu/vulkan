@@ -1,7 +1,7 @@
 use anyhow::Result;
 use crate::{types::Rgba, Ui};
 
-use super::{Axis, Container, NodeBase, SliderNode, UiNode};
+use super::{Anchor, Axis, Container, NodeBase, SliderNode, UiNode};
 
 /// Default scroll-wheel step, in UI pixels per wheel "line", for a scroll
 /// panel's axes that aren't covered by its [`Scroll::scrollbar`] (or for
@@ -153,4 +153,7 @@ impl ScrollPanelNode {
     pub(crate) fn new(axis: Axis, scrollbar_width: f32, content_idx: usize, scrollbar_idx: usize, dec_idx: usize, inc_idx: usize) -> Self {
         Self { base: NodeBase::new(), container: Container::new(), axis, scrollbar_width, content_idx, scrollbar_idx, dec_idx, inc_idx }
     }
+
+    pub fn set_position(&mut self, anchor: Anchor, x: f32, y: f32) { self.base.set_position(anchor, x, y); }
+    pub fn set_size(&mut self, width: f32, height: f32) { self.base.set_size(width, height); }
 }

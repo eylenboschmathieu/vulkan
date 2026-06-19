@@ -182,6 +182,9 @@ impl SliderNode {
         self.thumb_idx
     }
 
+    pub fn set_position(&mut self, anchor: Anchor, x: f32, y: f32) { self.panel.base.set_position(anchor, x, y); }
+    pub fn set_size(&mut self, width: f32, height: f32) { self.panel.base.set_size(width, height); }
+
     pub fn set_color(&mut self, color: Rgba) { self.panel.set_color(color); }
 
     pub fn set_texture(&mut self, texture: Texture) { self.panel.set_texture(texture); }
